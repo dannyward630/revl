@@ -1383,7 +1383,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1406,7 +1407,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1429,7 +1431,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1452,7 +1455,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1475,7 +1479,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1498,7 +1503,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1521,7 +1527,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1544,7 +1551,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1567,7 +1575,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1590,7 +1599,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1613,7 +1623,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1636,7 +1647,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1659,7 +1671,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1682,7 +1695,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1705,7 +1719,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1728,7 +1743,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1751,7 +1767,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1774,7 +1791,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1797,7 +1815,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1820,7 +1839,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1843,7 +1863,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1866,7 +1887,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1889,7 +1911,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1912,7 +1935,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1935,7 +1959,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1958,7 +1983,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -1981,7 +2007,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2004,7 +2031,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2027,7 +2055,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2050,7 +2079,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2073,7 +2103,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2096,7 +2127,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2119,7 +2151,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2142,7 +2175,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2165,7 +2199,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2188,7 +2223,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2211,7 +2247,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2234,7 +2271,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2257,7 +2295,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2280,7 +2319,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2303,7 +2343,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2326,7 +2367,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2349,7 +2391,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2372,7 +2415,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2395,7 +2439,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2418,7 +2463,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2441,7 +2487,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2464,7 +2511,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2487,7 +2535,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2510,7 +2559,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2533,7 +2583,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2556,7 +2607,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2579,7 +2631,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2602,7 +2655,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2625,7 +2679,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2648,7 +2703,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2671,7 +2727,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2694,7 +2751,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2717,7 +2775,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2740,7 +2799,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2763,7 +2823,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2786,7 +2847,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2809,7 +2871,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2832,7 +2895,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2855,7 +2919,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2878,7 +2943,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2901,7 +2967,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2954,7 +3021,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -2987,7 +3055,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3020,7 +3089,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3053,7 +3123,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3086,7 +3157,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3119,7 +3191,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3152,7 +3225,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3185,7 +3259,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3218,7 +3293,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3251,7 +3327,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3284,7 +3361,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3317,7 +3395,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3350,7 +3429,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3383,7 +3463,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3416,7 +3497,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3449,7 +3531,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3482,7 +3565,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3515,7 +3599,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3548,7 +3633,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3581,7 +3667,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3614,7 +3701,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3647,7 +3735,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3680,7 +3769,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3713,7 +3803,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3746,7 +3837,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3779,7 +3871,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3812,7 +3905,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3845,7 +3939,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3878,7 +3973,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3911,7 +4007,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3944,7 +4041,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -3977,7 +4075,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4010,7 +4109,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4043,7 +4143,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4076,7 +4177,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4109,7 +4211,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4142,7 +4245,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4175,7 +4279,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4208,7 +4313,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4241,7 +4347,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4274,7 +4381,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4307,7 +4415,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4340,7 +4449,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4373,7 +4483,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4406,7 +4517,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4439,7 +4551,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4472,7 +4585,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4505,7 +4619,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4538,7 +4653,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4571,7 +4687,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4604,7 +4721,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4637,7 +4755,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4670,7 +4789,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4703,7 +4823,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4736,7 +4857,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4769,7 +4891,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4802,7 +4925,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4835,7 +4959,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4868,7 +4993,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4901,7 +5027,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4934,7 +5061,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -4967,7 +5095,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -5000,7 +5129,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -5033,7 +5163,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -5066,7 +5197,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -5099,7 +5231,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]
@@ -5132,7 +5265,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 10
-                    }
+                    },
+                    "operands": "Int"
                   }
                 }
               ]

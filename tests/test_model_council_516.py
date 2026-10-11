@@ -913,11 +913,12 @@ def test_the_dissent_record_is_per_member_and_readable():
     is the shape, and the answers in it are digests, which is why reading one
     does not give the caller a `T`.
 
-    Written as a module `fn` rather than inside a `provide` body because a
-    match-arm payload does not pin a method receiver there - a PRE-EXISTING
-    limit that has nothing to do with this slice, pinned as parity by
-    `test_a_dissent_payload_dispatches_like_any_other_adt_payload` below so a
-    later reader does not mistake it for a property of the answer type."""
+    Written as a module `fn`. The same arms inside a `provide` body behave
+    the same way: the component stratum knows the payload type, so
+    `d.length()` lowers to the builtin there too, and a method the payload
+    type lacks is refused by name against that type. That is what
+    `test_a_dissent_payload_dispatches_like_any_other_adt_payload` below
+    proves, for a user ADT and for the answer type alike."""
     assert compile_source("""
 fn settle(a: Aggregate[Str]) -> Int {
   return match a {
@@ -929,29 +930,63 @@ fn settle(a: Aggregate[Str]) -> Int {
 """, "answer.revl")
 
 
+def _length_arms(ir: dict) -> list:
+    """Every match arm in `ir` whose body is a `.length()` call on its bind."""
+    found = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            body = node.get("body")
+            if ("pattern" in node and isinstance(body, dict)
+                    and body.get("method") == "length"):
+                found.append(node)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(ir)
+    return found
+
+
 def test_a_dissent_payload_dispatches_like_any_other_adt_payload():
     """The provided type is not special where it has no business being.
 
-    A match-arm payload does not pin a stdlib method receiver inside a
-    `provide` body, for a user ADT and for `Aggregate[T]` alike. That is a
-    pre-existing gap in method dispatch, not something this slice introduced
-    and not something it should paper over: the two behave the same way, and
-    this test is what says so."""
+    A match-arm payload pins a stdlib method receiver inside a `provide` body,
+    for a user ADT and for `Aggregate[T]` alike. It did not once: the component
+    stratum never put the arm's payload type in its type env, so `d.length()`
+    was refused "on a value of unknown type" while the same arm in a module
+    `fn` was admitted. Issue #2198 seeds the payload type there, as the `fn`
+    stratum does, so both now dispatch the same way. A method the payload type
+    does not have is still refused, by name and against that type."""
     adt = """
 type Row = { id: Int }
 type Outcome = Ok(List[Row]) | Missing
 
 service S { fn f(o: Outcome) -> Int }
 component C provides out: S {
-  provide out { fn f(o) = match o { Ok(d) => d.length(), Missing => 0, } }
+  provide out { fn f(o) = match o { Ok(d) => d.METHOD(), Missing => 0, } }
 }
 """
-    adt_err = refusal(adt)
-    provided_err = refusal(_consumer("""      Agreed(v)    => 0,
-      Split(d)     => d.length(),
-      Inquorate(d) => d.length(),""", returns="Int"))
-    assert "on a value of unknown type" in adt_err.message
-    assert "on a value of unknown type" in provided_err.message
+    provided = _consumer("""      Agreed(v)    => 0,
+      Split(d)     => d.METHOD(),
+      Inquorate(d) => d.METHOD(),""", returns="Int")
+    adt_arms = _length_arms(compile_source(adt.replace("METHOD", "length"),
+                                           "council.revl"))
+    provided_arms = _length_arms(compile_source(
+        provided.replace("METHOD", "length"), "council.revl"))
+    assert [(a["pattern"], a["payload_type"], a["body"]["kind"])
+            for a in adt_arms] == [("Ok", "List[Row]", "builtin")]
+    assert [(a["pattern"], a["payload_type"], a["body"]["kind"])
+            for a in provided_arms] == [
+        ("Split", "List[DissentEntry]", "builtin"),
+        ("Inquorate", "List[DissentEntry]", "builtin")]
+    adt_err = refusal(adt.replace("METHOD", "upper"))
+    provided_err = refusal(provided.replace("METHOD", "upper"))
+    assert "no builtin method `upper` on `List[Row]`" in adt_err.message
+    assert ("no builtin method `upper` on `List[DissentEntry]`"
+            in provided_err.message)
 
 
 @pytest.mark.parametrize("name", ("Aggregate", "Answer", "DissentEntry"))

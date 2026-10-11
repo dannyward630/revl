@@ -56,17 +56,33 @@ every file driving `RUNNERS` is run by a step that sets it -- the same
 "is it set in the job that runs the file" question the env-var half asks,
 against the same `_pytest_targets`/`_covers` helpers.
 
+A go test that probes the toolchain by hand (a `shutil.which` probe for go in a
+`skipif`, a fixture or a test body) counts as driving the go tier too (issue
+#2264), in tests/ and in backends/*/, and the repository-root conftest.py turns
+its skip into a failure where go is required and absent. Every CI job that
+installs go requires it, on every pytest step
+(`test_every_pytest_step_in_a_job_that_installs_go_requires_go`).
+
+A step is credited with a file only if it can really run it and fail the build
+on it (issue #2210): a pytest line whose targets are computed at run time
+(`pytest $SEL_PYTEST`) is credited with nothing, not with the whole tree, and a
+step or job that is `if: false` or `continue-on-error: true` is credited with
+nothing either.
+
 STILL NOT CAUGHT, stated plainly so nobody reads more into a green run than is
-there: a toolchain-probe skip that does NOT go through a `revl.test` tier
-runner. tests/test_time_coeffect.py probing for backends/python/.venv by hand is
-one; `pytest.importorskip` anywhere is another. Those remain per-file, and the
-`backend-wasm` job's junit skip audit remains the strongest tool for a whole
-job at once.
+there: a toolchain-probe skip for any OTHER tier that does NOT go through a
+`revl.test` tier runner. tests/test_time_coeffect.py probing for
+backends/python/.venv by hand is one; `pytest.importorskip` anywhere is
+another. Those remain per-file, and the `backend-wasm` job's junit skip audit
+remains the strongest tool for a whole job at once. And everything here reads
+the workflows, not tools/pre_merge.sh: the local gate is not audited yet
+(issue #2210).
 """
 
 from __future__ import annotations
 
 import ast
+import posixpath
 import re
 from pathlib import Path
 
@@ -83,6 +99,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = ROOT / "tests"
+BACKENDS = ROOT / "backends"
 WORKFLOWS = ROOT / ".github" / "workflows"
 CI_DIR = ROOT / "ci"
 MAKEFILE = ROOT / "Makefile"
@@ -355,6 +372,11 @@ def _ci_sets() -> set[str]:
     return found
 
 
+#: A bare `$NAME` argument: the file list itself, chosen at run time. Not
+#: `$RUNNER_TEMP/x`, which is an option's value.
+_RUN_TIME_SELECTION = re.compile(r"\$\{?\w+\}?")
+
+
 def _pytest_targets(run: str) -> list[str]:
     """Repo-relative paths a `run:` block hands to pytest.
 
@@ -372,14 +394,29 @@ def _pytest_targets(run: str) -> list[str]:
         if cd_match:
             prefix = cd_match.group(1).rstrip("/") + "/"
         args = line.split("pytest", 1)[1].split()
+        # `pytest $SEL_PYTEST`: the files are chosen at run time (the
+        # affected-tests selector), so nothing here says which ones run. It
+        # used to fall through to "no path at all" and be credited with the
+        # whole tree (issue #2210), which is the one answer it cannot give.
+        if any(_RUN_TIME_SELECTION.fullmatch(a) for a in args):
+            continue
         paths = [
             a for a in args
             if not a.startswith("-") and (a.endswith(".py") or "/" in a)
         ]
         if not paths:
             targets.append(prefix or ".")
-        targets += [prefix + p for p in paths]
+        targets += [_normalized(prefix + p) for p in paths]
     return targets
+
+
+def _normalized(target: str) -> str:
+    """`backends/python/../wasm/` is `backends/wasm/`: `cd backends/python &&
+    pytest ../wasm/` runs the wasm backend's files, and an unnormalized prefix
+    matched none of them. The trailing slash is kept, it is how a directory
+    target reads everywhere else in this file."""
+    tail = "/" if target.endswith("/") else ""
+    return posixpath.normpath(target) + tail
 
 
 def _covers(target: str, rel: str) -> bool:
@@ -390,18 +427,39 @@ def _covers(target: str, rel: str) -> bool:
     return rel == target or rel.startswith(target + "/")
 
 
-def _steps_setting(name: str) -> list[tuple[str, str]]:
-    """(job, run-command) for every workflow step whose `env:` sets `name`."""
-    out: list[tuple[str, str]] = []
+def _never_gates(spec: dict) -> bool:
+    """A job or step that cannot fail the build: `if: false`, or
+    `continue-on-error: true` (it may run, but its red turns nothing red)."""
+    if spec.get("continue-on-error") is True:
+        return True
+    cond = spec.get("if")
+    return cond is False or str(cond).replace(" ", "") in ("false", "${{false}}")
+
+
+def _gating_steps() -> list[tuple[str, dict, dict, dict]]:
+    """(job, job spec, step, merged env) for every workflow step that can fail
+    the build. A step that never runs, or whose failure is ignored, proves
+    nothing about the files it names (issue #2210)."""
+    out: list[tuple[str, dict, dict, dict]] = []
     for path in sorted(WORKFLOWS.rglob("*.yml")) + sorted(WORKFLOWS.rglob("*.yaml")):
         doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         for job, spec in (doc.get("jobs") or {}).items():
-            job_env = (spec or {}).get("env") or {}
-            for step in (spec or {}).get("steps") or []:
-                step_env = {**job_env, **((step or {}).get("env") or {})}
-                if name in step_env:
-                    out.append((job, str((step or {}).get("run", ""))))
+            spec = spec or {}
+            if _never_gates(spec):
+                continue
+            job_env = spec.get("env") or {}
+            for step in spec.get("steps") or []:
+                step = step or {}
+                if _never_gates(step):
+                    continue
+                out.append((job, spec, step, {**job_env, **(step.get("env") or {})}))
     return out
+
+
+def _steps_setting(name: str) -> list[tuple[str, str]]:
+    """(job, run-command) for every gating workflow step whose `env:` sets `name`."""
+    return [(job, str(step.get("run", "")))
+            for job, _spec, step, env in _gating_steps() if name in env]
 
 
 # This assertion was xfail(strict=True) while the REVL_CROSS_TIER_SLOW flip sat
@@ -617,14 +675,6 @@ _TIER_NOT_REQUIRED_IN_CI: dict[str, str] = {
         "cordis-wasm would red the build for a substrate it was never given; "
         "the coverage is real and it lives there."
     ),
-    "go": (
-        "`conformance` and `frontend-cordis` both pin go 1.26, so the tier does "
-        "execute in CI, and tools/conformance.py --execute --require-execution "
-        "already fails that job when the go runtime is missing. What is not "
-        "wired is this switch on the go-driving files, which needs the same "
-        "green-first proof the py/ts step below got before being turned on. It "
-        "is a follow-on of one step, not a missing toolchain."
-    ),
 }
 
 
@@ -708,18 +758,44 @@ def _parametrized_tiers(tree: ast.Module) -> set[str]:
     return found
 
 
+#: tier -> a hand-rolled toolchain probe that makes a file drive that tier as
+#: surely as `RUNNERS[...]` does (issue #2264). The repository-root
+#: conftest.py turns the matching skip into a failure under the switch.
+_DIRECT_PROBES = {
+    "go": re.compile(r"""which\(\s*["']go["']\s*\)|go_runtime_reason\("""),
+}
+
+_NOT_SOURCE = frozenset({".venv", "node_modules", "__pycache__", "target"})
+
+
+def _tier_test_sources() -> list[Path]:
+    """tests/ plus every backend's own test files.
+
+    `pytest backends/go/` runs in its own job, and its files drive the go tier
+    exactly like tests/ does; reading tests/ alone left them unaudited.
+    """
+    backend = sorted(
+        p for p in BACKENDS.rglob("test_*.py")
+        if not _NOT_SOURCE & set(p.relative_to(BACKENDS).parts)
+    )
+    return _test_sources() + backend
+
+
 def _tier_test_files() -> dict[Path, set[str]]:
-    """Test file -> the tiers it actually drives a runner on."""
+    """Test file -> the tiers it actually drives a runner or a probe on."""
     out: dict[Path, set[str]] = {}
-    for path in _test_sources():
+    for path in _tier_test_sources():
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:  # pragma: no cover - a broken test file is its own failure
             continue
         text = path.read_text(encoding="utf-8")
+        probed = {tier for tier, probe in _DIRECT_PROBES.items() if probe.search(text)}
         if "RUNNERS" not in text and "revl.test import run_" not in text:
+            if probed:
+                out[path] = probed
             continue
-        tiers = _tier_names_in(tree)
+        tiers = _tier_names_in(tree) | probed
         # `RUNNERS[tier]` with a parametrized `tier`: the literal subscript scan
         # finds nothing, so fall back to what the module parametrizes over.
         if "RUNNERS[" in text and not tiers:
@@ -731,22 +807,16 @@ def _tier_test_files() -> dict[Path, set[str]]:
     return out
 
 
+def _required_in(env: dict) -> set[str]:
+    raw = str(env.get(_REQUIRE_ENV, ""))
+    names = {n for n in raw.replace(",", " ").split() if n}
+    return set(_TIERS) if "all" in names else names
+
+
 def _require_steps() -> list[tuple[str, str, set[str]]]:
-    """(job, run-command, required tiers) for each step setting the switch."""
-    out: list[tuple[str, str, set[str]]] = []
-    for path in sorted(WORKFLOWS.rglob("*.yml")) + sorted(WORKFLOWS.rglob("*.yaml")):
-        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        for job, spec in (doc.get("jobs") or {}).items():
-            job_env = (spec or {}).get("env") or {}
-            for step in (spec or {}).get("steps") or []:
-                step_env = {**job_env, **((step or {}).get("env") or {})}
-                if _REQUIRE_ENV not in step_env:
-                    continue
-                raw = str(step_env[_REQUIRE_ENV])
-                names = {n for n in raw.replace(",", " ").split() if n}
-                tiers = set(_TIERS) if "all" in names else names
-                out.append((job, str((step or {}).get("run", "")), tiers))
-    return out
+    """(job, run-command, required tiers) for each gating step setting the switch."""
+    return [(job, str(step.get("run", "")), _required_in(env))
+            for job, _spec, step, env in _gating_steps() if _REQUIRE_ENV in env]
 
 
 def test_every_tier_test_is_required_to_actually_run_in_some_ci_job():
@@ -806,6 +876,56 @@ def test_no_stale_tier_exemptions():
             f"{now_required} are exempted from {_REQUIRE_ENV} but a CI step now "
             "sets it for them. The gap closed; drop the entries."
         )
+
+
+#: tier -> the setup action that installs its toolchain in a job.
+_PROVISIONED_BY = {"go": "actions/setup-go"}
+
+
+def test_every_pytest_step_in_a_job_that_installs_go_requires_go():
+    """A job that installs go and then skips every go test went green (#2264).
+
+    Requiring go only in the steps a hand-kept list names is how the tier
+    stayed exempt for so long. The rule is mechanical instead: a job that runs
+    the go setup action requires go on every pytest step it runs, so losing
+    the toolchain there is red in every one of them.
+    """
+    missing: list[str] = []
+    for job, spec, step, env in _gating_steps():
+        if "pytest" not in str(step.get("run", "")):
+            continue
+        uses = {str((s or {}).get("uses", "")).split("@")[0]
+                for s in spec.get("steps") or []}
+        for tier, action in sorted(_PROVISIONED_BY.items()):
+            if action in uses and tier not in _required_in(env):
+                first = str(step["run"]).strip().splitlines()[0]
+                missing.append(f"  {job}: {first[:90]}")
+    assert not missing, (
+        f"these pytest steps run in a job that installs go but do not set "
+        f"{_REQUIRE_ENV} to cover go, so a lost go toolchain skips every go test "
+        "in them and the job stays green:\n" + "\n".join(missing)
+    )
+
+
+def test_a_run_time_selection_is_credited_with_nothing():
+    """`pytest $SEL_PYTEST` names no file; it used to be credited with all of
+    them (issue #2210)."""
+    assert _pytest_targets("pytest $SEL_PYTEST -q || rc=$?") == []
+    assert _pytest_targets("pytest -q") == ["."]
+    assert _pytest_targets("pytest tests/ --basetemp $RUNNER_TEMP/x -q")[0] == "tests/"
+    assert _pytest_targets("cd backends/python && .venv/bin/pytest ../wasm/ tests/ -q") \
+        == ["backends/wasm/", "backends/python/tests/"]
+
+
+@pytest.mark.parametrize("spec, gates", [
+    ({}, True),
+    ({"if": "${{ github.event_name != 'pull_request' }}"}, True),
+    ({"if": False}, False),
+    ({"if": "${{ false }}"}, False),
+    ({"continue-on-error": True}, False),
+])
+def test_a_step_that_cannot_fail_the_build_is_not_credited(spec, gates):
+    assert _never_gates(spec) is not gates
 
 
 def test_the_switch_is_wired_in_ci_at_all():

@@ -179,6 +179,34 @@ def test_a_substituted_source_is_caught_by_the_recomputed_source_hash(tmp_path):
     assert _reasons(result, "honest_db")
 
 
+def test_a_tampered_manifest_is_refused_at_read_time(tmp_path):
+    """`manifest.json` is recorded beside the source and is not an authority
+    either: `from_dir` recompiles the source and compares the recorded bytes to
+    the regenerated manifest. The facts come from the recompile, so the only
+    thing a regression would lose is the refusal, and the index row is left
+    untouched here so this check is the only one that can fire."""
+    reg = os.path.join(str(tmp_path), "registry")
+    _publish(reg, {"honest_db": HONEST, "greedy_db": GREEDY})
+    mpath = os.path.join(reg, "components", "honest_db", "manifest.json")
+    with open(mpath, encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    manifest["boundary"] = {"forged": {"emissions": ["evil.exfiltrate"]}}
+    with open(mpath, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
+    by_name = {e.name: e for e in registry.Registry.from_dir(reg).entries}
+    assert by_name["honest_db"].index_problems == (
+        "manifest.json is not reproducible from component.rvl by the "
+        "current compiler",)
+    assert by_name["greedy_db"].index_problems == ()
+
+    result = registry.resolve(reg, DB_NEED)
+    assert _names(result) == ["greedy_db"]
+    reasons = _reasons(result, "honest_db")
+    assert any("manifest.json is not reproducible" in r for r in reasons), reasons
+    assert _reasons(result, "greedy_db") == []
+
+
 def test_an_honest_registry_has_no_index_problems(tmp_path):
     """The check is not a blanket refusal: a registry whose index really is a
     fresh regeneration of its sources resolves exactly as before."""
