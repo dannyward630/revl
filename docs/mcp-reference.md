@@ -399,6 +399,20 @@ holes rather than describing only the candidate's own problem. Its `next` is
 without being re-sent. Checking a supplied candidate with no draft held is
 unchanged.
 
+**A check says where the held source stands against disk (issue #2241).** While
+a composition is loaded, `revl_check` carries the same
+`"disk": {"inSync": bool, "stale": [path]}` block as the change loop (issue
+#2032). A committed change that has not reached disk leaves `inSync` false, so a
+green check no longer reads as done over an unchanged file. On a success
+with `inSync` false, `revl_check {}` and `revl_check {session: true}` also carry
+a `note` naming `revl_export`; with `inSync` true they carry none. A
+`revl_check {files}` that names a file the session holds, whose held text differs
+from disk, compiles the disk text and carries one `note` saying so and that
+`revl_export` writes the held source. A check of an unrelated file or a `source`
+candidate carries `disk` and no export note. With nothing loaded there is no
+held source to compare, so a cold check is unchanged: no `disk` block and no
+such note.
+
 **A usage error is not a composition verdict.** `ok: false` means the
 composition has a problem. A call that names no candidate and holds none comes
 back with `category: "usage"`, a `fix` naming the missing argument and a `next`
@@ -825,6 +839,16 @@ instead. `revl_change {add}` is this edit.
 shared with `revl_change`, and `revl_change {commit: true}` commits it (issue
 #1696). The default stays `commit: true` for now; see the design note.
 
+Boolean arguments, on every verb, are checked against the verb's own
+`inputSchema` before anything runs (issue #2239). That covers every property the
+schema declares `boolean`, including nested ones such as `edits[].remove` and
+`withdraw.cascade`. A real `true`/`false` passes. The exact strings `"true"` and
+`"false"` are read as the boolean they name, and the response lists those keys
+in `argumentsCanonicalised: {keys, note}`. Any other value, including `null`, `0`
+and `1`, is refused with the key, the expected type and the type received, and
+nothing runs. Before this, `revl_edit {commit: null}` (or `"false"`) committed
+the edit, and `revl_ship {apply: "false"}` swapped.
+
 A swapped edit, a draft edit with open holes and a proposal (`commit: false`)
 all carry `blastRadius`, which makes preflight automatic. It is read off the
 composition that is running when the edit arrives. Its `touched` names
@@ -889,7 +913,7 @@ refused as a usage error rather than loading over it (issue #2111), with the
 | `{replace: {component, source}}` | replaces one declaration by name with its whole new text |
 | `{withdraw: "Name"}` | removes the component (and the comment above it) and withdraws it. Refused from the plan when the cascade is not empty |
 | `{withdraw: {component, cascade: true}}` | withdraws the component and its whole cascade together |
-| `{add: {component, provide, methods, config?, target?}}` | the server writes the component. `provide` is a key, or `{key, service}`; the service is the given one, or the one the composition already knows the key as. `methods` holds only bodies (`{"now": "store.get_count() + 1"}`); each frame comes from the service declaration. `requires` is inferred: every receiver a body calls (`store.get()`) that is a key of the composition. Refused, naming it: an unknown receiver, a missing or unknown operation, a key whose service cannot be inferred, a `config.` read with no `config` given (config is never inferred) |
+| `{add: {component, provide, methods, config?, target?}}` | the server writes the component. `provide` is a key, `"key: Service"` (the source's own spelling, e.g. `"kv: Kv"`), or `{key, service}`; the service is the given one, or the one the composition already knows the key as. `methods` holds only bodies (`{"now": "store.get_count() + 1"}`); each frame comes from the service declaration. `requires` is inferred: every receiver a body calls (`store.get()`) that is a key of the composition. Refused, naming it: an unknown receiver, a missing or unknown operation, a key whose service cannot be inferred, a `config.` read with no `config` given (config is never inferred) |
 | `{add: {source, target?}}` | appends new declarations to the only buffer, or to `target` (a loaded file's path, a module key, or `source`). Refused before anything applies when a name is already declared (use `replace`), when `source` declares nothing, or when there are several buffers and no `target` |
 
 The answer carries `committed`, `verified` (`admission`; `guarantees`, the
@@ -906,7 +930,8 @@ verification commits nothing, and the running composition is unchanged.
 **A change lives in the session, not on disk** (issue #2032). The held source
 is the truth and disk an export, so a committed change leaves the two
 disagreeing until `revl_export` runs. The verbs of the change loop
-(`revl_change`, `revl_edit`, `revl_source`, `revl_export`) carry
+(`revl_change`, `revl_edit`, `revl_source`, `revl_export`) and `revl_check`
+(when a composition is loaded; see its section) carry
 `"disk": {"inSync": bool, "stale": [path]}`, where `stale` names every loaded
 file whose held text differs from the bytes on disk. When `inSync` is false on
 a success, the answer also carries a `note` naming `revl_export`. It is a

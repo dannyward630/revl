@@ -81,10 +81,11 @@ def _trivial(line: str) -> bool:
     return not stripped or stripped.startswith("//")
 
 
-def declarations(text: str, name: str) -> list[Decl]:
-    """Every named top-level declaration of `text`, with its line span."""
+def declarations(text: str, name: str, program: Program | None = None) -> list[Decl]:
+    """Every named top-level declaration of `text`, with its line span.
+    `program` is `text` already parsed, when the caller has it."""
     lines = text.split("\n")
-    starts = _starts(_parse(text, name))
+    starts = _starts(program if program is not None else _parse(text, name))
     ordered = sorted(starts)
     out: list[Decl] = []
     for index, start in enumerate(ordered):

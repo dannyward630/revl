@@ -720,17 +720,11 @@ def _check_artifacts(entry_dir: Path, ir: dict) -> list[Check]:
 
 
 def _toolchain_version() -> str:
-    """The current revl toolchain version, the pyproject version, read through
-    the installed metadata when available, else a stable fallback. Used only to
-    compare against a recorded `toolVersion`, never to pin one."""
-    try:
-        from importlib.metadata import PackageNotFoundError, version  # noqa: PLC0415
-        try:
-            return version("revl")
-        except PackageNotFoundError:
-            return "2.0.0"
-    except ImportError:
-        return "2.0.0"
+    """The current revl toolchain version, `revl._version.version()`. Used
+    only to compare against a recorded `toolVersion`, never to pin one."""
+    from .._version import version  # noqa: PLC0415
+
+    return version()
 
 
 # --------------------------------------------------------------- driver

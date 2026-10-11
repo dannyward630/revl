@@ -55,8 +55,8 @@ def _open_calls(records: list) -> dict:
     record is settled and needs nothing."""
     from .wal import settled_descriptor_seqs  # noqa: PLC0415
     settled = settled_descriptor_seqs(records)
-    settled |= {r.get("seq") for r in records
-                if r.get("record") in ("flushed", "flush-residue")}
+    from .wal import seqs_of  # noqa: PLC0415
+    settled |= seqs_of(records, ("flushed", "flush-residue"))
     calls: dict = {}
     for r in records:
         seq = r.get("seq")
