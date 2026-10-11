@@ -230,6 +230,14 @@ def pytest_configure(config):
     # marker here keeps it a known marker there, where it has no effect.
     config.addinivalue_line(
         "markers", "timeout(seconds): per-test limit for pytest-timeout")
+    # Issue #2192: tests/_compiled_ir.py keeps one compile of a self-host
+    # document per key; with the cache provider on (it is off under
+    # `-p no:cacheprovider`), it also keeps a copy under the pytest cache dir,
+    # which the next session and every xdist worker of this one reuse.
+    import _compiled_ir  # noqa: PLC0415
+    cache = getattr(config, "cache", None)
+    _compiled_ir.configure(
+        cache.mkdir("revl-compiled-ir") if cache is not None else None)
 
 
 _ROOT = Path(__file__).resolve().parents[1]
