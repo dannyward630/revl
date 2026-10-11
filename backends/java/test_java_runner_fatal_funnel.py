@@ -144,7 +144,7 @@ def _classpath(work: Path, runner_source: str, components_source: str,
 
 
 _JVM_BANNER = re.compile(
-    r"^Picked up (?:JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS):.*\n?",
+    r"^(?:NOTE: )?Picked up (?:JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS):.*\n?",
     re.MULTILINE)
 
 

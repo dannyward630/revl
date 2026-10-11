@@ -74,7 +74,11 @@ gate = load_by_path("gate_under_test", TOOL)
 # The tests that feed it a fake `gh` cannot see an answer there, so they skip
 # with that reason rather than fail for a reason unrelated to the change.
 needs_github_origin = pytest.mark.skipif(
-    not hasattr(gate, "repo_slug") or gate.repo_slug(REPO_ROOT) is None,
+    # The root the tool itself resolves (`ROOT`, two levels above its file), so a
+    # gate pointed at another checkout via $RVL_ROADMAP_GATE_DIR is probed there.
+    # A gate without `repo_slug` does not skip: the tests then fail by name
+    # instead of a rename becoming a silent skip.
+    hasattr(gate, "repo_slug") and gate.repo_slug(TOOL.parent.parent) is None,
     reason="the checkout's origin is not a github.com URL, so the live "
            "issue-state lookup has no repo to ask",
 )
