@@ -70,3 +70,69 @@ def test_go_count_is_the_top_level_pass_lines():
            "--- PASS: TestB (0.00s)\n    --- PASS: TestB/sub (0.00s)\nPASS\n")
     assert T._go_passed(out) == 2
     assert T._go_passed("ok  \trevltest\t0.001s [no tests to run]") == 0
+
+
+# --- the py, wasm lifecycle and mixed cases, and the cross-check -------------
+
+LIFECYCLE_PROGRAM = (
+    "service S {\n  fn inc(k: Int) -> Int\n}\n"
+    "component P provides s: S {\n  provide s {\n    fn inc(k) = k + 1\n  }\n}\n"
+    'lifecycle test "inc crosses" {\n  load P\n  let d = call s.inc(10)\n'
+    "  assert d == 11\n  unload P\n  assert no_residue\n}\n"
+)
+
+
+def _wasm_or_skip(source: str):
+    from revl.run_wasm import wasm_runtime_reason  # noqa: PLC0415
+
+    reason = wasm_runtime_reason()
+    if reason is not None:
+        pytest.skip(f"wasm lifecycle runtime unavailable: {reason}")
+    outcome, message = T.RUNNERS["wasm"](compile_source(source))
+    if outcome == "skip":
+        pytest.skip(f"wasm tier skipped: {message}")
+    assert outcome == "pass", message
+    return message
+
+
+def test_a_lifecycle_only_wasm_document_leads_with_the_count():
+    message = _wasm_or_skip(LIFECYCLE_PROGRAM)
+    assert message.startswith("1 test(s) passed"), message
+
+
+def test_a_mixed_wasm_document_leads_with_the_total_of_both():
+    message = _wasm_or_skip(LIFECYCLE_PROGRAM + TWO_TESTS)
+    assert message.startswith("3 test(s) passed"), message
+
+
+def test_the_wasm_fold_totals_pure_and_lifecycle_without_a_runtime():
+    folded = T._combine_wasm_verdicts(
+        ("pass", "wasmtime: 2 test(s) passed"),
+        ("pass", "1 test(s) passed; cordis-wasm: 1 lifecycle test(s) ran (x)"))
+    assert folded == ("pass", "3 test(s) passed; wasmtime: 2 test(s) passed; "
+                              "cordis-wasm: 1 lifecycle test(s) ran (x)")
+
+
+def test_a_py_document_of_only_prop_tests_still_leads_with_a_count():
+    source = 'prop test "identity holds" (a: Int) { assert a + 0 == a }\n'
+    outcome, message = T.RUNNERS["py"](compile_source(source))
+    assert outcome == "pass", message
+    assert message.startswith("0 test(s) passed; 1 of 1 prop test(s) held"), message
+
+
+def test_vitest_count_takes_the_last_tests_line():
+    out = "stdout of a test\n Tests  99 passed (99)\n\n Tests  2 passed (2)\n"
+    assert T._vitest_passed(out) == 2
+
+
+def test_cargo_count_ignores_doc_tests():
+    out = ("test result: ok. 2 passed; 0 failed; 0 ignored\n"
+           "Doc-tests x\ntest result: ok. 5 passed; 0 failed; 0 ignored\n")
+    assert T._cargo_passed(out) == 2
+
+
+def test_a_count_that_disagrees_with_the_collected_tests_fails_the_tier():
+    ir = compile_source(TWO_TESTS)
+    assert T._count_disagreement("go", 2, ir) is None
+    message = T._count_disagreement("go", 1, ir)
+    assert message and "ran 1 test(s) but the document has 2" in message

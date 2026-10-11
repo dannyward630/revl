@@ -144,19 +144,33 @@ def _vitest_passed(output: str) -> int | None:
     """Tests vitest reports passing in its ``Tests  N passed (M)`` summary, or
     None when the summary line is absent. Counted from what ran, never from the
     source's declared tests."""
-    line = _VITEST_TESTS.search(_ANSI.sub("", output))
-    if line is None:
+    lines = _VITEST_TESTS.findall(_ANSI.sub("", output))
+    if not lines:
         return None
-    passed = _VITEST_PASSED.search(line.group(1))
+    # the LAST `Tests` line: the summary prints after every test's own stdout
+    passed = _VITEST_PASSED.search(lines[-1])
     # a summary of only skipped/todo tests has no `passed` part: nothing passed
     return int(passed.group(1)) if passed else 0
 
 
 def _cargo_passed(output: str) -> int | None:
-    """Sum of the ``test result: ok. N passed`` lines of one ``cargo test`` run
-    (the lib harness plus doc-tests), or None when there is no result line."""
+    """The ``test result: ok. N passed`` of the lib harness in one ``cargo test``
+    run, or None when there is no result line. The first result line is the
+    lib's unit tests; later ones are doc-tests, which are rustdoc's own units
+    and not revl tests."""
     counts = _CARGO_RESULT.findall(output)
-    return sum(int(c) for c in counts) if counts else None
+    return int(counts[0]) if counts else None
+
+
+def _count_disagreement(tier: str, ran: int, ir: dict) -> str | None:
+    """A failure message when the tool ran a different number of tests than the
+    document has, else None. The collected units are `ir["tests"]` (plain and
+    lifecycle); fault, round-trip and prop units are py-only and not in it."""
+    collected = len(ir.get("tests") or [])
+    if ran == collected:
+        return None
+    return (f"the {tier} tier ran {ran} test(s) but the document has {collected}; "
+            f"a verdict that disagrees with the collected tests is not a pass")
 
 
 def _go_passed(output: str) -> int:
@@ -360,10 +374,10 @@ def run_py(ir: dict, verbose: bool = False, report: str = None) -> tuple[str, st
             else:
                 print(f"FAIL {name}: {detail}{suffix}")
 
-    summary = []
-    if entries:
-        summary.append(f"{len(entries) - failures} of {len(entries)} test(s) passed"
-                       if failures else f"{len(entries)} test(s) passed")
+    # always lead with the plain-test count, even when it is 0 (a document of
+    # only fault, round-trip or prop tests): issue #2286
+    summary = [f"{len(entries) - failures} of {len(entries)} test(s) passed"
+               if failures else _passed(len(entries))]
     # `--report` owns stdout for the test blocks; the fault/prop/round-trip
     # runners' banners would corrupt the machine-readable payload, so silence
     # them (their verdicts still feed the exit code unchanged).
@@ -708,6 +722,9 @@ def run_ts(ir: dict) -> tuple[str, str]:
         if ran is None:
             return ("fail", "vitest passed but printed no `Tests  N passed` "
                             "summary, so the tier cannot state how many tests ran")
+        mismatch = _count_disagreement("ts", ran, ir)
+        if mismatch:
+            return ("fail", mismatch)
         # Green under vitest says nothing about the runtime the tier ships on.
         # The contract check runs on the SAME file, and only on the green path
         # (a failing assertion is vitest's to report, legibly).
@@ -777,6 +794,9 @@ def run_rust(ir: dict) -> tuple[str, str]:
     if ran is None:
         return ("fail", "cargo test passed but printed no `test result:` line, "
                         "so the tier cannot state how many tests ran")
+    mismatch = _count_disagreement("rust", ran, ir)
+    if mismatch:
+        return ("fail", mismatch)
     return ("pass", f"cargo test: {_passed(ran)}" + note)
 
 
@@ -884,7 +904,11 @@ def run_go(ir: dict) -> tuple[str, str]:
         print(output)
     if result.returncode != 0:
         return ("fail", f"go test exited {result.returncode}")
-    return ("pass", f"go test: {_passed(_go_passed(output))}" + note)
+    ran = _go_passed(output)
+    mismatch = _count_disagreement("go", ran, ir)
+    if mismatch:
+        return ("fail", mismatch)
+    return ("pass", f"go test: {_passed(ran)}" + note)
 
 
 def _java_toolchain() -> tuple[str, str] | str:
@@ -1052,7 +1076,11 @@ def run_java(ir: dict) -> tuple[str, str]:
     if not done:
         return ("fail", "REVL_TESTS did not complete")
     lifecycle = _lifecycle_count(ir)
-    detail = f"JVM: {_passed(int(done[-1]))}"
+    ran = int(done[-1])
+    mismatch = _count_disagreement("java", ran, ir)
+    if mismatch:
+        return ("fail", mismatch)
+    detail = f"JVM: {_passed(ran)}"
     if lifecycle:
         detail += (f", including {lifecycle} lifecycle test(s) "
                    "(load -> call -> unload -> no-residue)")
@@ -1212,8 +1240,26 @@ def _run_wasm_lifecycle(ir: dict, lifecycle: list) -> tuple[str, str]:
     if result.returncode != 0 or passed != ran:
         return ("fail", f"{ran - passed} of {ran} lifecycle test(s) failed on the "
                         f"live cordis-wasm runtime" + tail)
-    return ("pass", f"cordis-wasm: {ran} lifecycle test(s) ran (boot -> call -> "
-                    f"unload -> no-residue)" + tail)
+    return ("pass", f"{_passed(ran)}; cordis-wasm: {ran} lifecycle test(s) ran "
+                    f"(boot -> call -> unload -> no-residue)" + tail)
+
+
+_LEADING_COUNT = re.compile(r"^(?:wasmtime: )?(\d+) test\(s\) passed(?:; )?")
+
+
+def _wasm_pass_total(present: list) -> str | None:
+    """The folded message of a pure + lifecycle pass: it leads with the TOTAL of
+    both, so a mixed document reports the same number here as on java. None
+    when fewer than two portions passed with a count (nothing to total)."""
+    passes = [m for o, m in present if o == "pass" and _LEADING_COUNT.match(m)]
+    if len(passes) < 2:
+        return None
+    total = sum(int(_LEADING_COUNT.match(m).group(1)) for m in passes)
+    pure, lifecycle = passes[0], passes[1]
+    # the lifecycle message repeats its own count first; the total replaces it
+    rest = _LEADING_COUNT.sub("", lifecycle, count=1)
+    others = [m for o, m in present if m not in (pure, lifecycle) and m]
+    return "; ".join([_passed(total), pure, rest, *others])
 
 
 def _combine_wasm_verdicts(*verdicts: tuple[str, str] | None) -> tuple[str, str]:
@@ -1227,7 +1273,7 @@ def _combine_wasm_verdicts(*verdicts: tuple[str, str] | None) -> tuple[str, str]
     if any(o == "fail" for o, _ in present):
         return ("fail", messages)
     if any(o == "pass" for o, _ in present):
-        return ("pass", messages)
+        return ("pass", _wasm_pass_total(present) or messages)
     # The join above flattens every reason to a plain `str`, which would drop
     # the `Absent` marker and quietly exempt the wasm tier from
     # REVL_REQUIRE_TIERS. Carry it: if any portion skipped because the runtime
