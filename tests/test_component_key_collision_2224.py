@@ -60,6 +60,7 @@ COLLIDING = [
     ("KvStore", "Kv_store"),    # rust `kv_store`
     ("KvStore", "KVSTORE"),     # java case-only
     ("HTTPServer", "HttpServer_"),
+    ("A_B", "AB"),              # no tier merges it; refused as too close
 ]
 
 
@@ -138,3 +139,26 @@ def test_every_tier_refuses_the_pair(tier, tmp_path):
     assert run.returncode != 0, f"{tier} emitted the colliding pair:\n{run.stdout}"
     assert "component `Kvstore` collides with component `KVStore`" in run.stderr, run.stderr
     assert not (tmp_path / f"out.{tier}").exists()
+
+
+def _census_certify():
+    spec = importlib.util.spec_from_file_location(
+        "revl_test_2224_census", ROOT / "tools" / "gate_reference_census.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.build_admission_certify()
+
+
+def test_the_census_mirror_of_the_certifier_withholds_the_pair():
+    """`tools/gate_reference_census.py` mirrors the crate's certifier, which now
+    folds component names. Without the fold the mirror certifies a pair the
+    reference refuses, and the census would report the crate's withheld
+    verdict as a divergence."""
+    certify = _census_certify()
+    def pair(first: str, second: str) -> str:
+        return ("service S {\n  fn a(x: Int) -> Int\n}\n"
+                f"component {first} provides s: S {{\n  provide s {{ fn a(x) = x }}\n}}\n"
+                f"component {second} provides t: S {{\n  provide t {{ fn a(x) = x }}\n}}\n")
+    assert certify(pair("KVStore", "Store"))
+    assert not certify(pair("KVStore", "Kvstore"))
+    assert not certify(pair("A_B", "AB"))

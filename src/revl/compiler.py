@@ -723,7 +723,10 @@ def component_name_fold(name: str) -> str:
     `Components$KVStorePlugin.class` and `Components$KvstorePlugin.class`.
     Both reductions only insert underscores or change case, so two names they
     merge always agree here, which `tests/test_component_key_collision_2224.py`
-    pins against the rust emitter's own function.
+    pins against the rust emitter's own function. The key is deliberately
+    coarser than either reduction: it also refuses pairs such as `A_B` and `AB`
+    that no tier merges today, because names that close are a hazard for the
+    next tier that derives a name from them.
     """
     return name.lower().replace("_", "")
 
@@ -756,11 +759,11 @@ def _reject_component_name_folds(components: list, filename: str) -> None:
             f"({where}): the two names differ "
             f"only in letter case or underscores, and both reduce to "
             f"`{key}`",
-            hint="the rust tier names a component's plugin by its snake_case "
-                 "form, which is one name for both of these, and the java tier "
-                 "writes a class file per component, which a case-insensitive "
-                 "file system cannot keep apart. Rename one of the two "
-                 "components.",
+            hint="several tiers derive file and symbol names from a component "
+                 "name by changing its case or its underscores (the rust plugin "
+                 "fn and plugin key, a java class file on a case-insensitive "
+                 "file system), so names this close can land on one name. "
+                 "Rename one of the two components.",
         )
 
 
