@@ -29,6 +29,7 @@ def fresh(monkeypatch):
     """The helper with no in-process copy and no disk directory."""
     monkeypatch.setattr(_compiled_ir, "_memory", {})
     monkeypatch.setattr(_compiled_ir, "_cache_dir", None)
+    monkeypatch.setattr(_compiled_ir, "_package_pin", {}, raising=False)
     return _compiled_ir
 
 
@@ -69,7 +70,7 @@ def test_the_key_changes_when_lower_rvl_changes(tmp_path):
     "the document", "a relative import", "an import of an import",
     "a ref host module", "a backend body file", "a stdlib file", "the compiler",
     "a new backends/python module", "REVL_IMPORT_PATH", "the path spelling"])
-def test_the_key_moves_with_every_input(tmp_path, edit):
+def test_the_key_moves_with_every_input(tmp_path, fresh, edit):
     root, inputs = _tree(tmp_path)
     before = cache_key(root, inputs)
     if edit == "the document":
@@ -86,6 +87,7 @@ def test_the_key_moves_with_every_input(tmp_path, edit):
         (inputs.stdlib_dir / "str.rvl").write_text("fn trim() -> Int { 6 }\n")
     elif edit == "the compiler":
         (inputs.package_dir / "compiler.py").write_text("X = 2\n")
+        fresh._package_pin.clear()  # a new process: the package is pinned once
     elif edit == "a new backends/python module":
         (inputs.backends_python / "runtime_x.py").write_text("")
     elif edit == "REVL_IMPORT_PATH":
@@ -96,17 +98,18 @@ def test_the_key_moves_with_every_input(tmp_path, edit):
     assert cache_key(root, inputs) != before
 
 
-def test_the_key_ignores_what_the_build_does_not_read(tmp_path):
+def test_the_key_ignores_what_the_build_does_not_read(tmp_path, fresh):
     root, inputs = _tree(tmp_path)
     before = cache_key(root, inputs)
     (root.parent / "unrelated.rvl").write_text("fn g() -> Int { 7 }\n")
     pycache = inputs.package_dir / "__pycache__"
     pycache.mkdir()
     (pycache / "compiler.cpython-312.pyc").write_bytes(b"\0")
+    fresh._package_pin.clear()
     assert cache_key(root, inputs) == before
 
 
-def test_an_import_path_entry_is_followed(tmp_path):
+def test_an_import_path_entry_is_followed(tmp_path, fresh):
     """A `use` that resolves under REVL_IMPORT_PATH is an input too."""
     root, inputs = _tree(tmp_path)
     extra = tmp_path / "extra"
@@ -213,6 +216,44 @@ def test_parallel_writers_never_expose_a_partial_file(tmp_path):
     assert [p.name for p in cache.iterdir()] == [path.name]  # no temp file left
 
 
+def test_a_compiler_edit_mid_session_never_reaches_the_disk(tmp_path, fresh):
+    """The compile runs the revl this process imported. After the package
+    changes on disk, a new build would be old code under a key that names
+    the new sources, and the next session would read it as current."""
+    root, inputs = _tree(tmp_path)
+    cache = tmp_path / "cache"
+    fresh.configure(cache)
+    calls = []
+    compiled_ir(root, _counting_compile(calls), inputs)
+    [first] = cache.iterdir()
+    pinned = cache_key(root, inputs)
+    (inputs.package_dir / "compiler.py").write_text("X = 'edited'\n")
+    assert cache_key(root, inputs) == pinned  # the code that runs, not the disk
+    assert fresh.package_drifted(inputs.package_dir)
+    root.write_text(root.read_text() + "\n")  # a miss after the edit
+    compiled_ir(root, _counting_compile(calls), inputs)
+    assert len(calls) == 2
+    assert list(cache.iterdir()) == [first]  # nothing written, nothing pruned
+    # The next session hashes the edited package: a new key, a fresh compile.
+    fresh._memory.clear()
+    fresh._package_pin.clear()
+    assert cache_key(root, inputs) != pinned
+    compiled_ir(root, _counting_compile(calls), inputs)
+    assert len(calls) == 3
+
+
+def test_a_drifted_process_does_not_read_the_disk_either(tmp_path, fresh):
+    root, inputs = _tree(tmp_path)
+    cache = tmp_path / "cache"
+    fresh.configure(cache)
+    calls = []
+    compiled_ir(root, _counting_compile(calls), inputs)
+    fresh._memory.clear()
+    (inputs.package_dir / "compiler.py").write_text("X = 'edited'\n")
+    compiled_ir(root, _counting_compile(calls), inputs)
+    assert len(calls) == 2
+
+
 def test_a_real_document_compiles_to_what_compile_files_returns(fresh):
     from revl import compile_files
     lexer = ROOT / "selfhost" / "lexer.rvl"
@@ -224,3 +265,8 @@ def test_conftest_points_the_disk_copy_at_the_pytest_cache(pytestconfig):
     cache = getattr(pytestconfig, "cache", None)
     expected = cache.mkdir("revl-compiled-ir") if cache is not None else None
     assert _compiled_ir._cache_dir == expected
+
+
+def test_conftest_pins_the_imported_package_at_session_start():
+    import revl
+    assert Path(revl.__file__).resolve().parent in _compiled_ir._package_pin

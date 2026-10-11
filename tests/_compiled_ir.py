@@ -14,15 +14,25 @@ The IR is kept pickled, under a SHA-256 key over every input of the build
     `@backend file "..."` bodies and `asset "..."` files. Each target is tried
     where the compiler may resolve it: beside the naming file, under each
     `REVL_IMPORT_PATH` entry, and under the stdlib's parent;
-  * every file of the stdlib directory and of the `revl` package the process
-    actually imports (not the tree's `src/revl` by name: a test process can
-    import another one), so a compiler change is a new key;
+  * every file of the stdlib directory, read on every call, since the
+    compiler reads those from disk when it compiles;
+  * the `revl` package the process actually imports (not the tree's
+    `src/revl` by name: a test process can import another one), hashed ONCE
+    per process (`pin_package` runs in tests/conftest.py's pytest_configure).
+    The compile runs the code this process imported, not what is on disk now,
+    so the key names that code. If the package changes on disk while the
+    session runs (an edit in a worktree), the process stops using the disk
+    copy: what it compiles from then on is built by old code, or a mix through
+    lazy imports, and must not reach the next session under any key;
   * the module names in `backends/python`, which the compiler reads to refuse
     inline Python that shadows one;
   * `REVL_IMPORT_PATH` itself, the Python version and this file's FORMAT.
 
 Not followed: the model document a `revl gen-types` header names. No document
 compiled through here carries one; a caller that compiles one must not use this.
+The stdlib and backends directories come from `revl._paths`, so a test that
+patches `revl.compiler.stdlib_root` (or `backends_root`) to another tree is not
+covered either, and must call `compile_files` itself.
 
 Every call returns `pickle.loads` of the stored bytes, so a caller that
 mutates its IR changes nobody else's (about 0.1 s, against 6 s to compile).
@@ -58,6 +68,8 @@ _NAMES_FILE = re.compile(r'\b(?:use|from|file|asset)\s+"([^"]+)"')
 
 _memory: dict[str, bytes] = {}
 _cache_dir: Path | None = None
+# package dir -> {"signature": stat signature at pin, "digest": its hash}.
+_package_pin: dict[Path, dict] = {}
 
 
 @dataclass(frozen=True)
@@ -113,6 +125,50 @@ def _tree_files(directory: Path) -> list[Path]:
                   if p.is_file() and "__pycache__" not in p.parts)
 
 
+def _stat_signature(files: list[Path]) -> tuple:
+    out = []
+    for path in files:
+        try:
+            st = path.stat()
+            out.append((str(path), st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append((str(path), None, None))
+    return tuple(out)
+
+
+def pin_package(package_dir: Path) -> None:
+    """Record `package_dir` as this process first saw it.
+
+    Only the stat signature is taken here (cheap enough for every session);
+    the content is hashed at the first `cache_key`, and a package whose
+    signature moved by then counts as drifted."""
+    package_dir = Path(package_dir).resolve()
+    if package_dir not in _package_pin:
+        _package_pin[package_dir] = {
+            "signature": _stat_signature(_tree_files(package_dir))}
+
+
+def package_drifted(package_dir: Path) -> bool:
+    """Whether `package_dir` changed on disk since it was pinned."""
+    package_dir = Path(package_dir).resolve()
+    pin_package(package_dir)
+    signature = _stat_signature(_tree_files(package_dir))
+    return signature != _package_pin[package_dir]["signature"]
+
+
+def package_digest(package_dir: Path) -> str:
+    """The hash of `package_dir`'s files, taken once per process."""
+    package_dir = Path(package_dir).resolve()
+    pin_package(package_dir)
+    pin = _package_pin[package_dir]
+    if "digest" not in pin:
+        digest = hashlib.sha256()
+        for path in _tree_files(package_dir):
+            _feed(digest, "revl", path)
+        pin["digest"] = digest.hexdigest()
+    return pin["digest"]
+
+
 def _feed(digest, label: str, path: Path) -> None:
     digest.update(f"{label}\0{path}\0".encode())
     try:
@@ -132,8 +188,7 @@ def cache_key(root: str | Path, inputs: Inputs | None = None) -> str:
         _feed(digest, "doc", path)
     for path in _tree_files(inputs.stdlib_dir):
         _feed(digest, "stdlib", path)
-    for path in _tree_files(inputs.package_dir):
-        _feed(digest, "revl", path)
+    digest.update(f"revl {package_digest(inputs.package_dir)}\0".encode())
     names = sorted(p.stem for p in inputs.backends_python.glob("*.py"))
     digest.update(f"backends/python {names!r}\0".encode())
     return digest.hexdigest()
@@ -186,6 +241,7 @@ def compiled_ir(root: str | Path,
                 inputs: Inputs | None = None) -> dict:
     """`compile_files([str(root)])`, built once per key; a fresh copy per call."""
     root = Path(root)
+    inputs = inputs or live_inputs()
     key = cache_key(root, inputs)
     blob = _memory.get(key)
     if blob is not None:
@@ -194,6 +250,8 @@ def compiled_ir(root: str | Path,
     where = hashlib.sha256(str(root).encode()).hexdigest()[:12]
     prefix = f"{root.stem}-{where}"
     disk = _cache_dir / f"{prefix}-{key[:32]}.pickle" if _cache_dir else None
+    if disk is not None and package_drifted(inputs.package_dir):
+        disk = None  # this process's compiler is no longer the one on disk
     stored = _read(disk, key) if disk is not None else None
     if stored is not None:
         _memory[key] = stored[0]
