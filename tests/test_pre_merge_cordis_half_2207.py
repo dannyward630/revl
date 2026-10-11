@@ -14,6 +14,7 @@ which venvs this machine has.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -39,13 +40,18 @@ def _slice(start: str, end: str | None) -> str:
     return body
 
 
-def _stub_python(tmp: Path, missing: str = "", pytest_rc: int = 0) -> Path:
-    """A candidate interpreter: the import probe reports `missing`, and
-    `-m pytest` exits `pytest_rc` after recording its arguments."""
+def _stub_python(tmp: Path, missing: str = "", pytest_rc: int = 0,
+                 cordis_dir: str = "") -> Path:
+    """A candidate interpreter: the import probe reports `missing`, the cordis
+    location probe reports `cordis_dir`, and `-m pytest` exits `pytest_rc`
+    after recording its arguments."""
     stub = tmp / "stubpy"
     stub.write_text(
         "#!/bin/sh\n"
-        f'if [ "$1" = "-c" ]; then echo "{missing}"; exit 0; fi\n'
+        'if [ "$1" = "-c" ]; then case "$2" in\n'
+        f'    *spec.origin*) echo "{cordis_dir}" ;;\n'
+        f'    *) echo "{missing}" ;;\n'
+        "esac; exit 0; fi\n"
         f'echo "$@" > "{tmp}/pytest_args"\n'
         f"exit {pytest_rc}\n", encoding="utf-8")
     stub.chmod(0o755)
@@ -67,8 +73,13 @@ def _tree(tmp: Path) -> Path:
     return root
 
 
-def _run_step(tmp: Path, candidate: Path, log: str = "") -> subprocess.CompletedProcess:
+def _run_step(tmp: Path, candidate: Path, log: str = "",
+              pin: str = "") -> subprocess.CompletedProcess:
     root = _tree(tmp)
+    if pin:
+        (root / "backends" / "python").mkdir(parents=True)
+        (root / "backends" / "python" / "setup.sh").write_text(
+            f'CORDIS_PY_PIN="${{CORDIS_PY_PIN:-{pin}}}"\n', encoding="utf-8")
     head = (
         f"root='{root}'\nmain_root='{tmp / 'nomain'}'\n"
         f"PYTHON='{sys.executable}'\nSEL_PYTEST='tests/'\nRUN_ALL=1\n"
@@ -79,8 +90,10 @@ def _run_step(tmp: Path, candidate: Path, log: str = "") -> subprocess.Completed
     tail = ('\ncordis_step\n'
             'echo "ran=$ran fail=$fail missing=$cordis_missing"\n')
     script = head + block + "\n" + cordis + tail
+    env = {k: v for k, v in os.environ.items()
+           if k != "CORDIS_PY_PIN" and not k.startswith("GIT_")}
     return subprocess.run(["sh", "-c", script], capture_output=True, text=True,
-                          timeout=120, check=False)
+                          timeout=120, check=False, env=env)
 
 
 def test_step_reports_missing_runtime_as_not_ok(tmp_path):
@@ -171,3 +184,83 @@ def test_net_and_guard_skips_are_logged_for_the_gate(tmp_path, monkeypatch):
         longrepr=("p", 1, "Skipped: no go toolchain")))
     assert log.read_text(encoding="utf-8").split() == [
         "tests/test_a.py::t", "tests/test_b.py"]
+
+
+# --- review findings on PR #2256 -----------------------------------------------
+
+def _git_checkout(tmp: Path) -> tuple[Path, str]:
+    """A throwaway git checkout standing in for a venv's cordis-py clone."""
+    repo = tmp / "cordis-clone"
+    repo.mkdir()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+               GIT_COMMITTER_EMAIL="t@t", GIT_CONFIG_GLOBAL="/dev/null",
+               GIT_CONFIG_NOSYSTEM="1")
+    for cmd in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "x"]):
+        subprocess.run(["git", "-C", str(repo), *cmd], env=env, check=True,
+                       capture_output=True, timeout=60)
+    rev = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], env=env,
+                         check=True, capture_output=True, text=True,
+                         timeout=60).stdout.strip()
+    return repo, rev
+
+
+def test_an_empty_log_means_nothing_to_rerun(tmp_path):
+    # The frontend step ran and nothing skipped for cordis: the step must not
+    # fall back to every selected file that mentions cordis.
+    log = tmp_path / "skips.log"
+    log.write_text("", encoding="utf-8")
+    out = _run_step(tmp_path, _stub_python(tmp_path), log=str(log))
+    assert "nothing to run" in out.stdout, out.stdout + out.stderr
+    assert "ran=0 fail=0 missing=0" in out.stdout
+    assert not (tmp_path / "pytest_args").exists()
+
+
+def test_driver_reports_status_none_for_an_empty_log(tmp_path, capsys):
+    sys.path.insert(0, str(ROOT / "tools"))
+    try:
+        import cordis_half
+    finally:
+        sys.path.pop(0)
+    root = _tree(tmp_path)
+    log = tmp_path / "empty.log"
+    log.write_text("", encoding="utf-8")
+    assert cordis_half.main(["--root", str(root), "--log", str(log)]) == 0
+    assert capsys.readouterr().out.strip().splitlines()[-1] == "STATUS none"
+    # A --log that does not exist is a broken frontend step, not a reason to
+    # fall back to the selection.
+    rc = cordis_half.main(["--root", str(root), "--log", str(tmp_path / "gone")])
+    assert rc == 1
+    assert capsys.readouterr().out.strip().splitlines()[-1].startswith("STATUS error")
+
+
+def test_a_venv_off_the_pinned_cordis_revision_is_rejected(tmp_path):
+    clone, rev = _git_checkout(tmp_path)
+    stub = _stub_python(tmp_path, cordis_dir=str(clone))
+    stale = _run_step(tmp_path, stub, pin="a" * 40)
+    assert "MISSING, NOT OK" in stale.stdout, stale.stdout + stale.stderr
+    assert "CORDIS_PY_PIN is aaaaaaaaaaaa" in stale.stdout
+    assert not (tmp_path / "pytest_args").exists()
+
+
+def test_a_venv_at_the_pinned_cordis_revision_runs(tmp_path):
+    clone, rev = _git_checkout(tmp_path)
+    stub = _stub_python(tmp_path, cordis_dir=str(clone))
+    out = _run_step(tmp_path, stub, pin=rev)
+    assert "ok (1 file(s))" in out.stdout, out.stdout + out.stderr
+
+
+def test_only_cordis_py_skips_are_logged(tmp_path, monkeypatch):
+    conf = _conftest()
+    log = tmp_path / "log"
+    monkeypatch.setenv("REVL_CORDIS_SKIP_LOG", str(log))
+    for nodeid, reason in (
+            ("tests/test_py.py::t", "the py runner needs the pinned cordis fork"),
+            ("tests/test_imp.py", "could not import 'cordis': No module named 'cordis'"),
+            ("tests/test_ts.py::t", "cordis-ts is not installed (npm ci)"),
+            ("tests/test_java.py::t", "needs cordis4j and javac"),
+            ("tests/test_rs.py::t", "the cordis-rs crate is not vendored")):
+        conf._log_cordis_skip(SimpleNamespace(
+            skipped=True, nodeid=nodeid, longrepr=("p", 1, "Skipped: " + reason)))
+    assert log.read_text(encoding="utf-8").split() == [
+        "tests/test_py.py::t", "tests/test_imp.py"]

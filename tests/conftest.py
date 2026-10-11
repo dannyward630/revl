@@ -29,6 +29,7 @@ of everything that already resolved is unchanged.
 import functools
 import importlib.util
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -318,6 +319,15 @@ def pytest_runtest_makereport(item, call):
     return report
 
 
+# A reason that names the python runtime ("cordis-py", "the pinned cordis fork",
+# `importorskip("cordis")`'s "could not import 'cordis'"), but not the other
+# runtimes' skips (cordis-ts, cordis4j, cordis-rs, ...): re-running those files
+# under the cordis-py venv would only skip them again. Guards word their reason
+# freely, so this excludes the other runtimes rather than requiring "cordis-py".
+_NAMES_CORDIS_PY = re.compile(r"cordis(?![-_]?(?:ts|4j|rs|java|go|wasm|js)\b)",
+                              re.IGNORECASE)
+
+
 def _skip_reason(report) -> str:
     longrepr = report.longrepr
     if isinstance(longrepr, tuple) and len(longrepr) == 3:
@@ -330,7 +340,7 @@ def _log_cordis_skip(report) -> None:
     target = os.environ.get("REVL_CORDIS_SKIP_LOG")
     if not target or not report.skipped:
         return
-    if "cordis" not in _skip_reason(report).lower():
+    if not _NAMES_CORDIS_PY.search(_skip_reason(report)):
         return
     try:
         with open(target, "a", encoding="utf-8") as fh:

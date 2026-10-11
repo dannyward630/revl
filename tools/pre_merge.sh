@@ -265,7 +265,10 @@ cordis_step() {
         --python "${REVL_CORDIS_PYTHON:-}" \
         --python "$root/backends/python/.venv/bin/python" \
         --python "$main_root/backends/python/.venv/bin/python"
-    [ -n "$CORDIS_LOG" ] && [ -s "$CORDIS_LOG" ] && set -- "$@" --log "$CORDIS_LOG"
+    # The frontend step ran iff it created the log; an EMPTY log is its answer
+    # "nothing skipped for cordis", never a reason to fall back to every file
+    # that mentions cordis. The fallback is for a gate with no frontend pytest.
+    [ -n "$CORDIS_LOG" ] && [ -f "$CORDIS_LOG" ] && set -- "$@" --log "$CORDIS_LOG"
     out=$("$PYTHON" tools/cordis_half.py "$@" 2>&1)
     rc=$?
     status=$(printf '%s\n' "$out" | sed -n 's/^STATUS //p' | tail -1)

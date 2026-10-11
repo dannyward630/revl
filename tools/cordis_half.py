@@ -12,24 +12,28 @@ This driver picks the test files to run and the interpreter to run them with:
 * Files: when the frontend step ran with `REVL_CORDIS_SKIP_LOG` set,
   tests/conftest.py wrote the node id of every test that skipped naming cordis
   to that log; the files of those node ids are exactly the half that did not
-  run. Without a log (the frontend step could not run), the selected test files
-  that mention cordis are used instead.
+  run, and an empty log means nothing to re-run. Only when the frontend step
+  did not run (no --log), the selected test files that mention cordis are used.
 * Interpreter: the first candidate that can import the suite's modules AND the
-  pinned cordis-py runtime with its `watchdog` extra. That is the venv
+  cordis-py runtime with its `watchdog` extra, with that runtime's checkout at
+  CORDIS_PY_PIN (backends/python/setup.sh, or the environment's override). That is the venv
   backends/python/setup.sh builds (the pinned fork, never PyPI `cordis`).
 
 The last line printed is a status the gate reads:
 
     STATUS ran <n>          pytest ran <n> file(s); the exit code is pytest's
     STATUS none             no selected test needs the runtime (exit 0)
-    STATUS missing <why>    files need the runtime and no candidate has it
-                            (exit EXIT_MISSING): the gate reports NOT OK
+    STATUS missing <why>    files need the runtime and no candidate has it at
+                            CORDIS_PY_PIN (exit EXIT_MISSING): the gate
+                            reports NOT OK
+    STATUS error <why>      the skip log passed with --log is missing (exit 1)
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -62,8 +66,44 @@ def missing_modules(python: str) -> list[str] | None:
     return done.stdout.split()
 
 
-def resolve_python(candidates: list[str]) -> tuple[str | None, list[str]]:
-    """The first usable candidate, and why each earlier one was rejected."""
+def pinned_revision(root: Path) -> str | None:
+    """CORDIS_PY_PIN: the environment's override, else backends/python/setup.sh's."""
+    if os.environ.get("CORDIS_PY_PIN"):
+        return os.environ["CORDIS_PY_PIN"]
+    try:
+        text = (root / "backends" / "python" / "setup.sh").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    found = re.search(r'CORDIS_PY_PIN="\$\{CORDIS_PY_PIN:-([0-9a-f]{7,40})\}"', text)
+    return found.group(1) if found else None
+
+
+def cordis_revision(python: str) -> str | None:
+    """The git revision of the cordis-py checkout `python` imports, if any."""
+    probe = ("import importlib.util, os\n"
+             "spec = importlib.util.find_spec('cordis')\n"
+             "print(os.path.dirname(spec.origin) if spec and spec.origin else '')\n")
+    try:
+        done = subprocess.run([python, "-c", probe], capture_output=True,
+                              text=True, timeout=60, check=False)
+        where = done.stdout.strip()
+        if done.returncode != 0 or not where:
+            return None
+        head = subprocess.run(["git", "-C", where, "rev-parse", "HEAD"],
+                              capture_output=True, text=True, timeout=60,
+                              check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return head.stdout.strip() if head.returncode == 0 else None
+
+
+def resolve_python(candidates: list[str],
+                   pin: str | None = None) -> tuple[str | None, list[str]]:
+    """The first usable candidate, and why each earlier one was rejected.
+
+    With a `pin`, a candidate whose cordis-py checkout is not at that revision
+    is rejected too: an `ok` must mean the runtime revision the suite is
+    validated against, not whatever fork an older venv still holds."""
     rejected = []
     for cand in candidates:
         if not cand:
@@ -71,10 +111,21 @@ def resolve_python(candidates: list[str]) -> tuple[str | None, list[str]]:
         missing = missing_modules(cand)
         if missing is None:
             rejected.append(f"{cand}: not runnable")
-        elif missing:
+            continue
+        if missing:
             rejected.append(f"{cand}: cannot import {', '.join(missing)}")
-        else:
-            return cand, rejected
+            continue
+        if pin:
+            rev = cordis_revision(cand)
+            if rev is None:
+                rejected.append(f"{cand}: cannot read its cordis-py revision "
+                                f"(not a git checkout), pin is {pin[:12]}")
+                continue
+            if not rev.startswith(pin) and not pin.startswith(rev):
+                rejected.append(f"{cand}: cordis-py at {rev[:12]}, "
+                                f"CORDIS_PY_PIN is {pin[:12]}")
+                continue
+        return cand, rejected
     return None, rejected
 
 
@@ -112,7 +163,15 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     root = Path(args.root).resolve()
 
-    if args.log and Path(args.log).is_file():
+    # A log that exists, even empty, is the frontend step's answer: an empty
+    # one means nothing skipped for cordis, so there is nothing to re-run. The
+    # selection fallback is only for a gate whose frontend step did not run,
+    # which passes no --log at all. A --log that is missing is a broken step,
+    # never a reason to fall back to hundreds of files.
+    if args.log is not None:
+        if not Path(args.log).is_file():
+            print(f"STATUS error skip log {args.log} does not exist")
+            return 1
         files = files_from_log(Path(args.log), root)
     else:
         files = files_from_selection(args.select.split(), root)
@@ -120,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         print("STATUS none")
         return 0
 
-    python, rejected = resolve_python(args.python)
+    python, rejected = resolve_python(args.python, pinned_revision(root))
     if python is None:
         for why in rejected:
             print(f"rejected {why}")

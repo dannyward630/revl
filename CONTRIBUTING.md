@@ -240,7 +240,7 @@ command, in order, reporting each step:
 | step | what it runs |
 |---|---|
 | frontend | `pytest tests/ -q` (includes `test_conformance_validate.py`) |
-| frontend-cordis | the files of every test that skipped naming cordis in the frontend step (tests/conftest.py logs them to `REVL_CORDIS_SKIP_LOG`), re-run by `tools/cordis_half.py` under the cordis-py venv: `$REVL_CORDIS_PYTHON`, else `backends/python/.venv/bin/python` of this tree, else of the primary checkout, whichever can import the suite's deps, `cordis` and `watchdog`. With no such venv the step prints `MISSING, NOT OK` and the gate exits non-zero: a runtime half that did not run is never `ok` (issue #2207) |
+| frontend-cordis | the files of every test that skipped naming cordis in the frontend step (tests/conftest.py logs them to `REVL_CORDIS_SKIP_LOG`), re-run by `tools/cordis_half.py` under the cordis-py venv: `$REVL_CORDIS_PYTHON`, else `backends/python/.venv/bin/python` of this tree, else of the primary checkout, whichever can import the suite's deps, `cordis` and `watchdog` and has its cordis-py checkout at `CORDIS_PY_PIN`. An empty log means nothing to re-run. With no such venv the step prints `MISSING, NOT OK` and the gate exits non-zero: a runtime half that did not run is never `ok` (issue #2207) |
 | backend-python | `cd backends/python && .venv/bin/pytest -q` — the suite item 247 left stale |
 | backend-go | `pytest backends/go/test_emit_go.py -q` |
 | backend-rust | `pytest backends/rust/test_emit_rust.py` (emit/golden tests) |
