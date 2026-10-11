@@ -7,11 +7,14 @@ call ``pytest.skip``, in a ``skipif`` marker, a fixture or the test body. So a
 CI job that lost its go toolchain skipped every one of them and still went
 green, because a skip is green.
 
-This hook closes that for every shape at once, by looking at what actually
-happened rather than at how each file spells its probe. When the session is
-REQUIRED to have a tier (``REVL_REQUIRE_TIERS`` names it, or ``all``), that
-tier's toolchain is not on PATH, and a test in a file that probes for the
-toolchain reports SKIPPED, the skip becomes a failure that says so.
+This hook looks at what actually happened rather than at how the test raised
+its skip, so a marker, a fixture and a test body are all covered. When the
+session is REQUIRED to have a tier (``REVL_REQUIRE_TIERS`` names it, or
+``all``), that tier's toolchain is not on PATH, and a test in a file that
+probes for the toolchain reports SKIPPED, the skip becomes a failure that says
+so. "Probes" means the file itself spells the probe (``which("go")`` or
+``go_runtime_reason(``); a probe hidden in a helper module another file
+imports is not seen.
 
 It lives at the repository root so it covers ``tests/`` and ``backends/go/``
 alike. It never fires where the toolchain is installed, and never fires where
@@ -38,7 +41,7 @@ _REQUIRE_ENV = "REVL_REQUIRE_TIERS"
 #: probe the toolchain directly AND that CI requires (see
 #: tests/test_env_gated_skips_run_somewhere.py, `_TIER_NOT_REQUIRED_IN_CI`).
 _PROBES: dict[str, tuple[str, re.Pattern[str]]] = {
-    "go": ("go", re.compile(r"""which\(\s*["']go["']\s*\)""")),
+    "go": ("go", re.compile(r"""which\(\s*["']go["']\s*\)|go_runtime_reason\(""")),
 }
 
 #: tier -> was its toolchain absent when the session started. Measured once,

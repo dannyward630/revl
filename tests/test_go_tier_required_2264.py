@@ -56,12 +56,9 @@ def test_a_hand_probed_go_test_fails_when_go_is_required_and_absent(node):
     unrequired = _run(node, None)
     assert "1 skipped" in unrequired, unrequired
 
-    required = _run(node, "py,ts,go")
+    # `all` on one node, an explicit list on the others: same switch
+    required = _run(node, "all" if node == NODES[0] else "py,ts,go")
     _assert_red(required)
-
-
-def test_all_requires_go_too():
-    _assert_red(_run(NODES[0], "all"))
 
 
 def _assert_red(output: str) -> None:

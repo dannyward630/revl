@@ -372,6 +372,11 @@ def _ci_sets() -> set[str]:
     return found
 
 
+#: A bare `$NAME` argument: the file list itself, chosen at run time. Not
+#: `$RUNNER_TEMP/x`, which is an option's value.
+_RUN_TIME_SELECTION = re.compile(r"\$\{?\w+\}?")
+
+
 def _pytest_targets(run: str) -> list[str]:
     """Repo-relative paths a `run:` block hands to pytest.
 
@@ -393,7 +398,7 @@ def _pytest_targets(run: str) -> list[str]:
         # affected-tests selector), so nothing here says which ones run. It
         # used to fall through to "no path at all" and be credited with the
         # whole tree (issue #2210), which is the one answer it cannot give.
-        if any(a.startswith("$") for a in args):
+        if any(_RUN_TIME_SELECTION.fullmatch(a) for a in args):
             continue
         paths = [
             a for a in args
@@ -756,7 +761,9 @@ def _parametrized_tiers(tree: ast.Module) -> set[str]:
 #: tier -> a hand-rolled toolchain probe that makes a file drive that tier as
 #: surely as `RUNNERS[...]` does (issue #2264). The repository-root
 #: conftest.py turns the matching skip into a failure under the switch.
-_DIRECT_PROBES = {"go": re.compile(r"""which\(\s*["']go["']\s*\)""")}
+_DIRECT_PROBES = {
+    "go": re.compile(r"""which\(\s*["']go["']\s*\)|go_runtime_reason\("""),
+}
 
 _NOT_SOURCE = frozenset({".venv", "node_modules", "__pycache__", "target"})
 
@@ -905,6 +912,7 @@ def test_a_run_time_selection_is_credited_with_nothing():
     them (issue #2210)."""
     assert _pytest_targets("pytest $SEL_PYTEST -q || rc=$?") == []
     assert _pytest_targets("pytest -q") == ["."]
+    assert _pytest_targets("pytest tests/ --basetemp $RUNNER_TEMP/x -q")[0] == "tests/"
     assert _pytest_targets("cd backends/python && .venv/bin/pytest ../wasm/ tests/ -q") \
         == ["backends/wasm/", "backends/python/tests/"]
 
