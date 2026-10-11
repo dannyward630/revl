@@ -1,0 +1,36 @@
+// issues #2259 and #2198: arithmetic in a provide method keys on the node's
+// `operands`, as a top-level fn's does. Int `+ - *` trap through the checked
+// helpers, `/` is true division through `revlDiv` (Int, Int32 and Float
+// operands), a Float `%` is `math.Mod`, and an Int operand of Float arithmetic
+// widens to float64. An Int `%` keeps Go's truncated remainder.
+fn pick(n: Int) -> Int { return n }
+
+service Arith {
+  fn bump(n: Int) -> Int
+  fn drop(n: Int) -> Int
+  fn grow(n: Int) -> Int
+  fn rem(a: Int, b: Int) -> Int
+  fn quo(a: Int, b: Int) -> Float
+  fn narrow_quo(a: Int32, b: Int32) -> Float
+  fn half(x: Float) -> Float
+  fn frem(x: Float) -> Float
+  fn scale(x: Float, k: Int) -> Float
+  fn shift(k: Int, x: Float) -> Float
+  fn blend(a: Int, b: Int) -> Float
+}
+
+component Calc provides arith: Arith {
+  provide arith {
+    fn bump(n) = n + 1
+    fn drop(n) = n - 1
+    fn grow(n) = pick(n) * n
+    fn rem(a, b) = a % b
+    fn quo(a, b) = a / b
+    fn narrow_quo(a, b) = a / b
+    fn half(x) = x / 2.0
+    fn frem(x) = x % 2.0
+    fn scale(x, k) = x * k + x - k
+    fn shift(k, x) = k + x
+    fn blend(a, b) = a / b + 0.5
+  }
+}

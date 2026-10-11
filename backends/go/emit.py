@@ -507,6 +507,74 @@ def _req_field(name: str) -> str:
     return _lower_camel(_key_binding(name))
 
 
+#: The trapping Int operators of a component method body and the checked
+#: helper each one renders through (docs/arithmetic.md).
+_COMP_CHECKED_INT_OPS = {"+": "revlAdd", "-": "revlSub", "*": "revlMul"}
+
+
+def _comp_typed_arith(node, left: str, right: str, env: _Env):
+    """The component method body's rendering of an arithmetic `bin` node the
+    lowering annotated with `operands`, or None for the plain Go operator.
+
+    It keys on `operands` as the top-level fn renderer (`_go_v3_expr`) does,
+    so one expression means the same thing in a `fn` and in a provide method
+    (docs/arithmetic.md): Int `+ - *` trap on overflow (issue #2259), `/` is
+    true division answering a Float, and a Float `%` is IEEE `fmod`. Before
+    this arm the method body wrote the bare Go operator, so Int arithmetic
+    wrapped silently and `Int / Int` was integer division that did not build
+    into a `float64` return (issue #2198)."""
+    op = node.get("op")
+    operands = node.get("operands")
+    if operands == "Float":
+        # a mixed Int/Float operand widens, as the fn renderer's does
+        if _comp_infer(node.get("left"), env) in ("Int", "Int32"):
+            left = "float64(%s)" % left
+        if _comp_infer(node.get("right"), env) in ("Int", "Int32"):
+            right = "float64(%s)" % right
+    if op in _COMP_CHECKED_INT_OPS and operands == "Int":
+        return _comp_checked_int(_COMP_CHECKED_INT_OPS[op], left, right)
+    if op == "/" and operands in ("Int", "Int32", "Float"):
+        # Go `/` on two ints is integer division, and a constant zero divisor
+        # is a compile error where IEEE defines it, so the division goes
+        # through the runtime helper.
+        global _COMP_NEEDS_FLOAT_DIV
+        _COMP_NEEDS_FLOAT_DIV = True
+        if operands != "Float":
+            return "revlDiv(float64(%s), float64(%s))" % (left, right)
+        return "revlDiv(%s, %s)" % (left, right)
+    if op == "%" and operands == "Float":
+        # Go's `%` is not defined on float64 (issue #721).
+        global _COMP_NEEDS_FLOAT_REM
+        _COMP_NEEDS_FLOAT_REM = True
+        return "math.Mod(%s, %s)" % (left, right)
+    if operands == "Float":
+        return "(%s %s %s)" % (left, _V3_GO_BIN_OPS[op], right)
+    return None
+
+
+def _comp_checked_int(helper: str, left: str, right: str) -> str:
+    """Render a checked Int `+ - *` (or unary `-` as `0 - x`) in a component
+    method body.
+
+    The method renderer writes into an `_Env` rather than into the typed-core
+    ctx the prelude reads, so the flag the prelude consults is the component
+    one (issue #2198). `_PRIM` renders revl `Int` as Go's `int` on the
+    ir_version 1/2 component tier and as `int64` on the v3 one, and the checked
+    helpers are int64, so the narrow tier converts in and back out."""
+    global _COMP_NEEDS_OVERFLOW
+    _COMP_NEEDS_OVERFLOW = True
+    if _go_type("Int") == "int64":
+        return "%s(%s, %s)" % (helper, left, right)
+    return "int(%s(%s, %s))" % (helper, _comp_int64(left), _comp_int64(right))
+
+
+def _comp_int64(operand: str) -> str:
+    """Widen a narrow-tier `int` operand to the helpers' int64. An untyped
+    decimal constant (the `0` of unary minus, a literal operand) converts
+    implicitly in Go, so it is left as written."""
+    return operand if operand.isdigit() else "int64(%s)" % operand
+
+
 def _expr(node, env: _Env, expected=None) -> str:
     """Render one expression in a component/method body.
 
@@ -681,8 +749,12 @@ def _expr(node, env: _Env, expected=None) -> str:
         go_op = _V3_GO_BIN_OPS.get(op)
         if go_op is None:
             raise EmitError("unsupported binary operator: %r" % (op,))
-        return "(%s %s %s)" % (_expr(node["left"], env), go_op,
-                               _expr(node["right"], env))
+        left = _expr(node["left"], env)
+        right = _expr(node["right"], env)
+        typed = _comp_typed_arith(node, left, right, env)
+        if typed is not None:
+            return typed
+        return "(%s %s %s)" % (left, go_op, right)
     if kind == "un":
         operand = _expr(node.get("operand"), env)
         if node.get("op") == "!":
@@ -695,8 +767,7 @@ def _expr(node, env: _Env, expected=None) -> str:
                 # `-x` is `0 - x`; negating Int.MIN overflows, so it traps
                 # through the same checked subtraction as any Int `-`
                 # (docs/arithmetic.md; wasm lowers `-x` the same way).
-                env.needs_overflow = True
-                return "revlSub(0, %s)" % operand
+                return _comp_checked_int("revlSub", "0", operand)
             return "(-%s)" % operand
         raise EmitError("unsupported unary operator: %r" % (node.get("op"),))
     if kind == "if":  # ternary
@@ -1259,6 +1330,12 @@ def _comp_infer(node, env: _Env):
             if isinstance(lt, str) and lt.startswith("Opt[") and lt.endswith("]"):
                 return lt[4:-1]
             return _comp_infer(node.get("right"), env) or lt
+        # `/` is true division and Float arithmetic answers a Float
+        # (docs/arithmetic.md), whatever the left operand's own type is.
+        if op == "/" and node.get("operands") in ("Int", "Int32", "Float"):
+            return "Float"
+        if op in ("+", "-", "*", "%") and node.get("operands") == "Float":
+            return "Float"
         return _comp_infer(node.get("left"), env) or _comp_infer(node.get("right"), env)
     if k == "un":
         return "Bool" if node.get("op") == "!" else _comp_infer(node.get("operand"), env)
@@ -1331,6 +1408,48 @@ _V3_OVERFLOW32_HELPER = """func revlToI32(v int64) int32 {
 }
 """
 
+# `/` is true division (docs/arithmetic.md). A function, not an expression: Go
+# rejects a *constant* `1.0 / 0.0` at compile time, where IEEE defines +Inf.
+_REVL_DIV_HELPER = "func revlDiv(a, b float64) float64 { return a / b }"
+
+# The trapping `+ - *` on Int (docs/arithmetic.md), as a preamble. The pure
+# typed-core renderer writes this out of its own assembly off
+# `ctx.needs_overflow`; the component method renderer writes into an `_Env`,
+# not into that ctx, so the text lives here for both. `revlMul` names
+# Int.MIN * -1 explicitly: `p/b != a` cannot see it, because Go DEFINES
+# `Int.MIN / -1` as Int.MIN (spec, "Integer operators") rather than trapping,
+# so the readback equals `a` and the check passes. Every other tier traps on
+# that product; go returned Int.MIN silently.
+_V3_OVERFLOW_HELPER = """func revlAdd(a, b int64) int64 {
+	s := a + b
+	if (a > 0 && b > 0 && s < 0) || (a < 0 && b < 0 && s >= 0) {
+		panic("revl: Int overflow")
+	}
+	return s
+}
+
+func revlSub(a, b int64) int64 {
+	d := a - b
+	if (b < 0 && d < a) || (b > 0 && d > a) {
+		panic("revl: Int overflow")
+	}
+	return d
+}
+
+func revlMul(a, b int64) int64 {
+	if a == 0 || b == 0 {
+		return 0
+	}
+	if a == (-9223372036854775807 - 1) && b == -1 {
+		panic("revl: Int overflow")
+	}
+	p := a * b
+	if p/b != a {
+		panic("revl: Int overflow")
+	}
+	return p
+}"""
+
 
 # stdlib helpers referenced by component method bodies live in the shared v3
 # preamble; using any one flags the preamble + its imports into the module.
@@ -1350,6 +1469,17 @@ _COMP_NEEDS_STRCONV = False
 # `ctx.needs_overflow32`; a method body reaches the same helper through this
 # flag, so a component-only document carries it too (issue #1347).
 _COMP_NEEDS_OVERFLOW32 = False
+# Trapping `+ - *` on Int referenced by a component body: flags the checked
+# helpers `revlAdd`/`revlSub`/`revlMul`. The method renderer reaches them
+# through `_Env`, not through the typed-core ctx the prelude reads, so without
+# this flag a method body emitted the call and no definition: Go reported
+# `undefined: revlSub` (issue #2198).
+_COMP_NEEDS_OVERFLOW = False
+# A true division `/` in a component body: flags `revlDiv`, the runtime float
+# division the pure typed-core path emits off `ctx.needs_float_div`. A Float
+# `%` flags the `math` import for `math.Mod` the same way (issue #2198).
+_COMP_NEEDS_FLOAT_DIV = False
+_COMP_NEEDS_FLOAT_REM = False
 # A `timer` step (item 57) in a component body: flags the clock coeffect +
 # timer scheduler preamble (_TIMER_PREAMBLE). Timers lower to a revertible
 # schedule whose inverse is cancellation, wired into the same effect ledger.
@@ -10876,41 +11006,7 @@ def _emit_v3_go(ir: dict, package: str) -> str:
         ))
         out.append("")
     if ctx.needs_overflow:
-        out.append("func revlAdd(a, b int64) int64 {")
-        out.append("\ts := a + b")
-        out.append("\tif (a > 0 && b > 0 && s < 0) || (a < 0 && b < 0 && s >= 0) {")
-        out.append('\t\tpanic("revl: Int overflow")')
-        out.append("\t}")
-        out.append("\treturn s")
-        out.append("}")
-        out.append("")
-        out.append("func revlSub(a, b int64) int64 {")
-        out.append("\td := a - b")
-        out.append("\tif (b < 0 && d < a) || (b > 0 && d > a) {")
-        out.append('\t\tpanic("revl: Int overflow")')
-        out.append("\t}")
-        out.append("\treturn d")
-        out.append("}")
-        out.append("")
-        out.append("func revlMul(a, b int64) int64 {")
-        out.append("\tif a == 0 || b == 0 {")
-        out.append("\t\treturn 0")
-        out.append("\t}")
-        # `p/b != a` cannot see Int.MIN * -1: the product wraps back to
-        # Int.MIN, and Go DEFINES `Int.MIN / -1` as Int.MIN (spec, "Integer
-        # operators") rather than trapping — so the readback equals `a` and
-        # the check passes. Every other tier traps on this product; go
-        # returned Int.MIN silently. Name the one case the readback is blind
-        # to, the way revlDivTrunc/revlDivFloor already do.
-        out.append("\tif a == (-9223372036854775807 - 1) && b == -1 {")
-        out.append('\t\tpanic("revl: Int overflow")')
-        out.append("\t}")
-        out.append("\tp := a * b")
-        out.append("\tif p/b != a {")
-        out.append('\t\tpanic("revl: Int overflow")')
-        out.append("\t}")
-        out.append("\treturn p")
-        out.append("}")
+        out.append(_V3_OVERFLOW_HELPER)
         out.append("")
     if ctx.needs_overflow32:
         # Int32 traps at the i32 edge (docs/arithmetic.md). Go's int32 wraps,
@@ -11333,7 +11429,8 @@ def _emit(ir: dict, package: str = "emitted", package_name: str | None = None,
 
     global _V3_MODE, _V3_TYPES, _V3_TYPED_COMPONENTS
     global _COMP_NEEDS_STDLIB, _COMP_NEEDS_MAP, _COMP_NEEDS_PARSE_INT
-    global _COMP_NEEDS_STRCONV, _COMP_NEEDS_OVERFLOW32
+    global _COMP_NEEDS_STRCONV, _COMP_NEEDS_OVERFLOW32, _COMP_NEEDS_OVERFLOW
+    global _COMP_NEEDS_FLOAT_DIV, _COMP_NEEDS_FLOAT_REM
     global _COMP_NEEDS_TIMER, _TIMER_COUNTER, _STREAM_ITER_COUNTER
     global _WITNESSED_EXTERNS, _COMP_NEEDS_TEARDOWN, _WITNESSED_COUNTER
     global _COMPENSATED_EXTERNS
@@ -11403,6 +11500,9 @@ def _emit(ir: dict, package: str = "emitted", package_name: str | None = None,
     _COMP_NEEDS_PARSE_INT = False
     _COMP_NEEDS_STRCONV = False
     _COMP_NEEDS_OVERFLOW32 = False
+    _COMP_NEEDS_OVERFLOW = False
+    _COMP_NEEDS_FLOAT_DIV = False
+    _COMP_NEEDS_FLOAT_REM = False
 
     # Emit the body first so `_COMP_NEEDS_STDLIB` settles before the import
     # block and preamble are assembled. For ir_version 1/2 no v3 feature is
@@ -11480,6 +11580,10 @@ def _emit(ir: dict, package: str = "emitted", package_name: str | None = None,
             out.append('\t"time"')
         out.append('\t"os"')
         out.append('\t"strconv"')
+    if _COMP_NEEDS_FLOAT_REM:
+        # `math.Mod` for a Float `%` in a method body; nothing else on this
+        # tier imports `math`, and Go rejects a repeated import.
+        out.append('\t"math"')
     if _COMP_NEEDS_STRCONV and not _COMP_NEEDS_TEARDOWN:
         # Int.to_str renders through strconv.FormatInt (item 434 (f)); the
         # teardown block above already imports strconv when it is present, and
@@ -11520,6 +11624,15 @@ def _emit(ir: dict, package: str = "emitted", package_name: str | None = None,
         # `Int.to_int32` in a method body: the same checked narrow the pure
         # typed-core path emits off `ctx.needs_overflow32` (issue #1347).
         out.append(_V3_OVERFLOW32_HELPER)
+    if _COMP_NEEDS_OVERFLOW:
+        # `Int` unary minus in a method body: the same checked subtraction the
+        # pure typed-core path emits off `ctx.needs_overflow` (issue #2198).
+        out.append(_V3_OVERFLOW_HELPER)
+        out.append("")
+    if _COMP_NEEDS_FLOAT_DIV:
+        # true division in a method body (issue #2198)
+        out.append(_REVL_DIV_HELPER)
+        out.append("")
     if needs_result_preamble:
         # component tier keeps the sealed interface (see _COMP_RESULT_PREAMBLE):
         # witnessed `@go` externs hand-construct RevlOk/RevlErr.
@@ -12114,7 +12227,8 @@ def _emit_v3_combined(ir: dict, package: str, placement: bool = True) -> str:
 
     global _V3_MODE, _V3_TYPES, _V3_TYPED_COMPONENTS
     global _COMP_NEEDS_STDLIB, _COMP_NEEDS_MAP, _COMP_NEEDS_PARSE_INT
-    global _COMP_NEEDS_STRCONV, _COMP_NEEDS_OVERFLOW32
+    global _COMP_NEEDS_STRCONV, _COMP_NEEDS_OVERFLOW32, _COMP_NEEDS_OVERFLOW
+    global _COMP_NEEDS_FLOAT_DIV, _COMP_NEEDS_FLOAT_REM
     global _COMP_NEEDS_TIMER, _TIMER_COUNTER, _COMP_NEEDS_STREAM
     global _COMP_NEEDS_STREAM_DRAIN, _COMP_NEEDS_STREAM_EVENT
     global _STREAM_ITER_COUNTER
@@ -12140,6 +12254,9 @@ def _emit_v3_combined(ir: dict, package: str, placement: bool = True) -> str:
     _COMP_NEEDS_PARSE_INT = False
     _COMP_NEEDS_STRCONV = False
     _COMP_NEEDS_OVERFLOW32 = False
+    _COMP_NEEDS_OVERFLOW = False
+    _COMP_NEEDS_FLOAT_DIV = False
+    _COMP_NEEDS_FLOAT_REM = False
     _COMP_NEEDS_TIMER = False
     _TIMER_COUNTER = 0
     _STREAM_ITER_COUNTER = 0
@@ -12286,7 +12403,7 @@ def _emit_v3_combined(ir: dict, package: str, placement: bool = True) -> str:
         imports.append('\t"math"')
         imports.append('\t"strconv"')
         imports.append('\t"strings"')
-    if ctx.needs_float_rem:
+    if ctx.needs_float_rem or _COMP_NEEDS_FLOAT_REM:
         imports.append('\t"math"')
     if ctx.needs_strconv or _COMP_NEEDS_STRCONV:
         imports.append('\t"strconv"')
@@ -12344,8 +12461,8 @@ def _emit_v3_combined(ir: dict, package: str, placement: bool = True) -> str:
         out.append("")
     if ctx.needs_any_index:
         out.append(_V3_ANY_INDEX_HELPER)
-    if ctx.needs_float_div:
-        out.append("func revlDiv(a, b float64) float64 { return a / b }")
+    if ctx.needs_float_div or _COMP_NEEDS_FLOAT_DIV:
+        out.append(_REVL_DIV_HELPER)
         out.append("")
     if ctx.needs_float_lit:
         out.append("func revlF(v float64) float64 { return v }")
@@ -12353,42 +12470,11 @@ def _emit_v3_combined(ir: dict, package: str, placement: bool = True) -> str:
     if ctx.needs_ftoa:
         out.append(_V3_FTOA_HELPER)
         out.append("")
-    if ctx.needs_overflow:
-        out.append("func revlAdd(a, b int64) int64 {")
-        out.append("\ts := a + b")
-        out.append("\tif (a > 0 && b > 0 && s < 0) || (a < 0 && b < 0 && s >= 0) {")
-        out.append('\t\tpanic("revl: Int overflow")')
-        out.append("\t}")
-        out.append("\treturn s")
-        out.append("}")
-        out.append("")
-        out.append("func revlSub(a, b int64) int64 {")
-        out.append("\td := a - b")
-        out.append("\tif (b < 0 && d < a) || (b > 0 && d > a) {")
-        out.append('\t\tpanic("revl: Int overflow")')
-        out.append("\t}")
-        out.append("\treturn d")
-        out.append("}")
-        out.append("")
-        out.append("func revlMul(a, b int64) int64 {")
-        out.append("\tif a == 0 || b == 0 {")
-        out.append("\t\treturn 0")
-        out.append("\t}")
-        # `p/b != a` cannot see Int.MIN * -1: the product wraps back to
-        # Int.MIN, and Go DEFINES `Int.MIN / -1` as Int.MIN (spec, "Integer
-        # operators") rather than trapping — so the readback equals `a` and
-        # the check passes. Every other tier traps on this product; go
-        # returned Int.MIN silently. Name the one case the readback is blind
-        # to, the way revlDivTrunc/revlDivFloor already do.
-        out.append("\tif a == (-9223372036854775807 - 1) && b == -1 {")
-        out.append('\t\tpanic("revl: Int overflow")')
-        out.append("\t}")
-        out.append("\tp := a * b")
-        out.append("\tif p/b != a {")
-        out.append('\t\tpanic("revl: Int overflow")')
-        out.append("\t}")
-        out.append("\treturn p")
-        out.append("}")
+    # `or _COMP_NEEDS_OVERFLOW`: the trapping Int ops can come from a
+    # component METHOD body as well as from a top-level fn (issue #2198), and
+    # the method renderer does not write into `ctx`.
+    if ctx.needs_overflow or _COMP_NEEDS_OVERFLOW:
+        out.append(_V3_OVERFLOW_HELPER)
         out.append("")
     # `or _COMP_NEEDS_OVERFLOW32`: the narrow can come from a component
     # METHOD body as well as from a top-level fn (issue #1347), and the

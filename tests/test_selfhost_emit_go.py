@@ -183,6 +183,9 @@ CORPUS = [
     "../../../bench/results/rerun-deepseek-v4-pro-20260826/17-billing-ledger/v2/attempt-1.rvl",
     # ... and `Any` and a Result parameter in a component signature (issue #1892)
     "comp_provide_any_result.rvl",
+    # ... and arithmetic keyed on `operands`: the checked Int `+ - *`, true
+    # division, a Float `%` and Int-to-Float widening (issues #2259, #2198)
+    "comp_provide_arith.rvl",
 ]
 
 # The combined-path documents, which import stc-go and are built against it.

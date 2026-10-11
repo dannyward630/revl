@@ -905,7 +905,8 @@ def test_v3_record_lowers_in_a_live_provide_method():
     _has(src, "func (revlSelf *Factory_maker) Older(p Person) Person")
     # a record literal and a field access lower inside the method bodies
     _has(src, "return Person{Name: n, Age: a}")
-    _has(src, "return Person{Name: p.Name, Age: (p.Age + 1)}")
+    # Int `+` in a method body traps on overflow (issue #2259)
+    _has(src, "return Person{Name: p.Name, Age: revlAdd(p.Age, 1)}")
 
 
 def test_v3_provide_method_param_named_s_does_not_collide_with_receiver():
@@ -922,7 +923,10 @@ def test_v3_provide_method_param_named_s_does_not_collide_with_receiver():
         }
     """), package="shaper")
     _has(src, "func (revlSelf *C_shaper) Area(s int) int")
-    _has(src, "return (s * s)")
+    # Int `*` traps on overflow (issue #2259); this tier's Int is Go's `int`,
+    # so the operands widen to the int64 helper and the product narrows back
+    _has(src, "return int(revlMul(int64(s), int64(s)))")
+    _has(src, "func revlMul(a, b int64) int64 {")
     # the receiver name never leaks as a bare `func (s *` anywhere
     assert "func (s *" not in src
 
