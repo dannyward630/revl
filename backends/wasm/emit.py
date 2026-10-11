@@ -3074,7 +3074,7 @@ _CMP_SUFFIX = {
 _BOOL_OPS = {"&&": "i32.and", "||": "i32.or"}
 #: `Int` overflow *traps* (docs/arithmetic.md), and wasm has no checked
 #: arithmetic, so `+`/`-`/`*` go through helpers that test for overflow and
-#: execute `unreachable`. `%` cannot overflow into a wrong value — it traps
+#: execute `unreachable`. `%` cannot overflow into a wrong value: it traps
 #: natively on a zero divisor, which is the fault every other tier gives.
 _TRAPPING_INT_OPS = {"+": "call $int_add", "-": "call $int_sub", "*": "call $int_mul"}
 #: Int32 `+ - *` trap at the i32 edge through their own checked helpers, the
@@ -3082,7 +3082,7 @@ _TRAPPING_INT_OPS = {"+": "call $int_add", "-": "call $int_sub", "*": "call $int
 _TRAPPING_INT32_OPS = {"+": "call $int32_add", "-": "call $int32_sub",
                        "*": "call $int32_mul"}
 #: `/` is deliberately ABSENT: it is true division, so `Int / Int` is `Float`
-#: (docs/arithmetic.md) and this tier refuses Float by name — see
+#: (docs/arithmetic.md) and this tier refuses Float by name: see
 #: `_refuse_true_division`. `i64.div_s` here was a silent wrong value (7 / 2
 #: answered 3), and `f64.div` is no better: `$f64_to_str` traps on a
 #: non-integer-valued finite float (docs/strings.md §"Remaining wasm WAT work"),
@@ -3191,7 +3191,7 @@ def _refuse_true_division(operand_ty: str, where: str) -> None:
 
     `Int / Int` is `Float` (docs/arithmetic.md): `7 / 2` is `3.5`, not `3`. This
     tier lowers `Int`/`Bool` and refuses `Float` by name, and the one position
-    where it does lower a Float — a `${…}` part feeding `$f64_to_str` — cannot
+    where it does lower a Float (a `${…}` part feeding `$f64_to_str`) cannot
     absorb the result either, because that renderer traps on a finite float that
     is not integer-valued (docs/strings.md §"Remaining wasm WAT work") while the
     language documents `/` as total. So both lowerings are wrong: `i64.div_s`
@@ -3200,11 +3200,11 @@ def _refuse_true_division(operand_ty: str, where: str) -> None:
     than left to surface as a generic "only lowerable for Int/Int32".
 
     `%` is unaffected: it is Int-only and keeps `i64.rem_s`, which traps at a
-    zero divisor — the fault every other tier gives.
+    zero divisor: the fault every other tier gives.
     """
     raise EmitError(
         f"{where}: `/` yields 'Float' even over two {operand_ty}s, and 'Float' "
-        f"is not lowerable — this tier supports Int/Bool, so `{operand_ty} / "
+        f"is not lowerable: the wasm tier does not lower Float, so `{operand_ty} / "
         f"{operand_ty}` is refused by name (docs/arithmetic.md); use "
         f"div_trunc / div_floor / div_euclid for integer division")
 
@@ -5374,7 +5374,7 @@ class _V3Emitter:
             _refuse_float_operands(node, where)
             raise EmitError(f"{where}: arithmetic operator {op!r} is only lowerable for Int/Int32")
         if op == "/":
-            # Past the guard above, `/` is over two Ints (or two Int32s) — and
+            # Past the guard above, `/` is over two Ints (or two Int32s), and
             # that is TRUE division, i.e. Float, which this tier refuses by name
             # rather than lowering to `i64.div_s` (issue #2201). The Float-operand
             # branch above already returned, so `Float / Float` in the renderer

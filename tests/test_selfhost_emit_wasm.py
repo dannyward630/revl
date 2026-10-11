@@ -41,8 +41,7 @@ Deliberately OUT (excluded from the corpus, deferred to wasm Path B slice 2+):
 any value that touches linear memory (Str, List, records, tagged Opt/Result/user
 variants — string literals pool into ``data`` and move ``heap_start``, and each
 value threads ``$alloc``/``_str_ptr``/the nested scratch-pointer stack); Float
-end to end (``/`` yields Float, so it is refused by name wherever it appears —
-issue #2201, including the scalar binding the port used to lower to
+end to end (``/`` yields Float, so it is refused by name wherever it appears: issue #2201, including the scalar binding the port used to lower to
 ``i64.div_s``; a ``${aFloat}`` part pulls in ``$f64_to_str``); every
 ``builtin``/``len`` node
 (``.to_int()`` widening is a ``builtin``, not a bare ``widen`` marker) and the

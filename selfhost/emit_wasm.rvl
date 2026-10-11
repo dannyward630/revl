@@ -47,7 +47,7 @@
 //     value threads the alloc / str_ptr / slot machinery and the nested
 //     scratch-pointer stack (`_acquire_tmp`) — a much larger, allocation-shaped
 //     surface than the scalar corner;
-//   * Float end to end — `/` yields Float, so it is refused BY NAME wherever it
+//   * Float end to end: `/` yields Float, so it is refused BY NAME wherever it
 //     appears (issue #2201), and interpolating a Float pulls in the f64_to_str
 //     Grisu/Ryu helper;
 //     the stdlib builtins (str_split/str_join/str_index_of and every `builtin`/
@@ -149,7 +149,7 @@ fn is_comparison(op: Str) -> Bool { return is_cmp(op) || is_bool_op(op) }
 // (Str/List/`??`) are unreachable here. `/` has NO instruction at any width:
 // it is true division, so `Int / Int` is Float (docs/arithmetic.md), and Float
 // is refused BY NAME on this tier. `i64.div_s` here answered a silent 3 where
-// the language says 3.5 — see `render_bin`.
+// the language says 3.5: see `render_bin`.
 fn bin_instr(op: Str, opnd: Str) -> Str {
   if (op == "&&") { return "i32.and" }
   if (op == "||") { return "i32.or" }
@@ -843,7 +843,7 @@ fn render_bin(node: Any, s: Scope, depth: Int) -> WExpr {
   let op = node_op(node)
   if (op == "??") { return { wat: "<<DEFER-coalesce>>", ty: "" } }
   // `/` is TRUE division: `Int / Int` is Float (docs/arithmetic.md), `7 / 2` is
-  // 3.5, and Float is refused on this tier BY NAME — the same refusal the
+  // 3.5, and Float is refused on this tier BY NAME: the same refusal the
   // reference raises. `i64.div_s` here was a silent 3 in the one position the
   // tier allows Float (a `${…}` part), which is exactly what this port must not
   // answer, and `f64.div` is no better: `$f64_to_str` traps on a finite float
@@ -2512,7 +2512,7 @@ test "bin_instr picks the width and the checked helpers" {
   assert bin_instr("+", "Int") == `call $int_add`
   assert bin_instr("*", "Int32") == `call $int32_mul`
   assert bin_instr("%", "Int") == "i64.rem_s"
-  // issue #2201: `/` has no instruction at either width — `Int / Int` is Float,
+  // issue #2201: `/` has no instruction at either width: `Int / Int` is Float,
   // and this tier refuses Float by name (render_bin answers the marker).
   assert bin_instr("/", "Int") == ""
   assert bin_instr("/", "Int32") == ""
