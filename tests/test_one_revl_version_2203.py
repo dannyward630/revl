@@ -6,11 +6,12 @@ metadata (the `PYTHONPATH=src` pattern, a copied source tree), the attestation's
 to a hard-coded "2.0.0", while `revl doctor` read `pyproject.toml`. After any
 version bump they disagreed, and an attestation claimed the wrong compiler.
 
-Both tests run against a copy of the source tree whose `pyproject.toml` names a
+The first two tests run against a copy of the source tree whose `pyproject.toml` names a
 version no literal could match, with the installed `revl` metadata hidden. Every
 former implementation, by import path, must report what
 `revl._version.version()` reports, and that must be the tree's own version. An
-attestation made in that tree must stamp it.
+attestation made in that tree must stamp it. The tree's version also beats
+stale installed metadata, as an editable install made before a bump has.
 """
 
 from __future__ import annotations
@@ -151,28 +152,58 @@ def test_attestation_stamps_the_real_version_not_a_literal(uninstalled_result):
         f"the tree's version is {BUMPED!r}")
 
 
-def test_installed_metadata_wins_and_matches_in_process():
-    """In this process revl is installed, so every caller reports the
-    distribution's version, the first link of the chain."""
-    from importlib.metadata import PackageNotFoundError
-    from importlib.metadata import version as dist_version
+def _stale_metadata(monkeypatch, stale: str) -> None:
+    """Installed metadata reporting `stale` for revl, as an editable install
+    made before a version bump (or of another checkout) does."""
+    import importlib.metadata as md
 
-    from revl import _version, attest, gate
+    real = md.version
+
+    def recorded(name):
+        return stale if name == "revl" else real(name)
+
+    monkeypatch.setattr(md, "version", recorded)
+
+
+def test_tree_pyproject_beats_stale_installed_metadata(monkeypatch, tmp_path):
+    """An editable install records its version at install time. When the
+    source tree's pyproject.toml says otherwise, the tree is the truth: it is
+    what `tools/build_gate_crate.py` stamps into the Rust gate, so the Python
+    gate and every attestation must report the same value."""
+    from revl import _version, attest, bundle, gate
     from revl.mcp import identity
     from revl.truc import reproduce
 
-    try:
-        expected = dist_version("revl")
-    except PackageNotFoundError:
-        pytest.skip("revl is not installed in this interpreter")
-    assert _version.version() == expected
-    assert attest.compiler_version() == expected
-    assert gate.gate_version()["language"] == expected
-    assert reproduce._toolchain_version() == expected
-    assert identity.build_id() == f"revl-{expected}"
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        f'[project]\nname = "revl"\nversion = "{BUMPED}"\n', encoding="utf-8")
+    _stale_metadata(monkeypatch, "0.0.1")
+    monkeypatch.setattr(_version, "_PYPROJECT", pyproject)
+
+    assert _version.version() == BUMPED
+    assert attest.compiler_version() == BUMPED
+    assert attest.checker_identity()["compiler"] == BUMPED
+    assert gate.gate_version()["language"] == BUMPED
+    assert reproduce._toolchain_version() == BUMPED
+    assert bundle._toolchain_version() == BUMPED
+    assert identity.build_id() == f"revl-{BUMPED}"
 
 
-def test_no_metadata_and_no_pyproject_is_unknown(monkeypatch, tmp_path):
+def test_wheel_layout_falls_back_to_installed_metadata(monkeypatch, tmp_path):
+    """A wheel install has no revl pyproject.toml two levels above the
+    package (site-packages/revl/_version.py), so metadata answers there. A
+    pyproject.toml of another project at that spot is not revl's version."""
+    from revl import _version
+
+    _stale_metadata(monkeypatch, "3.1.4")
+    monkeypatch.setattr(_version, "_PYPROJECT", tmp_path / "pyproject.toml")
+    assert _version.version() == "3.1.4"
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "other"\nversion = "5.0.0"\n', encoding="utf-8")
+    assert _version.version() == "3.1.4"
+
+
+def test_no_metadata_and_no_revl_pyproject_is_unknown(monkeypatch, tmp_path):
     import importlib.metadata as md
 
     from revl import _version

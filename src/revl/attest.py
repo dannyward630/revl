@@ -603,9 +603,9 @@ def discharged_guarantees() -> list[str]:
 
 def compiler_version() -> str:
     """The revl toolchain version recorded as `checker.compiler`:
-    `revl._version.version()`, the one definition (installed metadata, else
-    the source tree's `pyproject.toml`, else "unknown"). `revl.gate` reports
-    the same value as `gate_version().language`.
+    `revl._version.version()`, the one definition (the source tree's
+    `pyproject.toml`, else installed metadata, else "unknown"). `revl.gate`
+    reports the same value as `gate_version().language`.
 
     Defined here, not in `revl.gate`: the compiler's import chain reaches this
     module, and importing `revl.gate` from it put the gate, and through the
