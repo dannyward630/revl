@@ -913,11 +913,12 @@ def test_the_dissent_record_is_per_member_and_readable():
     is the shape, and the answers in it are digests, which is why reading one
     does not give the caller a `T`.
 
-    Written as a module `fn` rather than inside a `provide` body because a
-    match-arm payload does not pin a method receiver there - a PRE-EXISTING
-    limit that has nothing to do with this slice, pinned as parity by
-    `test_a_dissent_payload_dispatches_like_any_other_adt_payload` below so a
-    later reader does not mistake it for a property of the answer type."""
+    Written as a module `fn`. The same arms inside a `provide` body behave
+    the same way: the component stratum knows the payload type, so
+    `d.length()` lowers to the builtin there too, and a method the payload
+    type lacks is refused by name against that type. That is what
+    `test_a_dissent_payload_dispatches_like_any_other_adt_payload` below
+    proves, for a user ADT and for the answer type alike."""
     assert compile_source("""
 fn settle(a: Aggregate[Str]) -> Int {
   return match a {
