@@ -106,6 +106,40 @@ test "int list" { assert ints() == 5 }
 """
 
 
+#: The two other places the same declaration is made. A provide-method body
+#: (`_method_body_lines`, which used `var` and froze the list at
+#: `List<Object>`), and element types with no generic spelling here (`Any`,
+#: `Int32`), which keep the raw list rather than emit `List<Any>`/`List<int>`.
+METHOD_PROGRAM = """\
+fn twice(s: Str) -> Str { return s.concat(s) }
+
+service Namer {
+  fn label(text: Str) -> Str
+}
+
+component Registry provides name: Namer {
+  provide name {
+    fn label(text) {
+      var parts: List[Str] = []
+      for (p of text.split(",")) { parts = parts.push(p) }
+      var out: List[Str] = []
+      for (p of parts) { out = out.push(twice(p)) }
+      return out.join("-")
+    }
+  }
+}
+
+pub fn any_and_int32() -> Int {
+  var xs: List[Any] = []
+  xs = xs.push(1)
+  var ys: List[Int32] = []
+  return xs.length() + ys.length()
+}
+
+test "raw lists" { assert any_and_int32() == 1 }
+"""
+
+
 def _compile(src: str) -> dict:
     return compile_source(src, "probe_2296.rvl",
                           modules={"stdlib/str.rvl": STR_MODULE})
@@ -123,6 +157,13 @@ def test_annotated_empty_list_declares_its_element_type():
     assert "java.util.List<java.lang.Long> xs = " in java
 
 
+def test_method_body_and_raw_element_declarations():
+    java = _java_source(METHOD_PROGRAM)
+    assert "java.util.List<String> parts = " in java
+    assert "java.util.List xs = " in java
+    assert "java.util.List ys = " in java
+
+
 def test_unannotated_empty_list_stays_raw():
     src = "pub fn f() -> Int {\n  var xs = []\n  return xs.length()\n}\n"
     assert "java.util.List xs = " in _java_source(src)
@@ -137,4 +178,10 @@ def test_annotated_list_loop_runs_on_java():
 @needs_jdk
 def test_stdlib_str_program_runs_on_java():
     status, message = RUNNERS["java"](_compile(STR_PROGRAM))
+    assert status == "pass", message
+
+
+@needs_jdk
+def test_method_body_and_raw_element_lists_run_on_java():
+    status, message = RUNNERS["java"](_compile(METHOD_PROGRAM))
     assert status == "pass", message

@@ -8,3 +8,8 @@ fn collect(xs: List[Str]) -> Str {
   for (x of xs) { out = out.push(x) }
   return out.join(",")
 }
+// An element type naming `Any` keeps the raw list.
+fn raw_any() -> Int {
+  var xs: List[Any] = []
+  return xs.length()
+}

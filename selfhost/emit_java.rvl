@@ -127,7 +127,7 @@ use "../stdlib/value.rvl" {
   value_kind, value_is_null, value_field, value_keys,
   value_list, value_at, value_str, value_bool, value_opt, value_int
 }
-use "../stdlib/str.rvl" { trim, split_top, last_index_of, rstrip }
+use "../stdlib/str.rvl" { trim, split_top, last_index_of, rstrip, ident_tokens }
 use "../stdlib/list.rvl" { list_contains, list_sort, list_dedup }
 
 // ------------------------------------------------- host formatting (kept @py)
@@ -1046,14 +1046,24 @@ fn render_expr(node: Any, ctx: Ctx, counter: Int) -> Rendered {
 
 // -------------------------------------------------------------- statements
 // `_empty_list_decl_type`: the precise List type an empty list literal's
-// `expected` pin names, else the raw `java.util.List`.
+// `expected` pin names, else the raw `java.util.List`. An element type naming
+// `Any`, `Int32` or `Row` keeps the raw list (`_RAW_LIST_ELEMENT_NAMES`).
 fn empty_list_decl_type(value: Any) -> Str {
   let pin = value_field(value, "expected")
   if (!value_is_null(pin)) {
     let t = trim(value_str(pin))
-    if (t.startsWith("List[") && t.endsWith("]")) { return java_v3_type(pin, false) }
+    if (t.startsWith("List[") && t.endsWith("]") && !names_raw_list_element(t)) {
+      return java_v3_type(pin, false)
+    }
   }
   return "java.util.List"
+}
+
+fn names_raw_list_element(t: Str) -> Bool {
+  for (name of ident_tokens(t)) {
+    if (name == "Any" || name == "Int32" || name == "Row") { return true }
+  }
+  return false
 }
 
 // `_let_keyword`: an empty list literal declares as the List type its

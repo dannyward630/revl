@@ -3056,12 +3056,25 @@ def _empty_list_decl_type(value: dict) -> str:
     local declares as that precise type and the loop binding gets the element
     type. An unannotated `var xs = []` names no type and keeps the raw list.
     """
+    return _annotated_list_decl_type(value) or "java.util.List"
+
+
+#: Element type names an empty list keeps the raw declaration for: `Any` and
+#: `Int32` have no generic spelling in `_java_v3_type` (`List<Any>`,
+#: `List<int>`), and `Row` widens to `Object` on this tier only, so the raw
+#: list stays the one answer the self-hosted emitter agrees with.
+_RAW_LIST_ELEMENT_NAMES = frozenset({"Any", "Int32", "Row"})
+
+
+def _annotated_list_decl_type(value: dict) -> str | None:
+    """The precise `java.util.List<E>` an empty list literal's `expected` pin
+    names, or None when it names none this tier can declare (#2296)."""
     expected = value.get("expected")
-    if isinstance(expected, str):
-        expected = expected.strip()
-        if expected.startswith("List[") and expected.endswith("]"):
-            return _java_v3_type(expected)
-    return "java.util.List"
+    expected = expected.strip() if isinstance(expected, str) else ""
+    if (not (expected.startswith("List[") and expected.endswith("]"))
+            or _RAW_LIST_ELEMENT_NAMES & set(re.findall(r"[A-Za-z_]\w*", expected))):
+        return None
+    return _java_v3_type(expected)
 
 
 def _let_keyword(node: dict, ctx: _V3Ctx | None = None,
@@ -7903,6 +7916,11 @@ def _method_body_lines(
                 # issue #274, one path over: this arm never went through
                 # `_let_keyword`, so `var m = Map.empty()` froze here too.
                 decl = _empty_map_decl_type(stmt, v3_ctx.map_locals)
+            elif (isinstance(raw, dict) and raw.get("kind") == "list"
+                    and not raw.get("items") and _annotated_list_decl_type(raw)):
+                # issue #2296, the same path: `var` froze an annotated
+                # `var xs: List[Str] = []` as `List<Object>` here.
+                decl = _annotated_list_decl_type(raw)
             else:
                 decl = _adt_binding_type(raw, v3_ctx) or "var"
             lines.append(f"{pad}{decl} {name} = {value};" if step == "let"
