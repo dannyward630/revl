@@ -3395,6 +3395,8 @@ fn emit_module(ir: Any, combined: Bool) -> Str {
   var comp_strconv = false
   var comp_ovf32 = false
   var comp_ovf = false
+  var comp_fdiv = false
+  var comp_frem = false
   var comp_teardown = false
   var comp_result = false
   var fnlines = []
@@ -3410,10 +3412,12 @@ fn emit_module(ir: Any, combined: Bool) -> Str {
     for (l of marked_comp) { comp_lines = comp_lines.push(strip_marks(l)) }
     comp_strconv = has_text(comp_lines, "strconv.Format")
     comp_ovf32 = has_text(comp_lines, "revlToI32(")
-    // `_COMP_NEEDS_OVERFLOW`: a method body's Int unary minus renders the
-    // checked subtraction `revlSub(0, ..)`, which no binary operator on this
-    // tier spells, so the call is the mark for the trio.
-    comp_ovf = has_text(comp_lines, "revlSub(0, ")
+    // `_COMP_NEEDS_OVERFLOW`: a method body's Int `+ - *` and unary minus
+    // render the checked helpers, so a call to any of them marks the trio.
+    comp_ovf = has_text(comp_lines, "revlAdd(") || has_text(comp_lines, "revlSub(") || has_text(comp_lines, "revlMul(")
+    // `_COMP_NEEDS_FLOAT_DIV` / `_COMP_NEEDS_FLOAT_REM` (issue #2198)
+    comp_fdiv = has_text(comp_lines, "revlDiv(")
+    comp_frem = has_text(comp_lines, "math.Mod(")
     comp_teardown = has_text(comp_lines, "newRevlFrame()")
     // issue #1892: a component signature that takes a Result names
     // `RevlResult[` with no `Result[` in the pure sections; the struct form
@@ -3424,7 +3428,7 @@ fn emit_module(ir: Any, combined: Bool) -> Str {
   let uses_fmt = rendered.indexOf("fmt.Sprintf(") >= 0
   let uses_strconv = rendered.indexOf("strconv.Format") >= 0 || comp_strconv
   let uses_strings = emitted_functions.uses_strings || emitted_tests.uses_strings
-  let uses_float_rem = rendered.indexOf("math.Mod(") >= 0
+  let uses_float_rem = rendered.indexOf("math.Mod(") >= 0 || comp_frem
   let uses_float_lit = rendered.indexOf("revlF(") >= 0
   let uses_any_index = rendered.indexOf("revlAnyIndex(") >= 0
   let uses_reflect = uses_any_index || rendered.indexOf("revlEq(") >= 0 || rendered.indexOf("revlListIndexOfEq(") >= 0
@@ -3494,7 +3498,7 @@ fn emit_module(ir: Any, combined: Bool) -> Str {
     out = out.concat(list_index_of_eq()).push("")
   }
   if (uses_any_index) { out = out.concat(any_index_helper()) }
-  if (flags.fdiv) {
+  if (flags.fdiv || comp_fdiv) {
     out = out.push("func revlDiv(a, b float64) float64 { return a / b }")
     out = out.push("")
   }
@@ -3733,6 +3737,11 @@ fn comp_infer(n: Any, env: CEnv) -> Str {
   }
   if (k == "bin") {
     if (list_contains(["==", "===", "!=", "!==", "<", ">", "<=", ">=", "&&", "||"], node_op(n))) { return "Bool" }
+    // `/` is true division and Float arithmetic answers a Float
+    // (docs/arithmetic.md), whatever the left operand's own type is.
+    let opnd = node_operands(n)
+    if (node_op(n) == "/" && list_contains(["Int", "Int32", "Float"], opnd)) { return "Float" }
+    if (list_contains(["+", "-", "*", "%"], node_op(n)) && opnd == "Float") { return "Float" }
     let l = comp_infer(value_field(n, "left"), env)
     return l != "" ? l : comp_infer(value_field(n, "right"), env)
   }
@@ -3970,6 +3979,32 @@ fn result_go_type(expected: Str, candidates: List[Any], env: CEnv) -> Str {
   return gt == "" && expected == "" ? "any" : gt
 }
 
+// `_comp_typed_arith`: an arithmetic node keys on its `operands` as a `fn`
+// body's does (docs/arithmetic.md). Int `+ - *` trap through the checked
+// helpers (issue #2259), `/` is true division through `revlDiv`, a Float `%`
+// is `math.Mod`, and an Int operand of Float arithmetic widens (issue #2198).
+fn comp_typed_arith(n: Any, left: Str, right: Str, env: CEnv) -> Str {
+  let op = node_op(n)
+  let opnd = node_operands(n)
+  var l = left
+  var r = right
+  if (opnd == "Float") {
+    if (list_contains(["Int", "Int32"], comp_infer(value_field(n, "left"), env))) { l = `float64(${l})` }
+    if (list_contains(["Int", "Int32"], comp_infer(value_field(n, "right"), env))) { r = `float64(${r})` }
+  }
+  if (opnd == "Int" && list_contains(["+", "-", "*"], op)) {
+    var h = "revlMul"
+    if (op == "+") { h = "revlAdd" }
+    if (op == "-") { h = "revlSub" }
+    return `${h}(${l}, ${r})`
+  }
+  if (op == "/" && list_contains(["Int", "Int32", "Float"], opnd)) {
+    return opnd == "Float" ? `revlDiv(${l}, ${r})` : `revlDiv(float64(${l}), float64(${r}))`
+  }
+  if (op == "%" && opnd == "Float") { return `math.Mod(${l}, ${r})` }
+  return `(${l} ${go_bin_op(op)} ${r})`
+}
+
 fn comp_expr_bare(n: Any, env: CEnv, expected: Str) -> Str {
   let k = node_kind(n)
   if (k == "name") { return comp_name_ref(env, value_str(value_field(n, "id"))) }
@@ -3994,7 +4029,7 @@ fn comp_expr_bare(n: Any, env: CEnv, expected: Str) -> Str {
     let l = comp_expr(value_field(n, "left"), env, "")
     let r = comp_expr(value_field(n, "right"), env, "")
     if (op == "<<" || op == ">>") { return `(${l} ${op} (uint32(${r}) & 31))` }
-    return `(${l} ${go_bin_op(op)} ${r})`
+    return comp_typed_arith(n, l, r, env)
   }
   if (k == "un") {
     let operand = comp_expr(value_field(n, "operand"), env, "")

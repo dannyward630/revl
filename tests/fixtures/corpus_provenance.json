@@ -1310,6 +1310,7 @@
    "oracle-reject:g4 1980: a read from another key",
    "oracle-reject:g4 1980: a restore of a name no read bound",
    "oracle-reject:g4 1980: a write to this key between the read and the effect",
+   "tests/fixtures/emit_go_corpus/comp_provide_arith.rvl",
    "tests/fixtures/emit_go_refusals/host_identifier_collision.rvl",
    "tests/fixtures/emit_java_refusals/host_identifier_collision.rvl",
    "tests/fixtures/emit_py_corpus/ui_transaction_unit.rvl",
