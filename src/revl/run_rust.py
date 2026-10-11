@@ -165,11 +165,8 @@ def run_rust(ir: dict, config: dict, files, once: bool = False,
               "round-trip (as with --once) and exits.", flush=True)
 
     tmp = Path(tempfile.mkdtemp(prefix="revl_run_rust_"))
-    # _build_rust regenerates the runner's committed src/components.rs in place
-    # (it is per-composition codegen). Snapshot it so a run leaves the checkout
-    # exactly as it found it — the committed module is a golden, not scratch.
-    components_rs = _RUNNER / "src" / "components.rs"
-    saved = components_rs.read_bytes() if components_rs.exists() else None
+    # _build_rust builds from a staged copy of the runner crate, so the
+    # checkout's committed src/components.rs is never written (issue #2199).
     try:
         try:
             binary = _placement._build_rust(ir, tmp)
@@ -202,8 +199,6 @@ def run_rust(ir: dict, config: dict, files, once: bool = False,
             sys.stdout.flush()
         rc = proc.wait()
     finally:
-        if saved is not None:
-            components_rs.write_bytes(saved)
         shutil.rmtree(tmp, ignore_errors=True)
 
     proof.record(proof_out)

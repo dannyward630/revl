@@ -50,6 +50,7 @@ Backends and their runners:
 from __future__ import annotations
 
 import _thread
+import hashlib
 import importlib.util
 import ipaddress
 import json
@@ -3471,42 +3472,82 @@ def _build_java(ir: dict, tmp: Path) -> str:
     return str(out)
 
 
+def _rust_runner_target_dir() -> Path:
+    """The cargo target dir the rust runner builds into: `CARGO_TARGET_DIR` when
+    set, else the runner's own (gitignored) `target/`. It is shared on purpose,
+    so the cordis-rs dependency graph is compiled once; cargo's own lock on the
+    target dir serializes concurrent builds, and every composition gets its own
+    binary name inside it (see `_build_rust`)."""
+    override = os.environ.get("CARGO_TARGET_DIR")
+    return Path(override) if override else _RUST_RUNNER / "target"
+
+
+def _stage_rust_runner(components: str, target_dir: Path) -> tuple[Path, str]:
+    """Copy the runner crate, with this composition's components.rs, to a
+    directory named by the hash of its whole content, and give its binary a name
+    carrying the same hash. Returns (crate dir, binary name).
+
+    Identical inputs land on the same crate and the same binary (cargo then has
+    nothing to do); different inputs never share either. The committed crate in
+    the source tree is only read."""
+    src = _RUST_RUNNER / "src"
+    files = {p.relative_to(src).as_posix(): p.read_bytes()
+             for p in sorted(src.rglob("*.rs")) if p.name != "components.rs"}
+    files["components.rs"] = components.encode("utf-8")
+    manifest = (_RUST_RUNNER / "Cargo.toml").read_text(encoding="utf-8")
+    digest = hashlib.sha256()
+    digest.update(manifest.encode("utf-8"))
+    for name in sorted(files):
+        digest.update(b"\0" + name.encode("utf-8") + b"\0" + files[name])
+    key = digest.hexdigest()[:16]
+    binary = f"revl_placement_runner_{key}"
+    # `[workspace]` keeps the copy its own root wherever the target dir is.
+    manifest = manifest.replace('name = "revl_placement_runner"\npath',
+                                f'name = "{binary}"\npath') + "\n[workspace]\n"
+    if f'name = "{binary}"' not in manifest:
+        raise RuntimeError("rust runner Cargo.toml: no [[bin]] revl_placement_runner to rename")
+    crate = target_dir / "revl-runner-crates" / key
+    files_out = {"Cargo.toml": manifest.encode("utf-8"),
+                 **{f"src/{name}": data for name, data in files.items()}}
+    for rel, data in files_out.items():
+        dest = crate / rel
+        if dest.exists() and dest.read_bytes() == data:
+            continue  # leave the mtime alone so cargo sees nothing new
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        part = dest.with_name(f".{dest.name}.{os.getpid()}.part")
+        part.write_bytes(data)
+        os.replace(part, dest)  # atomic, so a concurrent same-key stage is safe
+    return crate, binary
+
+
 def _build_rust(ir: dict, tmp: Path) -> str:
-    """Regenerate the runner's components.rs (proxies/stub/plugin table) from the
+    """Emit the runner's components.rs (proxies/stub/plugin table) from the
     running IR, then cargo build. Regenerating per composition is what makes the
     rust runner general; for user_cache it reproduces the committed module.
 
-    The module is put back once cargo has read it (issue #1288). It is a
-    COMMITTED golden — tools/regen_goldens.py's rust target owns it, and owns it
-    as the same bytes as backends/rust/golden/user_cache.rs — so leaving another
-    composition's emission in the checkout is a modified golden, not scratch.
-    `revl run --backend rust` already restored it around this call
-    (src/revl/run_rust.py); the placement path reached the same write through
-    `ensure_backend` and never did, and a `swap ... --to rust` reaches it again
-    mid-run. An examples/outcome.rvl emission left here this way was swept into
-    an unrelated commit and surfaced days later as a one-file drift on someone
-    else's PR. Restoring at the one site that writes covers every caller."""
+    The build never writes the source tree (issue #2199). The committed
+    `src/components.rs` is a golden that tools/regen_goldens.py's rust target
+    owns (issue #1288), and before this the build rewrote it in place and put it
+    back afterwards: two concurrent builds raced on it and on the one shared
+    `target/debug/revl_placement_runner`, and a killed run left the checkout
+    dirty. Now `_stage_rust_runner` copies the crate with the emitted module to
+    a content-hashed directory under the target dir and names the binary after
+    the same hash, so each composition has its own binary and identical inputs
+    reuse it."""
     ir_json = tmp / "rust_ir.json"
     ir_json.write_text(json.dumps(ir), encoding="utf-8")
     emitted = subprocess.run([sys.executable, str(_BACKENDS_DIR / "rust" / "emit.py"), str(ir_json)],
                              capture_output=True, text=True)
     if emitted.returncode:
         raise RuntimeError(f"rust emit failed:\n{emitted.stderr.strip()}")
-    components = _RUST_RUNNER / "src" / "components.rs"
-    committed = components.read_bytes() if components.exists() else None
-    try:
-        components.write_text(emitted.stdout, encoding="utf-8")
-        build = subprocess.run(["cargo", "build", "--manifest-path",
-                                str(_RUST_RUNNER / "Cargo.toml")],
-                               capture_output=True, text=True)
-    finally:
-        # cargo has compiled the module by now, so the built binary keeps this
-        # composition while the checkout keeps its golden.
-        if committed is not None:
-            components.write_bytes(committed)
+    target_dir = _rust_runner_target_dir()
+    crate, binary = _stage_rust_runner(emitted.stdout, target_dir)
+    build = subprocess.run(["cargo", "build", "--manifest-path", str(crate / "Cargo.toml"),
+                            "--target-dir", str(target_dir)],
+                           capture_output=True, text=True)
     if build.returncode:
         raise RuntimeError(f"cargo build (rust runner) failed:\n{build.stderr.strip()}")
-    return str(_RUST_RUNNER / "target" / "debug" / "revl_placement_runner")
+    return str(target_dir / "debug" / binary)
 
 
 def _build_go(ir: dict, tmp: Path) -> str:
