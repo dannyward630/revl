@@ -443,7 +443,19 @@ def _never_gates(spec: dict) -> bool:
 #: Events that start a workflow by themselves, on a change or on a clock.
 #: `workflow_dispatch` waits for a person, `workflow_call` and `workflow_run`
 #: for another workflow: a job only they start is a job nothing starts.
-_SELF_STARTING = frozenset({"push", "pull_request", "merge_group", "schedule"})
+_SELF_STARTING = frozenset({
+    "push", "pull_request", "pull_request_target", "merge_group", "schedule"})
+
+
+def _matches_main(patterns: list) -> bool:
+    """Does a `branches:` filter include main? Patterns apply in order, and a
+    `!pattern` excludes what an earlier one included."""
+    included = False
+    for pattern in map(str, patterns):
+        negated = pattern.startswith("!")
+        if fnmatch.fnmatchcase("main", pattern.lstrip("!")):
+            included = not negated
+    return included
 
 
 def _triggers(doc: dict) -> set[str]:
@@ -452,7 +464,8 @@ def _triggers(doc: dict) -> set[str]:
     A `push` limited to tags or to branches other than main, a `pull_request`
     limited to some base branches or activity types, and any trigger with a
     `paths:` filter run for some changes only, so they are not counted.
-    `paths-ignore` (skip docs-only changes) is. PyYAML reads the bare key `on`
+    `paths-ignore` (skip docs-only changes) is. A pull request's activity
+    types must include `synchronize`, the push to an open pull request. PyYAML reads the bare key `on`
     as the boolean True."""
     on = doc.get("on", doc.get(True))
     if isinstance(on, str):
@@ -469,13 +482,13 @@ def _triggers(doc: dict) -> set[str]:
             continue
         if branches is None and ("tags" in filters or "tags-ignore" in filters):
             continue
-        if branches is not None and not any(
-                fnmatch.fnmatchcase("main", str(b)) for b in branches):
+        if branches is not None and not _matches_main(branches):
             continue
         if "main" in (filters.get("branches-ignore") or []):
             continue
         types = filters.get("types")
-        if types is not None and not {"opened", "synchronize"} & set(types):
+        if (event.startswith("pull_request") and types is not None
+                and "synchronize" not in types):
             continue
         events.add(event)
     return events
@@ -491,7 +504,7 @@ def _when(cond: object, event: str) -> bool | None:
     knows (a path filter's output, a needed job's result). Only a definite
     False is acted on: `github.event_name` comparisons, literals, `!`, `&&`,
     `||` and parentheses are evaluated, and `cancelled()` is false and
-    `always()` true; everything else is None."""
+    `always()` true, `failure()` false; everything else is None."""
     if cond is None or isinstance(cond, bool):
         return True if cond is None else cond
     text = str(cond).strip()
@@ -532,15 +545,19 @@ def _when(cond: object, event: str) -> bool | None:
                 left = not short
         return left
 
-    def negation() -> object:
+    def unary() -> object:
+        # `!` binds tighter than `==`: `!a == b` is `(!a) == b`.
         if peek() == "!":
             take()
-            value = truth(negation())
+            value = truth(unary())
             return None if value is None else not value
-        left = atom()
+        return atom()
+
+    def comparison() -> object:
+        left = unary()
         if peek() in ("==", "!="):
             same = take() == "=="
-            right = atom()
+            right = unary()
             if left is None or right is None:
                 return None
             if isinstance(left, str) and isinstance(right, str):
@@ -551,7 +568,7 @@ def _when(cond: object, event: str) -> bool | None:
     def atom() -> object:
         tok = take()
         if tok == "(":
-            value = either("||", lambda: either("&&", negation))
+            value = either("||", lambda: either("&&", comparison))
             if take() != ")":
                 raise ValueError(text)
             return value
@@ -562,7 +579,9 @@ def _when(cond: object, event: str) -> bool | None:
                 depth += {"(": 1, ")": -1}.get(part, 0)
                 if depth == 0:
                     break
-            return {"always": True, "cancelled": False}.get(tok)
+            # `failure()` runs only after something else went red, so a step
+            # it guards proves nothing about a green run.
+            return {"always": True, "cancelled": False, "failure": False}.get(tok)
         if tok.startswith("'"):
             return tok[1:-1].replace("''", "'")
         if tok in ("true", "false"):
@@ -570,7 +589,7 @@ def _when(cond: object, event: str) -> bool | None:
         return event if tok == "github.event_name" else None
 
     try:
-        value = either("||", lambda: either("&&", negation))
+        value = either("||", lambda: either("&&", comparison))
     except (IndexError, ValueError):
         return None
     return truth(value) if pos == len(tokens) else None
@@ -1135,6 +1154,7 @@ def _workflow(on: str, job_extra: str = "", step_extra: str = "",
     (_workflow("{push: {branches: [release]}}"), False),
     (_workflow("{pull_request: {paths: ['docs/**']}}"), False),
     (_workflow("{pull_request: {types: [labeled]}}"), False),
+    (_workflow("{push: {branches: ['**', '!main']}}"), False),
     # Triggered, but its `if:` is false for every event that starts it.
     (_workflow("[push, pull_request]",
                job_extra="\n    if: github.event_name == 'workflow_dispatch'"), False),
@@ -1146,6 +1166,7 @@ def _workflow(on: str, job_extra: str = "", step_extra: str = "",
     (_workflow("{push: {branches: [main]}, pull_request: null}"), True),
     (_workflow("{push: {branches: [main], paths-ignore: ['**/*.md']}}"), True),
     (_workflow("{schedule: [{cron: '0 7 * * *'}]}"), True),
+    (_workflow("{merge_group: {types: [checks_requested]}}"), True),
     (_workflow("[push, pull_request]",
                job_extra="\n    if: ${{ github.event_name != 'pull_request' }}"), True),
     (_workflow("[push, pull_request]",
@@ -1177,6 +1198,9 @@ def test_a_gate_set_only_in_a_job_that_never_executes_is_not_credited(
     ("${{ github.event_name == 'pull_request' && needs.x.result == 'y' }}", "push", False),
     ("contains(github.ref, 'main')", "push", None),
     ("github.run_attempt > 1", "push", None),
+    ("!github.event_name == 'push'", "pull_request", False),
+    ("!(github.event_name == 'push')", "pull_request", True),
+    ("${{ failure() }}", "push", False),
 ])
 def test_an_if_is_false_only_when_the_event_makes_it_false(cond, event, value):
     assert _when(cond, event) is value
