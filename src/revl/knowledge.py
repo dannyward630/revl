@@ -175,10 +175,11 @@ def _first_code_line(text: str, after: int) -> int | None:
 
 
 def anchor_of(text: str, name: str, block: Block, decls: list,
-              nodes: dict) -> tuple[str | None, int, int]:
+              nodes: dict, program=None) -> tuple[str | None, int, int]:
     """(symbol path or None for the file, first line, last line) of what a
-    block describes. `decls` are the file's top-level declarations and `nodes`
-    a cache of their parsed nodes."""
+    block describes. `decls` are the file's top-level declarations, `nodes`
+    a cache of their parsed nodes and `program` the file already parsed (so
+    a declaration is looked up in it rather than parsed again, issue #2191)."""
     from . import nested  # noqa: PLC0415
 
     line = _first_code_line(text, block.last)
@@ -193,7 +194,9 @@ def anchor_of(text: str, name: str, block: Block, decls: list,
     try:
         key = (decl.kind, decl.name)
         if key not in nodes:
-            nodes[key] = nested.node_of(text, name, decl.kind, decl.name)
+            nodes[key] = (nested.node_of(text, name, decl.kind, decl.name)
+                          if program is None
+                          else nested.top_of(program, name, decl.kind, decl.name))
         node = nodes[key]
         for member in nested.members(node, decl.kind):
             if member.line == line:
@@ -222,27 +225,30 @@ def fingerprint(text: str, name: str, first: int, last: int) -> str:
 def index_text(path: str, text: str, report: dict | None, known_codes) -> list[dict]:
     """Every comment block of one file as an index entry. `report` is the
     structured diagnostic of compiling it, or None when it compiled clean."""
-    from . import symbols  # noqa: PLC0415
+    from . import nested, symbols  # noqa: PLC0415
 
-    try:
-        decls = symbols.declarations(text, path)
-    except symbols.SymbolError:
-        decls = []
+    # parse once: every comment's anchor is looked up in this one program, and
+    # a span several comments share is fingerprinted once (issue #2191)
+    program = nested._program(text, path)
+    decls = symbols.declarations(text, path, program) if program is not None else []
     nodes: dict = {}
+    prints: dict = {}
     entries = []
     for block in comment_blocks(text):
         block, _note = split_note(block)
         if block is None:
             continue  # all of it is a rendered note (issue #1754)
         record = classify(block, known_codes)
-        symbol, first, last = anchor_of(text, path, block, decls, nodes)
+        symbol, first, last = anchor_of(text, path, block, decls, nodes, program)
+        if symbol is not None and (first, last) not in prints:
+            prints[(first, last)] = fingerprint(text, path, first, last)
         entry = {**record,
                  "id": hashlib.sha256(f"{path}\0{symbol}\0{block.text}"
                                       .encode("utf-8")).hexdigest()[:16],
                  # a block about the file as a whole has no code of its own to
                  # go stale against (anchored to no declaration)
                  "anchor": {"path": path, "symbol": symbol,
-                            "fingerprint": (fingerprint(text, path, first, last)
+                            "fingerprint": (prints[(first, last)]
                                             if symbol is not None else None)},
                  "line": block.first, "status": "live"}
         if record["tier"] == "derived":
