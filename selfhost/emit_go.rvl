@@ -157,8 +157,22 @@ extern pure fn go_string(v: Any) -> Str = @py {
 // source, and the one place rendered text is turned back into data (the
 // `assert` message) strips it first.
 extern pure fn stdlib_mark() -> Str = @py { return chr(1) }
-fn strip_marks(s: Str) -> Str { return s.split(stdlib_mark()).join("") }
 fn marked(text: Str) -> Str { return stdlib_mark().concat(text) }
+
+// The component tier's `_COMP_NEEDS_*` flags, carried the same way. Each is
+// U+0002 and a one-letter tag in front of the helper text that sets it, so a
+// Str literal that spells a helper call (`"revlAdd("`) sets nothing, as on the
+// reference: `a` the checked Int trio, `d` revlDiv, `m` math.Mod, `n` the
+// Int32 narrow, `s` strconv, `t` a component frame (the teardown preamble).
+extern pure fn flag_char() -> Str = @py { return chr(2) }
+fn flag(tag: Str) -> Str { return flag_char().concat(tag) }
+fn flagged(tag: Str, text: Str) -> Str { return flag(tag).concat(text) }
+fn strip_marks(s: Str) -> Str {
+  var t = s.split(stdlib_mark()).join("")
+  if (t.indexOf(flag_char()) < 0) { return t }
+  for (tag of ["a", "d", "m", "n", "s", "t"]) { t = t.split(flag(tag)).join("") }
+  return t
+}
 fn replace_all(s: Str, needle: Str, repl: Str) -> Str { return s.split(needle).join(repl) }
 
 // ---------------------------------------------------------------- small utils
@@ -3411,15 +3425,16 @@ fn emit_module(ir: Any, combined: Bool) -> Str {
     if (has_text(marked_comp, stdlib_mark())) { used_stdlib = true }
     var comp_lines = []
     for (l of marked_comp) { comp_lines = comp_lines.push(strip_marks(l)) }
-    comp_strconv = has_text(comp_lines, "strconv.Format")
-    comp_ovf32 = has_text(comp_lines, "revlToI32(")
-    // `_COMP_NEEDS_OVERFLOW`: a method body's Int `+ - *` and unary minus
-    // render the checked helpers, so a call to any of them marks the trio.
-    comp_ovf = has_text(comp_lines, "revlAdd(") || has_text(comp_lines, "revlSub(") || has_text(comp_lines, "revlMul(")
+    // The other `_COMP_NEEDS_*` flags ride on the marks the renderer put in
+    // front of each helper it rendered, never on the text: a Str literal that
+    // spells `revlAdd(` or `math.Mod(` sets nothing (issue #2260).
+    comp_strconv = has_text(marked_comp, flag("s"))
+    comp_ovf32 = has_text(marked_comp, flag("n"))
+    comp_ovf = has_text(marked_comp, flag("a"))
     // `_COMP_NEEDS_FLOAT_DIV` / `_COMP_NEEDS_FLOAT_REM` (issue #2198)
-    comp_fdiv = has_text(comp_lines, "revlDiv(")
-    comp_frem = has_text(comp_lines, "math.Mod(")
-    comp_teardown = has_text(comp_lines, "newRevlFrame()")
+    comp_fdiv = has_text(marked_comp, flag("d"))
+    comp_frem = has_text(marked_comp, flag("m"))
+    comp_teardown = has_text(marked_comp, flag("t"))
     // issue #1892: a component signature that takes a Result names
     // `RevlResult[` with no `Result[` in the pure sections; the struct form
     comp_result = has_text(comp_lines, "RevlResult[")
@@ -3852,12 +3867,12 @@ fn comp_builtin(method: Str, recv: Str, target: Str, args: List[Str]) -> Str {
   if (method == "startsWith") { text = `strings.HasPrefix(${target}, ${a0})` }
   if (method == "endsWith") { text = `strings.HasSuffix(${target}, ${a0})` }
   if (method == "to_int") { text = `int64(${target})` }
-  if (method == "to_int32") { text = `revlToI32(${target})` }
+  if (method == "to_int32") { text = flagged("n", `revlToI32(${target})`) }
   // an Int32 receiver is the reference's own guard; the checker admits
   // `to_str` on Int and Float only
   if (method == "to_str") {
-    text = recv == "Float" ? `strconv.FormatFloat(${target}, 'g', -1, 64)`
-      : (recv == "Int32" ? `strconv.FormatInt(int64(${target}), 10)` : `strconv.FormatInt(${target}, 10)`)
+    text = flagged("s", recv == "Float" ? `strconv.FormatFloat(${target}, 'g', -1, 64)`
+      : (recv == "Int32" ? `strconv.FormatInt(int64(${target}), 10)` : `strconv.FormatInt(${target}, 10)`))
   }
   return marked(text)
 }
@@ -3902,9 +3917,9 @@ fn comp_format(n: Any, env: CEnv) -> Str {
         text = ""
       }
       if (at == "Str") { pieces = pieces.push(arg) }
-      if (at == "Int") { pieces = pieces.push(`strconv.FormatInt(${arg}, 10)`) }
-      if (at == "Int32") { pieces = pieces.push(`strconv.FormatInt(int64(${arg}), 10)`) }
-      if (at == "Bool") { pieces = pieces.push(`strconv.FormatBool(${arg})`) }
+      if (at == "Int") { pieces = pieces.push(flagged("s", `strconv.FormatInt(${arg}, 10)`)) }
+      if (at == "Int32") { pieces = pieces.push(flagged("s", `strconv.FormatInt(int64(${arg}), 10)`)) }
+      if (at == "Bool") { pieces = pieces.push(flagged("s", `strconv.FormatBool(${arg})`)) }
       used = used + 1
     } else {
       out = out.concat(c == "%" ? "%%" : c)
@@ -3997,12 +4012,12 @@ fn comp_typed_arith(n: Any, left: Str, right: Str, env: CEnv) -> Str {
     var h = "revlMul"
     if (op == "+") { h = "revlAdd" }
     if (op == "-") { h = "revlSub" }
-    return `${h}(${l}, ${r})`
+    return flagged("a", `${h}(${l}, ${r})`)
   }
   if (op == "/" && list_contains(["Int", "Int32", "Float"], opnd)) {
-    return opnd == "Float" ? `revlDiv(${l}, ${r})` : `revlDiv(float64(${l}), float64(${r}))`
+    return flagged("d", opnd == "Float" ? `revlDiv(${l}, ${r})` : `revlDiv(float64(${l}), float64(${r}))`)
   }
-  if (op == "%" && opnd == "Float") { return `math.Mod(${l}, ${r})` }
+  if (op == "%" && opnd == "Float") { return flagged("m", `math.Mod(${l}, ${r})`) }
   return `(${l} ${go_bin_op(op)} ${r})`
 }
 
@@ -4037,7 +4052,7 @@ fn comp_expr_bare(n: Any, env: CEnv, expected: Str) -> Str {
     let op = node_op(n)
     if (op == "!") { return `(!${operand})` }
     if (op == "~") { return `(^${operand})` }
-    if (node_operands(n) == "Int") { return `revlSub(0, ${operand})` }
+    if (node_operands(n) == "Int") { return flagged("a", `revlSub(0, ${operand})`) }
     return `(-${operand})`
   }
   if (k == "if") {
@@ -4457,7 +4472,7 @@ fn emit_comp_component(c: Any, doc: CDoc) -> List[Str] {
   out = out.push(line(2, "Apply: func(ctx *stc.Context) (stc.Inverse, error) {"))
   let needs_frame = component_needs_frame(c)
   if (needs_frame) {
-    out = out.push(line(3, "_revlFrame := newRevlFrame()")).push(line(3, "if err := ctx.Effect(func() stc.Inverse {"))
+    out = out.push(line(3, flagged("t", "_revlFrame := newRevlFrame()"))).push(line(3, "if err := ctx.Effect(func() stc.Inverse {"))
     out = out.push(line(4, "return func() error { _revlFrame.runCompensationPhase(); return nil }"))
     out = out.push(line(3, "}); err != nil {")).push(line(4, "return nil, err")).push(line(3, "}"))
   }
@@ -4681,24 +4696,24 @@ fn emit_live_module(ir: Any, in_slice: Bool) -> Str {
     let named = banner.concat(uncarried_components(ir)).concat(deferred_test_markers(ir))
     return rstrip(named.join(newline())).concat(newline())
   }
-  let uses_strconv = has_text(body, "strconv.Format")
-  let ovf = has_text(body, "revlAdd(") || has_text(body, "revlSub(") || has_text(body, "revlMul(")
-  let teardown = has_text(body, "newRevlFrame()")
+  let uses_strconv = has_text(marked, flag("s"))
+  let ovf = has_text(marked, flag("a"))
+  let teardown = has_text(marked, flag("t"))
   var imports = [line(1, `"fmt"`), line(1, `"sync"`)]
   if (stdlib) { imports = imports.push(line(1, `"strings"`)).push(line(1, `"unicode/utf8"`)) }
   if (teardown) { imports = imports.push(line(1, `"time"`)).push(line(1, `"os"`)).push(line(1, `"strconv"`)) }
-  if (has_text(body, "math.Mod(")) { imports = imports.push(line(1, `"math"`)) }
+  if (has_text(marked, flag("m"))) { imports = imports.push(line(1, `"math"`)) }
   if (uses_strconv && !teardown) { imports = imports.push(line(1, `"strconv"`)) }
   imports = imports.push(line(1, `"slices"`)).push("").push(line(1, `stc "github.com/0xdenny218/stc-go"`))
   var out = banner.push("import (").concat(imports).push(")").push("").push("var _ = fmt.Sprintf").push("").concat(host_runtime())
   if (stdlib) { out = out.concat(stdlib_preamble("strings")) }
   // `_V3_OVERFLOW32_HELPER`: the narrow alone, not the pure tier's Int32 trio
-  if (has_text(body, "revlToI32(")) {
+  if (has_text(marked, flag("n"))) {
     out = out.concat(["func revlToI32(v int64) int32 {", line(1, "if v < -2147483648 || v > 2147483647 {"),
                       line(2, `panic("revl: Int32 overflow")`), line(1, "}"), line(1, "return int32(v)"), "}", ""])
   }
   if (ovf) { out = out.concat(overflow_preamble()) }
-  if (has_text(body, "revlDiv(")) { out = out.push("func revlDiv(a, b float64) float64 { return a / b }").push("") }
+  if (has_text(marked, flag("d"))) { out = out.push("func revlDiv(a, b float64) float64 { return a / b }").push("") }
   if (teardown) { out = out.concat(teardown_preamble()) }
   return out.concat(body).join(newline()).concat(newline())
 }

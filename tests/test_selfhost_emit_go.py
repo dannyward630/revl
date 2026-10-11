@@ -165,6 +165,10 @@ CORPUS = [
     # fixed-order import block and `_emit`'s preamble order, over the same
     # component renderer as the combined path.
     "comp_live_provide.rvl",
+    # ... and a Str literal that spells a helper call sets no `_COMP_NEEDS_*`
+    # flag on either path: imports and preambles follow what was rendered
+    "comp_live_literal_helpers.rvl",
+    "comp_combined_literal_helpers.rvl",
     "../emit_ts_corpus/services_methods.rvl",
     "../emit_ts_corpus/services_async.rvl",
     "../emit_py_corpus/provide_returns.rvl",
@@ -633,13 +637,22 @@ def test_a_live_body_past_the_slice_is_still_named(emitted, reference, tmp_path)
                  "component C provides a_b: S, a__b: S {\n"
                  "  provide a_b { fn g(n) = n.to_str() }\n  provide a__b { fn g(n) = n.to_str() }\n}\n",
                  id="colliding-keys"),
+    pytest.param("fn one() -> Int = 1\n\nservice S { fn g(n: Int) -> Str }\n"
+                 "component C provides acme::s: S { provide acme::s { fn g(n) = n.to_str() } }\n",
+                 id="namespaced-key-beside-fn"),
+    pytest.param("fn one() -> Int = 1\n\nservice S { fn g(n: Int) -> Str }\n"
+                 "component C provides a_b: S, a__b: S {\n"
+                 "  provide a_b { fn g(n) = n.to_str() }\n  provide a__b { fn g(n) = n.to_str() }\n}\n",
+                 id="colliding-keys-beside-fn"),
 ])
-def test_a_key_the_reference_mangles_is_named_on_the_live_path(emitted, reference,
-                                                               tmp_path, source):
+def test_a_key_the_reference_mangles_is_named_on_either_component_path(emitted, reference,
+                                                                       tmp_path, source):
     """The reference mangles a namespaced key (`_key_ident`) and refuses two keys
     that land on one Go identifier (`_check_host_keys`). The port does neither,
     so it names the component rather than writing `_keyAcme::s` or a duplicate
-    key var into a module that would not build."""
+    key var into a module that would not build. The `beside-fn` cases take the
+    combined path (a top-level fn beside the component), the others the live
+    one."""
     path = tmp_path / "keys.rvl"
     path.write_text(source)
     ir = compile_files([str(path)])
