@@ -410,7 +410,8 @@ def test_a_session_bound_to_a_lapsed_operator_cannot_act_on_a_question(
            "override": session.override_ticket,
            "revoke": session.revoke_ticket}[verb]
 
-    with pytest.raises(SessionError, match=f"{lapse.upper()}|lapsed"):
+    message = {"revoked": "REVOKED", "expired": "lapsed at 1000"}[lapse]
+    with pytest.raises(SessionError, match=message):
         act(ticket["hash"], reason="the bound operator acts alone")
 
     refusals = [r for r in _records(session) if r["record"] == "quorum-refused"]
