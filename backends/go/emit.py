@@ -1472,8 +1472,8 @@ _COMP_NEEDS_OVERFLOW32 = False
 # Trapping `+ - *` on Int referenced by a component body: flags the checked
 # helpers `revlAdd`/`revlSub`/`revlMul`. The method renderer reaches them
 # through `_Env`, not through the typed-core ctx the prelude reads, so without
-# this flag a method body emitted the call and no definition — `undefined:
-# revlSub` (issue #2198).
+# this flag a method body emitted the call and no definition: Go reported
+# `undefined: revlSub` (issue #2198).
 _COMP_NEEDS_OVERFLOW = False
 # A true division `/` in a component body: flags `revlDiv`, the runtime float
 # division the pure typed-core path emits off `ctx.needs_float_div`. A Float
