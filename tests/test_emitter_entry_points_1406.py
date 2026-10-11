@@ -485,7 +485,7 @@ def test_the_census_disciplines_are_the_ones_still_in_use():
     assert set(ENTRY_POINTS.values()) == {"reports", "funnelled"}
 
 
-def test_the_by_hand_entry_point_still_discriminates_correctly():
+def test_quarantine_still_catches_the_wasm_emitters_own_class():
     """Quarantine catches `canonical.EmitError` rather than asking the shared
     helper, so that class must stay the wasm emitter's own refusal class, which
     is precisely what the shared helper would have answered."""

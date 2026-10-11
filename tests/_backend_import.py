@@ -26,7 +26,9 @@ ROOT = Path(__file__).resolve().parents[1]
 def backend_emitter(backend: str):
     """The ``emit`` module of ``backends/<backend>/``, under the unique name
     ``revl_<backend>_emit``: the same module object `revl.bundle`, the
-    placement dry-run and ``backends/wasm/canonical.py`` use (issue #2204)."""
+    placement dry-run and ``backends/wasm/canonical.py`` use (issue #2204).
+    The python reference tier is also reached under the bare name ``emit``
+    (`revl._paths.python_backend_emitter`), which is a second module object."""
     from revl.placement import backend_emit_module
 
     return backend_emit_module(backend, root=ROOT / "backends")

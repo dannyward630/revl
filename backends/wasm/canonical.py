@@ -86,8 +86,10 @@ _HERE = pathlib.Path(__file__).resolve().parent
 
 def _load_wasm_emit():
     name = "revl_wasm_emit"
+    path = (_HERE / "emit.py").resolve()
     module = sys.modules.get(name)
-    if module is None:
+    bound = getattr(module, "__file__", None)
+    if module is None or bound is None or pathlib.Path(bound).resolve() != path:
         spec = importlib.util.spec_from_file_location(name, _HERE / "emit.py")
         assert spec is not None and spec.loader is not None, _HERE / "emit.py"
         module = importlib.util.module_from_spec(spec)
