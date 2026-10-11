@@ -364,8 +364,8 @@ The MCP server is only useful to a session that has it connected. A developer
 or agent working on a downstream project (a repo that depends on revl but is not
 the revl checkout) gets `revl_check`, `revl_plan` and `revl_swap` by adding
 `revl mcp serve` to the config of an MCP client. It speaks stdio, so a client
-needs five values: a command, its args, a working directory, an environment, and
-nothing else (no port, no token).
+needs four values: a command, its args, a working directory and an environment
+(no port, no token).
 
 If revl is installed in a virtualenv (a wheel, or `sh backends/python/setup.sh`
 in a checkout, which installs revl and the pinned cordis-py editable), the
@@ -392,7 +392,7 @@ interpreter at the checkout with `PYTHONPATH`. Do not write that value by hand:
 ```text
 $ revl doctor --no-smoke
 ...
-source checkout (not installed): to boot a composition from it, run
+source checkout: to boot a composition from it with another interpreter, run
   export PYTHONPATH=/path/to/revl/src:/path/to/revl/backends/python/.cordis-py/src:/path/to/revl/backends/python
 ```
 

@@ -88,3 +88,44 @@ def test_diagnose_text_and_json_carry_the_line(tmp_path):
     assert line in doctor.render_text(report)
     assert doctor.to_json(report)["checkout"]["export"] == line
     assert json.dumps(doctor.to_json(report))
+
+
+class _CordisAtProber(doctor.Prober):
+    """The real prober with `cordis` importable from a chosen file, as in a venv
+    where it is installed editable from some other clone."""
+
+    def __init__(self, origin):
+        self._origin = origin
+
+    def module_origin(self, name):
+        return self._origin if name == "cordis" else super().module_origin(name)
+
+
+def test_cordis_already_importable_elsewhere_is_used_when_no_clone_exists(tmp_path):
+    repo = _fake_checkout(tmp_path, with_cordis=False)
+    pkg = tmp_path / "venv-clone" / "src" / "cordis"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    result = doctor.checkout_pythonpath(
+        _CordisAtProber(str(pkg / "__init__.py")), repo / "backends", env={})
+    assert result["cordis"] == {"found": True,
+                                "path": str(tmp_path / "venv-clone" / "src"),
+                                "fetch": None}
+    assert result["pythonpath"][1] == str(tmp_path / "venv-clone" / "src")
+    assert "cordis-py not found" not in result["export"]
+
+
+def test_relative_cordis_py_resolves_against_backends_python(tmp_path):
+    repo = _fake_checkout(tmp_path, with_cordis=False)
+    clone = repo / "backends" / "python" / "my-clone" / "src" / "cordis"
+    clone.mkdir(parents=True)
+    result = doctor.checkout_pythonpath(
+        _NoCordisProber(), repo / "backends", env={"CORDIS_PY": "my-clone"})
+    assert result["cordis"]["found"] is True
+    assert result["pythonpath"][1] == str(repo / "backends" / "python" / "my-clone" / "src")
+    # the relative name is not taken against the process's working directory
+    missing = doctor.checkout_pythonpath(
+        _NoCordisProber(), repo / "backends", env={"CORDIS_PY": "no-such-clone"})
+    assert missing["cordis"]["found"] is False
+    assert missing["cordis"]["path"] == str(
+        repo / "backends" / "python" / "no-such-clone" / "src")

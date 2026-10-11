@@ -856,8 +856,8 @@ def render_text(report: Report) -> str:
 
     if report.checkout:
         lines.append("")
-        lines.append("source checkout (not installed): to boot a composition "
-                     "from it, run")
+        lines.append("source checkout: to boot a composition from it with "
+                     "another interpreter, run")
         lines.append(f"  {report.checkout['export']}")
 
     counts = _counts(report)
