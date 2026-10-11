@@ -625,6 +625,33 @@ def test_a_live_body_past_the_slice_is_still_named(emitted, reference, tmp_path)
     assert "pure typed-core tier" not in got
 
 
+@pytest.mark.parametrize("source", [
+    pytest.param("service S { fn g(n: Int) -> Str }\n"
+                 "component C provides acme::s: S { provide acme::s { fn g(n) = n.to_str() } }\n",
+                 id="namespaced-key"),
+    pytest.param("service S { fn g(n: Int) -> Str }\n"
+                 "component C provides a_b: S, a__b: S {\n"
+                 "  provide a_b { fn g(n) = n.to_str() }\n  provide a__b { fn g(n) = n.to_str() }\n}\n",
+                 id="colliding-keys"),
+])
+def test_a_key_the_reference_mangles_is_named_on_the_live_path(emitted, reference,
+                                                               tmp_path, source):
+    """The reference mangles a namespaced key (`_key_ident`) and refuses two keys
+    that land on one Go identifier (`_check_host_keys`). The port does neither,
+    so it names the component rather than writing `_keyAcme::s` or a duplicate
+    key var into a module that would not build."""
+    path = tmp_path / "keys.rvl"
+    path.write_text(source)
+    ir = compile_files([str(path)])
+    assert ir["ir_version"] == 3
+    if "::" not in source:
+        with pytest.raises(reference.EmitError, match="both mangle to the Go identifier"):
+            reference.emit(ir)
+    got = emitted["emit_go_src"](ir)
+    assert "<<UNSUPPORTED-COMPONENT:C>>" in got
+    assert "::" not in got.split("<<", 1)[0]
+
+
 def test_an_incidental_component_on_the_pure_path_is_not_marked(emitted, reference,
                                                                 tmp_path):
     """The boundary of the rule above, so it is not read as wider than it is.

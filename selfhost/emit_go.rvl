@@ -4360,6 +4360,24 @@ fn components_in_slice(ir: Any) -> Bool {
   for (ext of value_list(value_field(ir, "externs"))) { ok = ok && value_is_null(value_field(ext, "compensate")) }
   let doc = comp_doc(ir)
   for (c of value_list(value_field(ir, "components"))) { ok = ok && component_ok(c, doc) }
+  return ok && keys_in_slice(ir)
+}
+
+// `_key_ident` / `_check_host_keys`: a namespaced key (`acme::greeter`) is
+// mangled on the reference, and two keys that land on one Go identifier are
+// refused there. This file ports neither, so it declines both.
+fn keys_in_slice(ir: Any) -> Bool {
+  var seen: Map[Str, Str] = Map.empty()
+  var ok = true
+  for (c of value_list(value_field(ir, "components"))) {
+    for (table of ["provides", "requires", "isolate", "intercept"]) {
+      for (k of value_keys(value_field(c, table))) {
+        let first = map_get(seen, camel(k))
+        ok = ok && k.indexOf("::") < 0 && (first == "" || first == k)
+        seen = seen.set(camel(k), k)
+      }
+    }
+  }
   return ok
 }
 
@@ -4637,9 +4655,10 @@ fn emit_comp_body(ir: Any) -> List[Str] {
 // With no declared type the component renderer is the combined one's, so this
 // path differs from it only in the assembly: the banner, an import block in
 // the reference's fixed (unsorted) order, the preambles in `_emit`'s order
-// and no trailing strip. A body that names an Opt or Result takes `_emit`'s
-// sealed Result preamble, which this file does not carry, so it is declined
-// with a `<<UNSUPPORTED-COMPONENT:..>>` marker per component.
+// and no trailing strip. A body that names a Result takes `_emit`'s sealed
+// Result preamble, which this file does not carry, so it is declined with a
+// `<<UNSUPPORTED-COMPONENT:..>>` marker per component. A body that names an
+// Opt is declined too, which is stricter than the reference needs.
 fn takes_live_path(ir: Any) -> Bool {
   return value_int(value_field(ir, "ir_version")) == 3
     && value_list(value_field(ir, "components")).length() > 0
