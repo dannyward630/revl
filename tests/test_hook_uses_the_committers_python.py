@@ -39,7 +39,9 @@ _RECORD = (
 )
 _SELECTOR = _RECORD.format(what="selector") + "print('FULL 0')\nprint('PYTEST tests')\n"
 _CONFORMANCE = _RECORD.format(what="conformance")
-_PYTEST_MAIN = _RECORD.format(what="pytest")
+# The hook refuses a pytest run that passed no test (issue #2208), so the stub
+# reports one.
+_PYTEST_MAIN = _RECORD.format(what="pytest") + "print('1 passed in 0.01s')\n"
 
 
 def _run(args, cwd, env=None):
