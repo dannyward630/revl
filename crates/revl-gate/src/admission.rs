@@ -385,6 +385,23 @@ fn has_duplicate(names: &[&str]) -> bool {
     false
 }
 
+/// Two component names the reference refuses as one (issue #2224): names that
+/// agree once letter case and underscores are dropped, the key
+/// `revl.compiler.component_name_fold` computes. An exact repeat agrees too, so
+/// this is a superset of `has_duplicate` over the same list.
+fn has_folded_duplicate(names: &[&str]) -> bool {
+    let folded: Vec<String> = names
+        .iter()
+        .map(|name| name.chars().filter(|c| *c != '_').flat_map(char::to_lowercase).collect())
+        .collect();
+    for (i, key) in folded.iter().enumerate() {
+        if folded[i + 1..].contains(key) {
+            return true;
+        }
+    }
+    false
+}
+
 /// A type spelling a SIGNATURE may mention: a scalar, or an alias this source
 /// declares. An alias is one level deep by construction (see the `type` arm of
 /// [`parse`]), so this resolves nothing.
@@ -854,8 +871,10 @@ fn check<'a>(
     // duplicate alias and a duplicate component, and the native gate does not
     // make all of those refusals, so the certifier carries them itself. Without
     // them the surface would admit programs the reference refuses — measured,
-    // which is why they are here and not assumed away.
-    if has_duplicate(&services) || has_duplicate(&parsed.aliases) || has_duplicate(&components) {
+    // which is why they are here and not assumed away. Components are compared
+    // folded: the reference also refuses two component names that differ only
+    // in letter case or underscores (issue #2224).
+    if has_duplicate(&services) || has_duplicate(&parsed.aliases) || has_folded_duplicate(&components) {
         return None;
     }
     if parsed.declared_aliases != parsed.aliases.len() {

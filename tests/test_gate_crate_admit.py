@@ -445,6 +445,14 @@ def admissions(consumer) -> list[tuple[str, str, tuple[str, str], dict]]:
             for (name, src), wire in zip(CORPUS, wires)]
 
 
+def _two_components(first: str, second: str) -> str:
+    """Two components inside the certified component half: each provides one
+    key of one service through a bare parameter read."""
+    return ("service S {\n  fn get(k: Str) -> Str\n}\n"
+            f"component {first} provides a: S {{\n  provide a {{\n    fn get(k) = k\n  }}\n}}\n"
+            f"component {second} provides b: S {{\n  provide b {{\n    fn get(k) = k\n  }}\n}}\n")
+
+
 # Programs INSIDE the crate's admission surface (`crates/revl-gate/src/
 # admission.rs`), and near misses one token outside it. The oracle corpus above
 # contains none of either: every program in it declares a component or an `fn`
@@ -455,6 +463,10 @@ INSIDE_THE_ADMISSION_SURFACE = (
     ("comment_only", "// nothing to declare\n"),
     ("one_service", "service Store {\n  fn get(key: Str) -> Str\n}\n"),
     ("scalar_alias", "type Key = Str\nservice S {\n  fn get(k: Key) -> Key\n}\n"),
+    # the positive control for `folded_component_names` below: the same two
+    # components under names that stay apart, so that near miss is withheld
+    # for its names and not for its shape
+    ("two_components", _two_components("KVStore", "Store")),
 )
 
 OUTSIDE_THE_ADMISSION_SURFACE = (
@@ -464,6 +476,9 @@ OUTSIDE_THE_ADMISSION_SURFACE = (
      "service A {\n  fn f(x: Int) -> Int\n}\nservice A {\n  fn g(x: Int) -> Int\n}\n"),
     ("duplicate_method",
      "service A {\n  fn f(x: Int) -> Int\n  fn f(y: Int) -> Int\n}\n"),
+    # issue #2224: the reference refuses two component names that differ only
+    # in letter case or underscores, which `has_duplicate` alone would admit
+    ("folded_component_names", _two_components("KVStore", "Kvstore")),
     # the type layer, which is the whole reason the surface is this small
     ("type_error", 'fn f() -> Int { return "s" }'),
     ("undefined_name", "fn f() -> Int { return undefined_name }"),
