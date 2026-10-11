@@ -609,26 +609,40 @@ fn ul_extern_items(ir: Str) -> Str {
   return ul_trim(ir.slice(at + 1, close))
 }
 
+// The index just past the value of the top-level key `key` of `ir`, or -1 when
+// there is no such key or its value is not an array or object.
+fn ul_value_end(ir: Str, key: Str) -> Int {
+  let at = ul_top_key(ir, key)
+  if (at < 0) { return 0 - 1 }
+  let ch = ir.slice(at, at + 1)
+  if ((ch != "[") && (ch != "{")) { return 0 - 1 }
+  let close = ul_match_close(ir, at)
+  if (close < 0) { return 0 - 1 }
+  return close + 1
+}
+
 // `ir` with the extern elements `items` APPENDED to its top-level `externs`
 // array, after the document's own, as the reference merges the root module
 // first. A document that declares no extern has no `externs` key at all; the
-// array is then created where the producer writes it, right after `components`.
+// array is then created where `lower_to_ir` writes it: after `functions`, else
+// after `types`, else after `components`.
 fn ul_append_externs(ir: Str, items: Str) -> Str {
   if (items == "") { return ir }
   let at = ul_top_key(ir, "externs")
   if (at >= 0) {
+    if (ir.slice(at, at + 1) != "[") { return ir }
     let close = ul_match_close(ir, at)
     if (close < 0) { return ir }
     var sep = ""
     if (ul_trim(ir.slice(at + 1, close)) != "") { sep = ", " }
     return ir.slice(0, close).concat(sep).concat(items).concat(ir.slice(close, ir.length()))
   }
-  let comps = ul_top_key(ir, "components")
-  if (comps < 0) { return ir }
-  let end = ul_match_close(ir, comps)
+  var end = ul_value_end(ir, "functions")
+  if (end < 0) { end = ul_value_end(ir, "types") }
+  if (end < 0) { end = ul_value_end(ir, "components") }
   if (end < 0) { return ir }
   let ins = ", \"externs\": [".concat(items).concat("]")
-  return ir.slice(0, end + 1).concat(ins).concat(ir.slice(end + 1, ir.length()))
+  return ir.slice(0, end).concat(ins).concat(ir.slice(end, ir.length()))
 }
 
 // The document's IR with the whole extern section of every module in its pure
@@ -637,7 +651,8 @@ fn ul_append_externs(ir: Str, items: Str) -> Str {
 // list) is not scanned by `ul_use_pairs`, so it makes no dependency here where
 // the reference makes one; and the reference's privacy pass renames a PRIVATE
 // extern whose bare name collides across the included modules, which this keeps
-// under its bare name.
+// under its bare name. Only the extern section travels: the reference also
+// merges a dependency's functions, types and bound secrets, and this does not.
 fn ul_link_externs(ir: Str, source: Str, path: Str) -> Str {
   let deps = ul_pure_closure(source, path)
   var out = ir
@@ -960,8 +975,14 @@ test "a used module's extern section is appended at the IR's top level (issue #2
   assert ul_top_key(ir, "components") == 51
   // The matcher closes an array as well as an object.
   assert ul_match_close("[{\"a\": \"]\"}, []]", 0) == 15
-  // No `externs` key: the array is created right after `components`.
-  assert ul_append_externs(ir, "{\"name\": \"e\"}") == "{\"services\": {\"S\": {\"externs\": []}}, \"components\": [], \"externs\": [{\"name\": \"e\"}], \"types\": {}}"
+  // No `externs` key: the array is created where the producer writes it,
+  // after `functions`, else `types`, else `components`.
+  assert ul_append_externs(ir, "{\"name\": \"e\"}") == "{\"services\": {\"S\": {\"externs\": []}}, \"components\": [], \"types\": {}, \"externs\": [{\"name\": \"e\"}]}"
+  let fns = "{\"components\": [], \"types\": {}, \"functions\": [], \"tests\": []}"
+  assert ul_append_externs(fns, "{}") == "{\"components\": [], \"types\": {}, \"functions\": [], \"externs\": [{}], \"tests\": []}"
+  assert ul_append_externs("{\"components\": []}", "{}") == "{\"components\": [], \"externs\": [{}]}"
+  // A non-array `externs` value is left alone.
+  assert ul_append_externs("{\"externs\": 1, \"x\": []}", "{}") == "{\"externs\": 1, \"x\": []}"
   // An existing array keeps the document's own externs first.
   let own = "{\"components\": [], \"externs\": [{\"name\": \"d\"}]}"
   assert ul_append_externs(own, "{\"name\": \"e\"}") == "{\"components\": [], \"externs\": [{\"name\": \"d\"}, {\"name\": \"e\"}]}"
