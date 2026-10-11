@@ -235,6 +235,21 @@ fn line(indent: Int, text: Str) -> Str {
   return ind(indent).concat(text)
 }
 
+// `_Lines.close_block` (issue #2284): Python has no empty block, so every block
+// body rendered from the author's steps closes here. When none of its lines is
+// a statement (no line at all, or only blank and comment lines) it gets a
+// `pass`. A branch holding only a comment lowers to no steps, and a `@py` body
+// can hold only comments, so the guard reads the rendered lines.
+fn is_statement_line(text: Str) -> Bool {
+  let t = trim(text)
+  return t != "" && !t.startsWith("#")
+}
+
+fn close_block(lines: List[Str], indent: Int) -> List[Str] {
+  for (ln of lines) { if (is_statement_line(ln)) { return lines } }
+  return lines.push(line(indent, "pass"))
+}
+
 fn is_addsubmul(op: Str) -> Bool {
   return op == "+" || op == "-" || op == "*"
 }
@@ -1380,6 +1395,13 @@ fn number_patterns(node: Any, n: Int) -> Numbered {
   return { node: fields, next: c }
 }
 
+// a fn-grammar block body (fn, test, if/else, while, for) at `indent`
+fn fn_block(steps: List[Any], indent: Int) -> List[Str] {
+  var out = []
+  for (s of steps) { out = out.concat(fn_stmt(s, indent)) }
+  return close_block(out, indent)
+}
+
 fn fn_stmt(node: Any, indent: Int) -> List[Str] {
   let step = value_str(value_field(node, "step"))
   var out = []
@@ -1412,33 +1434,21 @@ fn fn_stmt(node: Any, indent: Int) -> List[Str] {
   }
   if (step == "if") {
     out = out.push(line(indent, `if ${expr(value_field(node, "cond"))}:`))
-    for (s of value_list(value_field(node, "then"))) { out = out.concat(fn_stmt(s, indent + 1)) }
+    out = out.concat(fn_block(value_list(value_field(node, "then")), indent + 1))
     let els = value_list(value_field(node, "else"))
     if (els.length() > 0) {
       out = out.push(line(indent, "else:"))
-      for (s of els) { out = out.concat(fn_stmt(s, indent + 1)) }
+      out = out.concat(fn_block(els, indent + 1))
     }
     return out
   }
   if (step == "while") {
     out = out.push(line(indent, `while ${expr(value_field(node, "cond"))}:`))
-    let body = value_list(value_field(node, "body"))
-    if (body.length() == 0) {
-      out = out.push(line(indent + 1, "pass"))
-    } else {
-      for (s of body) { out = out.concat(fn_stmt(s, indent + 1)) }
-    }
-    return out
+    return out.concat(fn_block(value_list(value_field(node, "body")), indent + 1))
   }
   if (step == "for") {
     out = out.push(line(indent, `for ${mangle(value_str(value_field(node, "bind")))} in ${expr(value_field(node, "iterable"))}:`))
-    let body = value_list(value_field(node, "body"))
-    if (body.length() == 0) {
-      out = out.push(line(indent + 1, "pass"))
-    } else {
-      for (s of body) { out = out.concat(fn_stmt(s, indent + 1)) }
-    }
-    return out
+    return out.concat(fn_block(value_list(value_field(node, "body")), indent + 1))
   }
   if (step == "expr") {
     out = out.push(line(indent, expr(value_field(node, "expr"))))
@@ -1521,8 +1531,7 @@ fn emit_functions(source_functions: List[Any], ir: Any) -> List[Str] {
     }
     let body = value_list(colour(value_field(fnode, "body"), doc_colour(ir, None, locals, false), is_async, false))
     out = out.push(`${is_async ? "async def" : "def"} ${body_name}(${params}):`)
-    if (body.length() == 0) { out = out.push(line(1, "pass")) }
-    for (s of body) { out = out.concat(fn_stmt(s, 1)) }
+    out = out.concat(fn_block(body, 1))
     out = out.push("")
     if (memoized) { out = out.concat(emit_memo_wrapper(name, value_list(value_field(fnode, "params")), is_async)) }
   }
@@ -1788,16 +1797,15 @@ fn emit_externs(externs: List[Any], gated: Bool) -> List[Str] {
       out = out.push(`${kw} ${name}(${ps.join(", ")}):`)
       // item 256 Slice 1: a bound secret is the FIRST body local of the
       // emission extern it is bound to, and nowhere else.
-      let secrets = value_list(value_field(ext, "secrets"))
-      for (sn of secrets) { out = out.push(line(1, `${mangle(value_str(sn))} = _revl_secret(${py_repr(sn)})`)) }
+      var lines = []
+      for (sn of value_list(value_field(ext, "secrets"))) { lines = lines.push(line(1, `${mangle(value_str(sn))} = _revl_secret(${py_repr(sn)})`)) }
       let schema = value_list(value_field(ext, "config"))
-      if (schema.length() > 0) { out = out.push(line(1, extern_config_bind(name, schema))) }
+      if (schema.length() > 0) { lines = lines.push(line(1, extern_config_bind(name, schema))) }
       let body = dedent(strip_nl(value_str(py_body)))
-      // `pass` only for a def with no line at all: an injected secret or
-      // config local is a statement in its own right.
-      let bare = body == "" && schema.length() == 0 && secrets.length() == 0
-      for (ln of splitlines(body)) { out = out.push(line(1, ln)) }
-      if (bare) { out = out.push(line(1, "pass")) }
+      for (ln of splitlines(body)) { lines = lines.push(line(1, ln)) }
+      // an injected secret or config local is a statement in its own right; a
+      // body of only comments is not (issue #2284)
+      out = out.concat(close_block(lines, 1))
       out = out.push("")
     }
   }
@@ -2481,6 +2489,13 @@ fn emission_fire(expr: Any) -> Str {
 }
 
 // -------------------------------------------------- component-body statements
+// one arm of a setup `if`, closed like every other block (issue #2284)
+fn setup_block(steps: List[Any], indent: Int) -> List[Str] {
+  var out = []
+  for (n of steps) { out = out.concat(setup_step(n, indent)) }
+  return close_block(out, indent)
+}
+
 // `_setup_step`: a pure setup step inside a block-effect acquisition.
 fn setup_step(step: Any, indent: Int) -> List[Str] {
   let kind = value_str(value_field(step, "step"))
@@ -2492,11 +2507,11 @@ fn setup_step(step: Any, indent: Int) -> List[Str] {
   if (kind == "expr") { out = out.push(line(indent, cexpr(value_field(step, "expr")))); return out }
   if (kind == "if") {
     out = out.push(line(indent, `if ${cexpr(value_field(step, "cond"))}:`))
-    for (n of value_list(value_field(step, "then"))) { out = out.concat(setup_step(n, indent + 1)) }
+    out = out.concat(setup_block(value_list(value_field(step, "then")), indent + 1))
     let els = value_list(value_field(step, "else"))
     if (els.length() > 0) {
       out = out.push(line(indent, "else:"))
-      for (n of els) { out = out.concat(setup_step(n, indent + 1)) }
+      out = out.concat(setup_block(els, indent + 1))
     }
     return out
   }
@@ -3398,13 +3413,13 @@ fn body_step(step: Any, indent: Int, comp_name: Str, counter: Int, services: Any
     var out = [line(indent, `if ${cexpr(value_field(step, "cond"))}:`)]
     var c = counter
     let te = emit_body_steps(value_list(value_field(step, "then")), indent + 1, comp_name, c, services, externs)
-    out = out.concat(te.lines)
+    out = out.concat(close_block(te.lines, indent + 1))
     c = te.counter
     let els = value_list(value_field(step, "else"))
     if (els.length() > 0) {
       out = out.push(line(indent, "else:"))
       let ee = emit_body_steps(els, indent + 1, comp_name, c, services, externs)
-      out = out.concat(ee.lines)
+      out = out.concat(close_block(ee.lines, indent + 1))
       c = ee.counter
     }
     out = out.push("")
@@ -4580,9 +4595,9 @@ fn emit_lifecycle_test(t: Any, fname: Str) -> List[Str] {
     out = out.concat([line(2, "_revl_owner = _revl_SessionOwner()"), line(2, "_revl_set_session_owner(_revl_owner)")])
   }
   out = out.concat([line(2, "_revl_set_trace(events.append)"), line(2, "try:"), line(3, "baseline = _revl_residue(root)")])
-  let body = value_list(value_field(t, "body"))
-  if (body.length() == 0) { out = out.push(line(3, "pass")) }
-  for (st of body) { out = out.concat(lifecycle_step(st, 3, where)) }
+  var body = []
+  for (st of value_list(value_field(t, "body"))) { body = body.concat(lifecycle_step(st, 3, where)) }
+  out = out.concat(close_block(body, 3))
   out = out.concat([line(2, "finally:"), line(3, "_revl_set_trace(None)")])
   if (uses_abort) { out = out.push(line(3, "_revl_clear_session_owner()")) }
   out = out.concat([line(3, "for fiber in reversed(list(_revl_fibers.values())):"),
@@ -4609,9 +4624,7 @@ fn emit_tests(ir: Any, source_tests: List[Any]) -> List[Str] {
       out = out.concat(emit_lifecycle_test(t, fname))
     } else {
       out = out.push(`def ${fname}():`)
-      let body = value_list(value_field(t, "body"))
-      if (body.length() == 0) { out = out.push(line(1, "pass")) }
-      for (st of value_list(colour(value_field(t, "body"), doc_colour(ir, None, [], false), false, false))) { out = out.concat(fn_stmt(st, 1)) }
+      out = out.concat(fn_block(value_list(colour(value_field(t, "body"), doc_colour(ir, None, [], false), false, false)), 1))
       out = out.push("")
     }
     out = out.push(`REVL_TESTS.append((${py_repr(value_field(t, "name"))}, ${fname}))`)

@@ -972,6 +972,23 @@ fault test "probe" for P {
 }
 """
 
+from test_py_comment_only_blocks_2284 import COMPONENT_CASES, FN_CASES  # noqa: E402
+
+COMMENT_ONLY_CASES = {**FN_CASES, **COMPONENT_CASES}
+
+
+# issue #2284: a block whose body holds only a comment lowers to no steps (or,
+# for a `@py` extern, to comment lines only); both emitters close it with `pass`.
+@pytest.mark.parametrize("name", sorted(COMMENT_ONLY_CASES))
+def test_comment_only_blocks_agree(emitted, reference, tmp_path, name):
+    path = tmp_path / f"{name}.rvl"
+    path.write_text(COMMENT_ONLY_CASES[name])
+    ir = compile_files([str(path)])
+    want, got = reference.emit(ir), emitted["emit_py_src"](ir)
+    compile(want, f"{name}.py", "exec")
+    assert got == want
+
+
 @pytest.mark.parametrize("source, reference_token", [
     pytest.param(IN_FILE_TEST_SRC, "REVL_TESTS.append(('probe', test_0))", id="in-file-tests"),
     pytest.param(LIFECYCLE_TEST_SRC, "lifecycle test 'probe': assertion failed", id="lifecycle-tests"),

@@ -680,6 +680,39 @@ class _Lines:
     def text(self) -> str:
         return "\n".join(self._lines)
 
+    def mark(self) -> int:
+        """Where a block body starts, for `close_block`."""
+        return len(self._lines)
+
+    def close_block(self, mark: int, indent: int) -> None:
+        """Python has no empty block (issue #2284). Every block whose body is
+        rendered from the author's steps closes here: when nothing since `mark`
+        is a statement (no line at all, or only blank and comment lines) the
+        body gets a `pass`. A branch holding only a comment lowers to no steps,
+        and a `@py` body can hold only comments, so the guard is on the
+        rendered lines, not on the step list."""
+        if not any(_is_statement_line(text) for text in self._lines[mark:]):
+            self.add(indent, "pass")
+
+
+# ASCII whitespace exactly as stdlib/str.rvl `is_space` reads it (the self-host
+# port tests the same set), never Python's wider Unicode `str.strip()`.
+_ASCII_SPACE = " \t\n\r\x0b\x0c"
+
+
+def _is_statement_line(text: str) -> bool:
+    stripped = text.strip(_ASCII_SPACE)
+    return stripped != "" and not stripped.startswith("#")
+
+
+def _emit_block(out: "_Lines", indent: int, steps, render) -> None:
+    """Render `steps` as one block body at `indent`, then guarantee it is
+    non-empty. `render(step)` writes one step; the caller binds the indent."""
+    mark = out.mark()
+    for step in steps or ():
+        render(step)
+    out.close_block(mark, indent)
+
 
 class _UsesScan:
     """The single-pass answer to every preamble `_uses_*` gate (issue #540).
@@ -2116,13 +2149,13 @@ class _ComponentEmitter:
         elif kind == "expr":
             out.add(indent, self._expr(step.get("expr"), where))
         elif kind == "if":
-            out.add(indent, f"if {self._expr(step.get('cond'), where)}:")
-            for nested in step.get("then") or []:
+            def arm(nested: dict) -> None:
                 self._setup_step(out, indent + 1, nested, where)
+            out.add(indent, f"if {self._expr(step.get('cond'), where)}:")
+            _emit_block(out, indent + 1, step.get("then"), arm)
             if step.get("else"):
                 out.add(indent, "else:")
-                for nested in step.get("else") or []:
-                    self._setup_step(out, indent + 1, nested, where)
+                _emit_block(out, indent + 1, step.get("else"), arm)
         elif kind == "assert":
             out.add(indent, f"assert {self._expr(step.get('expr'), where)}")
         else:
@@ -2183,13 +2216,13 @@ class _ComponentEmitter:
         elif kind == "fail":
             out.add(indent, f"raise RuntimeError({self._expr(step.get('message'), where)})")
         elif kind == "if":
-            out.add(indent, f"if {self._expr(step.get('cond'), where)}:")
-            for nested in step.get("then") or []:
+            def arm(nested: dict) -> None:
                 self._body_step(out, indent + 1, nested, where)
+            out.add(indent, f"if {self._expr(step.get('cond'), where)}:")
+            _emit_block(out, indent + 1, step.get("then"), arm)
             if step.get("else"):
                 out.add(indent, "else:")
-                for nested in step.get("else") or []:
-                    self._body_step(out, indent + 1, nested, where)
+                _emit_block(out, indent + 1, step.get("else"), arm)
         elif kind == "emit":
             deferred = self._deferred_extern(step.get("expr"))
             if deferred is not None:
@@ -2954,12 +2987,12 @@ class _ComponentEmitter:
 
         if not step.get("async"):
             out.add(indent, f"def {fn}():")
-            if not emissions:  # pragma: no cover — the parser rejects an empty body
-                out.add(indent + 1, "pass")
+            mark = out.mark()
             for emission in emissions:
                 out.add(indent + 1,
                         self._emission_fire(emission.get("expr"), where))
                 self._timer_compensation(out, indent + 1, emission, where)
+            out.close_block(mark, indent + 1)  # the parser rejects an empty body
             out.add(indent, f"{handle} = {_runtime_ref(schedule)}({interval}, {fn})")
             out.add(indent, f"yield lambda: {handle}.cancel()")
             return
@@ -2972,8 +3005,7 @@ class _ComponentEmitter:
         inflight = f"{fn}_inflight"
         out.add(indent, f"{inflight} = set()")
         out.add(indent, f"def {fn}():")
-        if not emissions:  # pragma: no cover — the parser rejects an empty body
-            out.add(indent + 1, "pass")
+        mark = out.mark()
         for emission in emissions:
             expr = emission.get("expr")
             rendered = self._emission_fire(expr, where)
@@ -2987,6 +3019,7 @@ class _ComponentEmitter:
                 # a sync emission in a mixed body still runs inline
                 out.add(indent + 1, rendered)
                 self._timer_compensation(out, indent + 1, emission, where)
+        out.close_block(mark, indent + 1)  # the parser rejects an empty body
         out.add(indent, f"{handle} = {_runtime_ref(schedule)}({interval}, {fn})")
         cancel = f"{fn}_cancel"
         out.add(indent, f"def {cancel}():")
@@ -3073,6 +3106,7 @@ class _ComponentEmitter:
             indent,
             f"{'async ' if method_is_async else ''}def {name}(self{''.join(', ' + p for p in params)}):",
         )
+        mark = out.mark()
         # item 421 F6: a parameter the service declared `Secret[T]` is a declared
         # DISCLOSURE RECEIVER. The qualifier itself is stripped in `taint.py`, so
         # `params[i]["secret"]` is the only surviving record that this position is
@@ -3111,8 +3145,7 @@ class _ComponentEmitter:
                         f"{_runtime_ref('mark_secret')}({', '.join(secret_params)})")
         body = method.get("body") or []
         if not body:
-            if not secret_params:
-                out.add(indent + 1, "pass")
+            out.close_block(mark, indent + 1)
             return
         # item 121 Slice 2: the model-hop value-flow analysis over THIS body,
         # before a line of it renders — `_expr` reads the marks it leaves.
@@ -3132,6 +3165,7 @@ class _ComponentEmitter:
             out.add(indent + 1, f"with _revl_frame.{scope}("
                                 f"{provide_name + '.' + name!r}):")
             body_indent = indent + 2
+            mark = out.mark()
         self._route_value_emissions = True
         try:
             for step in body:
@@ -3139,6 +3173,7 @@ class _ComponentEmitter:
         finally:
             self._in_async = prev_async
             self._route_value_emissions = False
+        out.close_block(mark, body_indent)
 
     def _method_step(
         self,
@@ -3311,12 +3346,10 @@ class _ComponentEmitter:
         kind = step.get("step")
 
         def block(steps: list) -> None:
-            if not steps:
-                out.add(indent + 1, "pass")
-                return
-            for s in steps:
+            def render(s: dict) -> None:
                 self._method_step(out, indent + 1, provide_name, method_name,
-                                   s, where, method_is_async)
+                                  s, where, method_is_async)
+            _emit_block(out, indent + 1, steps, render)
 
         if kind == "if":
             out.add(indent, f"if {self._expr(step.get('cond'), where)}:")
@@ -4390,6 +4423,11 @@ def _py_inplace_stmts(name: str, value: dict) -> list[str]:
     return [f"_revl_key = {key}", f"{recv}[_revl_key] = {_expr(val_node)}"]
 
 
+def _fn_block(steps, out: "_Lines", indent: int) -> None:
+    """A fn-grammar block body (fn, test, if/else, while, for) at `indent`."""
+    _emit_block(out, indent, steps, lambda s: _fn_stmt(s, out, indent))
+
+
 def _fn_stmt(node: dict, out: "_Lines", indent: int) -> None:
     step = node["step"]
     if step in ("let", "assign"):
@@ -4416,28 +4454,18 @@ def _fn_stmt(node: dict, out: "_Lines", indent: int) -> None:
             out.add(indent, f"return {_expr(node['expr'])}")
     elif step == "if":
         out.add(indent, f"if {_expr(node['cond'])}:")
-        for s in node["then"]:
-            _fn_stmt(s, out, indent + 1)
+        _fn_block(node["then"], out, indent + 1)
         if node["else"]:
             out.add(indent, "else:")
-            for s in node["else"]:
-                _fn_stmt(s, out, indent + 1)
+            _fn_block(node["else"], out, indent + 1)
     elif step == "while":
         _guard_frame_neutral_loop(node["body"])
         out.add(indent, f"while {_expr(node['cond'])}:")
-        if not node["body"]:
-            out.add(indent + 1, "pass")
-        else:
-            for s in node["body"]:
-                _fn_stmt(s, out, indent + 1)
+        _fn_block(node["body"], out, indent + 1)
     elif step == "for":
         _guard_frame_neutral_loop(node["body"])
         out.add(indent, f"for {_mangle(node['bind'])} in {_expr(node['iterable'])}:")
-        if not node["body"]:
-            out.add(indent + 1, "pass")
-        else:
-            for s in node["body"]:
-                _fn_stmt(s, out, indent + 1)
+        _fn_block(node["body"], out, indent + 1)
     elif step == "break":
         out.add(indent, "break")
     elif step == "continue":
@@ -4545,10 +4573,7 @@ def _emit_functions(functions: list) -> "_Lines":
         if memoized:
             name = f"_revl_uncached_{name}"
         out.add(0, f"{'async def' if is_async else 'def'} {name}({params}):")
-        if not fn.get("body"):
-            out.add(1, "pass")
-        for stmt in fn.get("body") or []:
-            _fn_stmt(stmt, out, 1)
+        _fn_block(fn.get("body"), out, 1)
         out.add(0)
         if memoized:
             out.extend(_emit_memo_wrapper(
@@ -4753,6 +4778,7 @@ def _emit_externs(externs: list, crossings: dict | None = None,
         # A non-async extern stays a blocking `def`, unchanged.
         kw = "async def" if ext.get("async") else "def"
         out.add(0, f"{kw} {name}({params}):")
+        mark = out.mark()
         # item 256 Slice 1: a bound secret is injected as the FIRST body local of
         # every emission extern whose declared capability it is bound to, and
         # NOWHERE else (a component/service method body has no `_revl_secret` call
@@ -4787,8 +4813,9 @@ def _emit_externs(externs: list, crossings: dict | None = None,
         if body:
             for line in body.splitlines() or [""]:
                 out.add(1, line)
-        elif not ext.get("config") and not ext.get("secrets"):
-            out.add(1, "pass")
+        # an injected secret or config local is a statement in its own right;
+        # a body of only comments is not (issue #2284)
+        out.close_block(mark, 1)
         out.add(0)
     return out
 
@@ -4807,10 +4834,7 @@ def _emit_tests(tests: list) -> "_Lines":
             out.add(0)
             continue
         out.add(0, f"def {fn_name}():")
-        if not test.get("body"):
-            out.add(1, "pass")
-        for stmt in test.get("body") or []:
-            _fn_stmt(stmt, out, 1)
+        _fn_block(test.get("body"), out, 1)
         out.add(0)
         out.add(0, f"REVL_TESTS.append(({test['name']!r}, {fn_name}))")
         out.add(0)
@@ -5033,11 +5057,8 @@ def _emit_lifecycle_test(test: dict, fn_name: str) -> "_Lines":
     out.add(2, "_revl_set_trace(events.append)")
     out.add(2, "try:")
     out.add(3, "baseline = _revl_residue(root)")
-    body = test.get("body") or []
-    if not body:
-        out.add(3, "pass")
-    for step in body:
-        _lifecycle_step(out, 3, step, where)
+    _emit_block(out, 3, test.get("body"),
+                lambda step: _lifecycle_step(out, 3, step, where))
     out.add(2, "finally:")
     out.add(3, "_revl_set_trace(None)")
     if uses_abort:
