@@ -461,28 +461,63 @@ def test_with_the_funnel_unregistered_node_prints_the_raw_failure(tmp_path):
 # an unknown component is fatal (issue #2252, the ts half of #2200)
 # ---------------------------------------------------------------------------
 
+_UNDO_DOC = """
+service Vault { fn show(user: Str) -> Str }
+service Other { fn peek(user: Str) -> Str }
+
+extern pure fn mark(what: Str) -> Str = @ts {
+  process.getBuiltinModule("node:fs").writeSync(1, "MARK " + what + "\\n")
+  return what
+}
+
+component Impl provides vault: Vault {
+  let slot = effect mark("first-applied") undo mark("first-INVERSE-RAN")
+
+  provide vault {
+    fn show(user) { return "shown " + user }
+  }
+}
+
+component Second provides other: Other {
+  let slot = effect mark("second-applied") undo mark("second-INVERSE-RAN")
+
+  provide other {
+    fn peek(user) { return "peeked " + user }
+  }
+}
+"""
+
+
 @needs_node
 def test_an_unknown_component_is_fatal_and_disposes_what_booted(tmp_path):
-    """The spec names `Ghost`, which the bundle lacks, after `Impl`, which it
-    has. Before the fix `plug(ctx, undefined)` died on a TypeError that named
-    nothing and left `Impl` undisposed. The run must exit 1 with one FATAL line
-    naming `Ghost`, dispose `Impl`, and claim neither `UP` nor `NO-RESIDUE`
-    nor `DOWN`."""
-    module = _emitted(tmp_path)
+    """The spec names `Ghost`, which the bundle lacks, after `Impl` and `Second`,
+    which it has. Before the fix `plug(ctx, undefined)` died on a TypeError that
+    named nothing and left both undisposed. The run must exit 1 with exactly one
+    FATAL line naming `Ghost`, claim neither `UP` nor `NO-RESIDUE` nor `DOWN`,
+    and have really torn the booted components down, last first: their inverses
+    ran, not just a log line."""
+    module = _emitted(tmp_path, _UNDO_DOC)
     spec = tmp_path / "ghost.json"
     spec.write_text(json.dumps({
-        "name": "vault", "module": str(module), "components": ["Impl", "Ghost"],
-        "config": {}, "provides": ["vault"], "proxies": {}, "probe": [],
+        "name": "vault", "module": str(module),
+        "components": ["Impl", "Second", "Ghost"],
+        "config": {}, "provides": ["vault", "other"], "proxies": {}, "probe": [],
         "once": True,
     }), encoding="utf-8")
     code, out, err = _run(spec)
     assert code == 1, (code, out, err)
-    assert "FATAL" in err and "Ghost" in err, err
+    fatal = [ln for ln in err.splitlines() if "FATAL unknown component Ghost" in ln]
+    assert len(fatal) == 1, err
     assert "TypeError" not in err and "isolate" not in err, err
     for claim in ("UP", "NO-RESIDUE", "DOWN"):
         assert f"] {claim}" not in out, out
+    assert "MARK first-applied" in out and "MARK second-applied" in out, out
+    assert out.index("MARK second-applied") < out.index("MARK second-INVERSE-RAN"), out
+    assert out.index("MARK first-applied") < out.index("MARK first-INVERSE-RAN"), out
+    # last first: Second's inverse and dispose line precede Impl's
+    assert out.index("MARK second-INVERSE-RAN") < out.index("MARK first-INVERSE-RAN"), out
     lines = out.splitlines()
-    loaded = [i for i, ln in enumerate(lines) if "load" in ln and "Impl" in ln]
-    disposed = [i for i, ln in enumerate(lines)
-                if "swap" in ln and "Impl" in ln and "dispose" in ln]
-    assert loaded and disposed and loaded[0] < disposed[0], out
+    disposed = [ln for ln in lines if "swap" in ln and "dispose" in ln]
+    labels = [ln.split("|")[1].strip() for ln in disposed]
+    assert labels == ["Second", "Impl"], (labels, out)
+    assert not any("NOT confirmed" in ln for ln in disposed), out

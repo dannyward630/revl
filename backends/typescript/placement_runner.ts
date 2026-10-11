@@ -292,24 +292,48 @@ for (const cname of spec.components as string[]) {
   // issue #2252: a component the bundle does not export is a FATAL spec/build
   // mismatch, as in the rust (#2200) and go runners. `plug` on `undefined`
   // died on a TypeError that named nothing and left the components already
-  // booted undisposed. Dispose what did boot, last first, print one redacted
-  // line and exit 1. `process.exit`, not `teardown`, so no `DOWN` is claimed
-  // for a boot that failed.
+  // booted undisposed. The FATAL line goes FIRST, so a dispose that never
+  // settles, or one that raises an unhandled rejection, cannot hide which
+  // component is missing. Then dispose what did boot, last first, bounded to
+  // 5 s in all; a dispose not seen to settle says so rather than claiming it
+  // ran. `process.exit`, not `teardown`, so no `DOWN` is claimed. The lines are
+  // written synchronously: a piped stdout is async and `exit` would drop them.
   if (mod[cname] === undefined) {
-    for (const [label, booted] of [...fibers].reverse()) {
-      try {
-        await booted.dispose()
-      } catch {
-        /* best-effort */
-      }
-      log('swap', label, 'dispose')
-    }
     fs.writeSync(
       2,
       `[${name}] FATAL ${redactText(
         `unknown component ${cname}: the spec names a component this build does not have`,
       )}\n`,
     )
+    const syncLog = (subject: string, detail: string): void => {
+      fs.writeSync(
+        1,
+        `[${name}] ${'swap'.padEnd(6)}| ${redactText(subject).padEnd(16)}| ${redactText(detail)}`.trimEnd() + '\n',
+      )
+    }
+    let timedOut = false
+    const budget = setTimeout(() => { timedOut = true }, 5000)
+    const timeout = new Promise<'timeout'>((resolve) => {
+      const poll = setInterval(() => {
+        if (timedOut) { clearInterval(poll); resolve('timeout') }
+      }, 25)
+      budget.unref()
+      poll.unref()
+    })
+    for (const [label, booted] of [...fibers].reverse()) {
+      let confirmed = false
+      try {
+        const outcome = await Promise.race([
+          Promise.resolve(booted.dispose()).then(() => 'done' as const),
+          timeout,
+        ])
+        confirmed = outcome === 'done'
+      } catch (error) {
+        syncLog(label, `dispose NOT confirmed: ${error instanceof Error ? error.message : String(error)}`)
+        continue
+      }
+      syncLog(label, confirmed ? 'dispose' : 'dispose NOT confirmed: timed out')
+    }
     process.exit(1)
   }
   // issue #1567: `plug` applies the component's `isolate` placements before
