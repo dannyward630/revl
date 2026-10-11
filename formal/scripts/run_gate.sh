@@ -17,8 +17,8 @@
 # the layering STATUS.md called "enforced by imports" was enforced by
 # nothing.
 #
-# A missing elan/lake skips LOUDLY — never a false green — matching the
-# pre-merge discipline in the Makefile. This lives in a script, not
+# A missing elan/lake skips LOUDLY, with exit code 77, never a false green,
+# matching the pre-merge discipline in the Makefile. This lives in a script, not
 # Makefile recipe lines, because each recipe line is its own shell: an
 # `exit 0` skip-guard inside the Makefile cannot stop the target.
 set -e
@@ -37,9 +37,12 @@ if ! command -v lake >/dev/null 2>&1 && [ -x "$HOME/.elan/bin/lake" ]; then
   export PATH
 fi
 
+# Exit 77 (the automake "skipped" code) rather than 0, so a caller can tell a
+# skip from a pass: tools/pre_merge.sh prints SKIPPED for it and counts it as
+# skipped, never "ok" (issue #2209). `make formal` maps it back to success.
 if ! command -v lake >/dev/null 2>&1; then
-  echo "SKIP (loud): elan/lake not installed — the formal proofs were NOT checked"
-  exit 0
+  echo "SKIP (loud): elan/lake not installed, so the formal proofs were NOT checked"
+  exit 77
 fi
 
 lake build
