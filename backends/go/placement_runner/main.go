@@ -320,8 +320,30 @@ func main() {
 	for _, cname := range s.Components {
 		fiber, ok := emitted.RevlLoad(root, cname, s.Config)
 		if !ok {
-			log("load", cname, "UNKNOWN component")
-			continue
+			// issue #2223: a component the generated registry does not have
+			// is a FATAL spec/build mismatch, as in the rust runner (#2200).
+			// Logging past it left the placement short of the composition it
+			// claims: UP, NO-RESIDUE and exit 0 with that component never
+			// loaded. Dispose what did boot, last first, print one scrubbed
+			// line on stderr and exit 1. `os.Exit`, not a panic or a return,
+			// so the teardown below never prints `DOWN` for a failed boot.
+			fatalLine(name, "unknown component "+cname+": the spec names a "+
+				"component this build does not have")
+			// `Dispose` only REQUESTS the teardown, so each one is awaited
+			// (bounded) or `os.Exit` would kill the process before any inverse
+			// replayed. A fiber that does not settle in time is reported as
+			// such, never as disposed.
+			bootCtx, bootCancel := stdctx.WithTimeout(stdctx.Background(), 5*time.Second)
+			for i := len(fibers) - 1; i >= 0; i-- {
+				fibers[i].fiber.Dispose()
+				if err := fibers[i].fiber.Gone(bootCtx); err != nil {
+					log("swap", fibers[i].label, "dispose NOT confirmed: "+err.Error())
+					continue
+				}
+				log("swap", fibers[i].label, "dispose -> inverses replay (LIFO)")
+			}
+			bootCancel()
+			os.Exit(1)
 		}
 		if err := fiber.Ready(ready); err != nil {
 			log("load", cname, "load error: "+err.Error())

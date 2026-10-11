@@ -46,15 +46,73 @@ if [ -d "$root/src/revl" ]; then
 fi
 
 fail=0
+# Set when a step ran and verified nothing (every test skipped, or none was
+# collected). It does not fail the commit, but the final line says so.
+unverified=0
 step() {
     printf '  %-36s' "$1"
     shift
     if out=$("$@" 2>&1); then
-        echo "ok"
+        _unverified=$(printf '%s\n' "$out" | tail -1 | sed -n 's/^UNVERIFIED //p')
+        if [ -n "$_unverified" ]; then
+            echo "SKIPPED (${_unverified}: nothing verified)"
+            unverified=1
+        else
+            # A pytest step says how many tests passed, so "ok" is never bare.
+            _passed=$(pytest_count passed "$out")
+            echo "ok${_passed:+ ($_passed passed)}"
+        fi
     else
         echo "FAILED"
         echo "$out" | tail -25 | sed 's/^/      /'
         fail=1
+    fi
+}
+
+# The number of tests of one outcome ($1: passed, skipped) that a `pytest -q`
+# run's output ($2) reports, or nothing. Only the summary, the last line, is
+# read: a warning or a test's own output earlier on can contain "1 passed".
+# "1 xpassed" is not a pass: the outcome word must follow the count directly.
+pytest_count() {
+    printf '%s\n' "$2" | tail -1 | grep -Eo "(^|[^0-9])[0-9]+ $1" \
+        | grep -Eo '[0-9]+' | tail -1
+}
+
+# Judge a finished pytest run by what it ran, not only by its exit status
+# (issue #2208). pytest exits 5 when the selection collected nothing, and 0
+# when every selected test skipped or was deselected. In both cases no test
+# checked the change, so neither may read as "ok". Takes the exit status and
+# the output; returns 0 only when at least one test passed, and prints why not
+# otherwise. The FULL branch below refuses the commit on that answer.
+pytest_ran_tests() {
+    if [ "$1" -eq 5 ]; then
+        echo "pytest collected no tests from the selection: nothing checked this change"
+        return 5
+    fi
+    [ "$1" -eq 0 ] || return "$1"
+    _n=$(pytest_count passed "$2")
+    if [ "${_n:-0}" -eq 0 ]; then
+        echo "pytest passed no test (every selected test skipped or was deselected): nothing checked this change"
+        return 5
+    fi
+}
+
+# Run the affected pytest command line "$@" for `step`. A failure is a failure.
+# A run that passed no test (all skipped, or exit 5 for nothing collected) does
+# not block the commit: a machine without a backend's toolchain skips that
+# backend's tests, and blocking would only teach --no-verify. It ends with an
+# `UNVERIFIED <counts>` line instead, which `step` reports as SKIPPED and which
+# turns the final line into "ok, but ... verified nothing".
+pytest_counted() {
+    if _out=$("$@" 2>&1); then _rc=0; else _rc=$?; fi
+    printf '%s\n' "$_out"
+    if [ "$_rc" -ne 0 ] && [ "$_rc" -ne 5 ]; then
+        return "$_rc"
+    fi
+    _n=$(pytest_count passed "$_out")
+    if [ "${_n:-0}" -eq 0 ]; then
+        _s=$(pytest_count skipped "$_out")
+        echo "UNVERIFIED 0 passed, ${_s:-0} skipped"
     fi
 }
 
@@ -96,27 +154,43 @@ echo "pre-commit:"
 # past this hook's ~20s promise, and a blanket `pytest tests/` on a worktree
 # commit is what made agents wait (and made this hook feel like something to
 # turn off with --no-verify). This is NOT a bypass: the affected selector is a
-# conservative superset that fails SAFE to the full suite for any core, unmapped,
-# or structural change, and `make pre-merge` still runs everything at land/CI.
+# conservative superset that answers FULL for any core, unmapped, or structural
+# change; the hook then runs the core subset below and refuses the commit when
+# that runs no test, and `make pre-merge` still runs everything at land/CI.
 #
-# Fail safe twice over: if the selector is unavailable or says FULL, run all of
-# `tests/`; and a --timeout backstop (when pytest-timeout is present) means a
-# single wedged cross-tier test can never hang the commit.
+# If the selector is unavailable or says FULL, run the core subset below; and a
+# --timeout backstop (when pytest-timeout is present) means a single wedged
+# cross-tier test can never hang the commit.
 TIMEOUT_ARGS=""
 if "$PY" -P -m pytest --help 2>/dev/null | grep -q -- '--timeout'; then
     TIMEOUT_ARGS="--timeout=60 --timeout-method=thread"
 fi
 
-# The FULL fallback additionally gets a wall-clock ceiling. The root suite is
-# about an hour here and CI runs it sharded (REVL_TEST_SHARD, four jobs); an
-# unbounded local run is the machine-starvation path issue #2059 measured (one
-# commit pinned five cores above 90% and drove load to 59 while other lanes
-# worked). A per-test --timeout is a backstop, not a budget. When the ceiling is
-# hit the step SKIPS with the selector's reason and the --no-verify instruction
-# rather than charging the committer for a run that is CI's to make — a partial
-# run is not a gate, and `make pre-merge` still runs everything at land/CI.
-# Override the ceiling with REVL_HOOK_FULL_BUDGET=<seconds>.
+# A FULL selection does not run the root suite here. That suite is about an
+# hour on this machine (253 test-minutes, issue #2208), so no local ceiling
+# fits it, and an unbounded run is the machine-starvation path issue #2059
+# measured (one commit pinned five cores above 90% and drove load to 59 while
+# other jobs worked). Running it under a ceiling and calling the timeout a
+# skip was worse: the hook then printed "ok" for every checker change after
+# running no test at all (issue #2208).
+#
+# So a FULL selection runs a DEFINED core subset, CORE_TESTS, under the
+# wall-clock ceiling FULL_BUDGET. test_frontend and test_doc_examples drive the
+# whole frontend pipeline (parse, check, lower, emit); the goldens and the four
+# diagnostics files add the checker's negative cases. Together they are about
+# 600 tests in about 8s on a loaded machine. The test_formal_*
+# rows are left out: they took 4.5 minutes here and need lake, so they could
+# never finish inside the ceiling. The step reports the core count and says the
+# full suite did not run. If the core subset fails, runs no test, or exceeds
+# the ceiling, the commit is refused with the selector's reason, and
+# `git commit --no-verify` (with that reason in the message) is the explicit
+# way past it. `make pre-merge` still runs everything before land.
+# Override with REVL_HOOK_FULL_BUDGET=<seconds> and REVL_HOOK_CORE_TESTS="<paths>".
 FULL_BUDGET=${REVL_HOOK_FULL_BUDGET:-60}
+CORE_TESTS=${REVL_HOOK_CORE_TESTS:-"tests/test_frontend.py tests/test_doc_examples.py \
+tests/test_goldens.py tests/test_multi_error_reporting.py \
+tests/test_assert_diagnostics.py tests/test_parser_ergonomics.py \
+tests/test_lower_ergonomics.py"}
 # A commit that stages nothing (`--allow-empty`, a message-only `--amend`)
 # changes no file, so no test can be affected by it. The selector cannot tell
 # that case apart: it sees an empty change set, which it must treat as "could
@@ -131,6 +205,8 @@ if git diff --cached --quiet 2>/dev/null; then
     NOTHING_STAGED=1
 else
     SEL=$("$PY" tools/affected_tests.py --root "$root" --base HEAD --format machine 2>/dev/null)
+    # The first staged paths, to name the change a refusal is about.
+    STAGED=$(git diff --cached --name-only 2>/dev/null | head -5 | tr '\n' ' ')
 fi
 
 # git exported the committing repository into this hook (GIT_DIR and
@@ -155,11 +231,10 @@ if [ -n "$NOTHING_STAGED" ]; then
 else
     SEL_FULL=$(printf '%s\n' "$SEL" | sed -n 's/^FULL //p')
     if [ -z "$SEL_FULL" ] || [ "$SEL_FULL" = "1" ]; then
-        # Bounded, not unbounded: see FULL_BUDGET above. A FULL selection is the
-        # answer for every unmapped path, so the unbounded run was the norm, not
-        # the exception; a selector that answered nothing at all (it crashed, a
-        # parse error) falls back to the same whole-suite run, and gets the same
-        # ceiling (issue #2059).
+        # The core subset, bounded: see CORE_TESTS and FULL_BUDGET above. A
+        # FULL selection is the answer for every core or unmapped path, and a
+        # selector that answered nothing at all (it crashed, a parse error)
+        # gets the same treatment (issues #2059, #2208).
         SEL_REASON=$(printf '%s\n' "$SEL" | sed -n 's/^REASON //p')
         if [ -z "$SEL_FULL" ]; then
             SEL_LINE="unavailable (${SEL_REASON:-the selector printed nothing})"
@@ -168,30 +243,41 @@ else
         fi
         # The label is longer than the 36-column field, so each verdict below
         # carries its own leading space to keep the line readable.
-        printf '  %s' "frontend + emitted-code validation (full)"
-        if out=$(run_within_budget "$FULL_BUDGET" "$PY" -P -m pytest tests/ $TIMEOUT_ARGS -q); then
-            echo " ok"
+        printf '  %s' "frontend (FULL selection: core subset)"
+        if out=$(run_within_budget "$FULL_BUDGET" "$PY" -P -m pytest $CORE_TESTS $TIMEOUT_ARGS -q); then
+            rc=0
         else
             rc=$?
-            if [ "$rc" -eq 124 ]; then
-                echo " SKIPPED (FULL selection exceeded the ${FULL_BUDGET}s budget)"
-                echo "      selector: ${SEL_LINE}"
-                echo "      the root suite is ~an hour here and CI runs it sharded; a"
-                echo "      partial run is not a gate, so the hook does not charge you."
-                echo "      commit with:  git commit --no-verify"
-                echo "      and record the selector's line above in the commit message"
-                echo "      (\`make pre-merge\` still runs everything before land)."
-            else
-                echo " FAILED"
-                echo "$out" | tail -25 | sed 's/^/      /'
-                fail=1
-            fi
+        fi
+        why=""
+        if [ "$rc" -eq 124 ]; then
+            echo " FAILED (the core subset exceeded the ${FULL_BUDGET}s budget)"
+            fail=1
+        elif why=$(pytest_ran_tests "$rc" "$out"); then
+            passed=$(pytest_count passed "$out")
+            echo " ok (core subset only: ${passed} passed; the full suite did not run)"
+        else
+            echo " FAILED"
+            echo "$out" | tail -25 | sed 's/^/      /'
+            [ -z "$why" ] || echo "      $why"
+            fail=1
+        fi
+        echo "      selector: ${SEL_LINE}"
+        echo "      staged: ${STAGED:-<unknown>}"
+        echo "      core subset: ${CORE_TESTS}"
+        if [ "$fail" -ne 0 ]; then
+            echo "      the full suite is about an hour here, so no test covers this"
+            echo "      change locally. Fix the core subset, or commit with"
+            echo "      git commit --no-verify  and put the selector line above in the"
+            echo "      commit message (\`make pre-merge\` runs everything before land)."
+        else
+            echo "      \`make pre-merge\` runs the full suite before land."
         fi
     else
         SEL_PYTEST=$(printf '%s\n' "$SEL" | sed -n 's/^PYTEST //p')
         if [ -n "$SEL_PYTEST" ]; then
             n=$(printf '%s' "$SEL_PYTEST" | wc -w | tr -d ' ')
-            step "frontend (affected: $n node(s))" "$PY" -P -m pytest $SEL_PYTEST $TIMEOUT_ARGS -q
+            step "frontend (affected: $n node(s))" pytest_counted "$PY" -P -m pytest $SEL_PYTEST $TIMEOUT_ARGS -q
         else
             echo "  frontend                           no affected tests (docs/config-only change)"
         fi
@@ -239,4 +325,8 @@ then
     echo "  note: crates.io unreachable — rust cargo checks are CI-only here."
 fi
 
-echo "pre-commit: ok"
+if [ "$unverified" -ne 0 ]; then
+    echo "pre-commit: ok, but the affected tests verified nothing (see SKIPPED above)"
+else
+    echo "pre-commit: ok"
+fi

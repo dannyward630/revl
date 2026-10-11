@@ -29,6 +29,7 @@ of everything that already resolved is unchanged.
 import functools
 import importlib.util
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -205,6 +206,7 @@ _SHARD_SECONDS: dict = {}
 
 
 def pytest_runtest_logreport(report):
+    _log_cordis_skip(report)
     if _SHARD_SPEC:
         name = report.nodeid.split("::", 1)[0]
         _SHARD_SECONDS[name] = _SHARD_SECONDS.get(name, 0.0) + report.duration
@@ -263,31 +265,94 @@ if _ROOT.is_dir() and str(_ROOT) not in sys.path:
 # tests/test_r2_allowlist_key_binding.py).
 #
 # This converts exactly that failure into a skip, and ONLY when cordis really is
-# absent. When the runtime IS installed -- the `frontend-cordis` CI job, and any
-# dev running under backends/python/.venv -- the net is inert and the same error
-# still fails loudly, so it can never hide a real runtime defect. It is a
-# net under the `frontend` job, not a substitute for the guard: the guard is
-# what makes the skip reason readable.
+# absent. When the runtime IS installed -- the `frontend-cordis` CI job, the
+# `frontend-cordis` step of tools/pre_merge.sh, and any dev running under
+# backends/python/.venv -- the net is inert and the same error still fails
+# loudly. It is a net under the `frontend` job, not a substitute for the guard:
+# the guard is what makes the skip reason readable.
+#
+# Issue #2207 narrowed it in two ways, because a net that turns failures into
+# skips in the only local run of a test hides real reds:
+#
+# * A test file that itself quotes the diagnostic is ABOUT the runtime-less path
+#   (it runs `revl run` without cordis on purpose and asserts what it prints).
+#   Its failure is a genuine failure of that path, never a missing guard, so the
+#   net leaves it red.
+# * Every test it converts (and every other test that skips naming cordis) is
+#   written to `$REVL_CORDIS_SKIP_LOG` when that is set. tools/pre_merge.sh sets
+#   it on the frontend step and re-runs exactly those files under the cordis-py
+#   venv, so a converted test still gets a real verdict in the local gate.
 _RUNTIME_MISSING = "the cordis-py runtime is not installed"
+_NET_REASON = (
+    "cordis-py runtime not installed: this test drives a live composition and "
+    "is missing its cordis-py guard (net in tests/conftest.py) -- add "
+    'pytest.mark.skipif(importlib.util.find_spec("cordis") is None, ...)')
 
 
 def _cordis_is_absent() -> bool:
     return importlib.util.find_spec("cordis") is None
 
 
+@functools.lru_cache(maxsize=None)
+def _file_quotes_diagnostic(path: str) -> bool:
+    try:
+        return _RUNTIME_MISSING in Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
+def _net_converts(item, call, report) -> bool:
+    return (report.when == "call" and report.failed
+            and call.excinfo is not None
+            and _RUNTIME_MISSING in str(call.excinfo.value)
+            and _cordis_is_absent()
+            and not _file_quotes_diagnostic(str(item.path)))
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_makereport(item, call):
     report = yield
-    if (report.when == "call" and report.failed and call.excinfo is not None
-            and _RUNTIME_MISSING in str(call.excinfo.value)
-            and _cordis_is_absent()):
+    if _net_converts(item, call, report):
         report.outcome = "skipped"
-        report.longrepr = (
-            str(item.path), item.location[1] + 1,
-            "Skipped: this test drives a live composition and is missing its "
-            "cordis-py guard (net in tests/conftest.py) -- add "
-            'pytest.mark.skipif(importlib.util.find_spec("cordis") is None, ...)')
+        report.longrepr = (str(item.path), item.location[1] + 1,
+                           "Skipped: " + _NET_REASON)
     return report
+
+
+# A reason that names the python runtime ("cordis-py", "the pinned cordis fork",
+# `importorskip("cordis")`'s "could not import 'cordis'"), but not the other
+# runtimes' skips (cordis-ts, cordis4j, cordis-rs, ...): re-running those files
+# under the cordis-py venv would only skip them again. Guards word their reason
+# freely, so this excludes the other runtimes rather than requiring "cordis-py".
+_NAMES_CORDIS_PY = re.compile(r"cordis(?![-_]?(?:ts|4j|rs|java|go|wasm|js)\b)",
+                              re.IGNORECASE)
+
+
+def _skip_reason(report) -> str:
+    longrepr = report.longrepr
+    if isinstance(longrepr, tuple) and len(longrepr) == 3:
+        return str(longrepr[2])
+    return str(longrepr or "")
+
+
+def _log_cordis_skip(report) -> None:
+    """Append the node id of a skip that names cordis to $REVL_CORDIS_SKIP_LOG."""
+    target = os.environ.get("REVL_CORDIS_SKIP_LOG")
+    if not target or not report.skipped:
+        return
+    if not _NAMES_CORDIS_PY.search(_skip_reason(report)):
+        return
+    try:
+        with open(target, "a", encoding="utf-8") as fh:
+            fh.write(report.nodeid + "\n")
+    except OSError:
+        pass
+
+
+def pytest_collectreport(report):
+    # A module-level `pytest.skip(..., allow_module_level=True)` or
+    # `importorskip("cordis")` skips at collection, not at call.
+    _log_cordis_skip(report)
 
 
 # Issue #1720: a test file that leaves file descriptors open.
