@@ -200,12 +200,14 @@ def _reject_service_key(key: object, role: str, component: object) -> None:
 
 
 def _split_ts_types(inner: str) -> list[str]:
-    """Split a type argument list on commas outside `[...]` / `(...)`."""
+    """Split a type argument list on commas outside `[...]`, `(...)` and `{...}`.
+
+    The brace clause keeps a structural record parameter type whole (issue #2297)."""
     parts, depth, start = [], 0, 0
     for i, ch in enumerate(inner):
-        if ch in "[(":
+        if ch in "[({":
             depth += 1
-        elif ch in "])":
+        elif ch in "])}":
             depth -= 1
         elif ch == "," and depth == 0:
             parts.append(inner[start:i].strip())

@@ -568,7 +568,7 @@ def test_a_host_identifier_collision_is_refused_by_name(reference):
 @pytest.mark.parametrize("surface", [
     "{}", "{a: Int, b: Str}", "{a: {b: Int, c: List[Str]}, d: Bool}",
     "{function: Int}", "Map[Str, {x: Int, y: Int}]", "Opt[{a: Int}]",
-    "({a: Int}) -> {b: Str}", "List[Opt[Int]]", "List[Result[Int, Str]]",
+    "({a: Int}) -> {b: Str}", "({a: Int, b: Str}) -> Int", "List[Opt[Int]]", "List[Result[Int, Str]]",
     "List[{a: Opt[Int]}]", "List[(Int) -> Opt[Str]]", "List[Map[Str, Opt[Int]]]",
 ])
 def test_ts_type_matches_reference_on_structural_types_2297(emitted, reference, surface):

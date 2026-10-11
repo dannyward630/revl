@@ -132,6 +132,7 @@ def test_lifted_arm_signature_closes(case):
     ("Map[Str, {x: Int, y: Int}]", "Map<string, { x: bigint; y: bigint }>"),
     ("Opt[{a: Int}]", "{ a: bigint } | undefined"),
     ("({a: Int}) -> {b: Str}", "((a0: { a: bigint }) => { b: string })"),
+    ("({a: Int, b: Str}) -> Int", "((a0: { a: bigint; b: string }) => bigint)"),
     ("List[Opt[Int]]", "(bigint | undefined)[]"),
     ("List[Result[Int, Str]]",
      '({ kind: "Ok"; value: bigint } | { kind: "Err"; value: string })[]'),
