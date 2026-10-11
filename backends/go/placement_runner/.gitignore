@@ -3,3 +3,5 @@
 /emitted/*.go
 # The compiled runner binary.
 /revl_placement_runner
+# Per-composition staged builds (src/revl/placement.py::_build_go, issue #2199).
+/staged/
