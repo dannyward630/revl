@@ -13,3 +13,22 @@ fn raw_any() -> Int {
   var xs: List[Any] = []
   return xs.length()
 }
+// A leaf with no Java spelling here (`Int8`) keeps the raw list; a declared
+// record and scalars nested under Map/Opt declare precisely.
+type Pt = { x: Int }
+fn sized() -> Int {
+  var xs: List[Int8] = []
+  return xs.length()
+}
+fn declared() -> Int {
+  var ps: List[Pt] = []
+  ps = ps.push({ x: 1 })
+  var ms: List[Map[Str, Opt[Int]]] = []
+  return ps.length() + ms.length()
+}
+// `Int32` (boxes to `int`) and an undeclared generic keep the raw list too.
+fn int32_and_set() -> Int {
+  var xs: List[Int32] = []
+  var ss: List[Set[Int]] = []
+  return xs.length() + ss.length()
+}

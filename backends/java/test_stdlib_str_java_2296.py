@@ -185,3 +185,27 @@ def test_stdlib_str_program_runs_on_java():
 def test_method_body_and_raw_element_lists_run_on_java():
     status, message = RUNNERS["java"](_compile(METHOD_PROGRAM))
     assert status == "pass", message
+
+
+#: One element type per class `_java_v3_type` has no Java spelling for: a
+#: sized numeric, an undeclared generic, a function type. The precise
+#: declaration is an allowlist, so each keeps the raw list and compiles.
+RAW_ELEMENT_TYPES = ["Int8", "Set[Int]", "Result[Int, Str]", "(Int) -> Int"]
+
+
+def _raw_element_program(elem: str) -> str:
+    return (f"pub fn n() -> Int {{\n  var xs: List[{elem}] = []\n"
+            "  return xs.length()\n}\n"
+            'test "empty" { assert n() == 0 }\n')
+
+
+@pytest.mark.parametrize("elem", RAW_ELEMENT_TYPES)
+def test_undeclarable_element_type_keeps_the_raw_list(elem):
+    assert "java.util.List xs = " in _java_source(_raw_element_program(elem))
+
+
+@needs_jdk
+@pytest.mark.parametrize("elem", RAW_ELEMENT_TYPES)
+def test_undeclarable_element_type_compiles_on_java(elem):
+    status, message = RUNNERS["java"](_compile(_raw_element_program(elem)))
+    assert status == "pass", message

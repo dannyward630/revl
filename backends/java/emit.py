@@ -3054,16 +3054,35 @@ def _empty_list_decl_type(value: dict) -> str:
     list and then loops over it. The annotation is on the literal as
     `"expected"` (roadmap 76b), the same pin the empty-map case reads, so the
     local declares as that precise type and the loop binding gets the element
-    type. An unannotated `var xs = []` names no type and keeps the raw list.
+    type. An unannotated `var xs = []` names no type and keeps the raw list,
+    and so does an element type `_java_v3_type` cannot spell
+    (`_declarable_type`).
     """
     return _annotated_list_decl_type(value) or "java.util.List"
 
 
-#: Element type names an empty list keeps the raw declaration for: `Any` and
-#: `Int32` have no generic spelling in `_java_v3_type` (`List<Any>`,
-#: `List<int>`), and `Row` widens to `Object` on this tier only, so the raw
-#: list stays the one answer the self-hosted emitter agrees with.
-_RAW_LIST_ELEMENT_NAMES = frozenset({"Any", "Int32", "Row"})
+#: The scalar leaves an empty list may declare precisely: every TYPE_MAP name
+#: whose boxed spelling is a Java type. `Int32` boxes to `int` and `Unit` to
+#: `void`, so both are left out.
+_DECLARABLE_SCALARS = frozenset(TYPE_MAP) - {"Int32", "Unit"}
+
+
+def _declarable_type(name: str) -> bool:
+    """True when `_java_v3_type` spells *name* as a real Java type (#2296).
+
+    An allowlist, not a denylist: `_java_v3_type` turns any name it does not
+    know into a bare identifier (`Int8`, `Duration`, `Set<Object>`), and
+    rejects a function type outright. So a leaf is declarable only when it is
+    a `_DECLARABLE_SCALARS` name or a type the document declares, nested only
+    under `List`, `Opt` and `Map`.
+    """
+    name = name.strip()
+    if "[" not in name:
+        return name in _DECLARABLE_SCALARS or name in _V3_DECLARED_TYPES
+    base = name[: name.index("[")]
+    args = _split_v3_types(name[name.index("[") + 1 : name.rindex("]")])
+    arity = {"List": 1, "Opt": 1, "Map": 2}.get(base)
+    return arity == len(args) and all(_declarable_type(a) for a in args)
 
 
 def _annotated_list_decl_type(value: dict) -> str | None:
@@ -3071,8 +3090,7 @@ def _annotated_list_decl_type(value: dict) -> str | None:
     names, or None when it names none this tier can declare (#2296)."""
     expected = value.get("expected")
     expected = expected.strip() if isinstance(expected, str) else ""
-    if (not (expected.startswith("List[") and expected.endswith("]"))
-            or _RAW_LIST_ELEMENT_NAMES & set(re.findall(r"[A-Za-z_]\w*", expected))):
+    if not (expected.startswith("List[") and _declarable_type(expected)):
         return None
     return _java_v3_type(expected)
 
