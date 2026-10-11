@@ -27,6 +27,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -450,7 +451,7 @@ def _node_version() -> "tuple[int, int] | None":
 # on an idle machine they finish in seconds, and on a loaded one a test that is
 # still working is killed and reported as a failure. Measured on 2026-10-10 at
 # a 15-minute load average around 12, two compositions reported
-# `subprocess.TimeoutExpired ... timed out after 180 seconds` — timeouts, not
+# `subprocess.TimeoutExpired ... timed out after 180 seconds`: timeouts, not
 # assertion failures, and both passed on a quiet host.
 #
 # `REVL_TS_TIMEOUT` (seconds) raises the bound. The vitest bound INSIDE the run
@@ -463,6 +464,10 @@ def _node_version() -> "tuple[int, int] | None":
 _TS_TIMEOUT_DEFAULT = 180
 
 
+class _TsTimeoutInvalid(ValueError):
+    """``REVL_TS_TIMEOUT`` is not a positive integer (reported, not raised raw)."""
+
+
 def _ts_timeout_seconds() -> int:
     """The ts tier's wall-clock bound in seconds (``REVL_TS_TIMEOUT``).
 
@@ -470,7 +475,14 @@ def _ts_timeout_seconds() -> int:
     the one handed to the vitest child below, so the outer bound and the inner
     one `vitest.config.ts` derives from it always come from one snapshot.
     """
-    return int(os.environ.get("REVL_TS_TIMEOUT", str(_TS_TIMEOUT_DEFAULT)))
+    raw = os.environ.get("REVL_TS_TIMEOUT")
+    if raw is None:
+        return _TS_TIMEOUT_DEFAULT
+    if re.fullmatch(r"[0-9]+", raw.strip()) and int(raw) > 0:
+        return int(raw)
+    raise _TsTimeoutInvalid(
+        f"REVL_TS_TIMEOUT must be a positive integer number of seconds, "
+        f"got {raw!r}")
 
 
 def _composition_name(ir: dict) -> str:
@@ -480,7 +492,7 @@ def _composition_name(ir: dict) -> str:
     it also says WHICH composition: the caller's own log is the only other place
     the name appears, and the point of the message is that the caller does not
     have to go and correlate it. The name is the distinct source files the
-    manifest was compiled from — what the caller named on the command line.
+    manifest was compiled from: what the caller named on the command line.
     """
     files = sorted({entry.get("file") for entry
                     in ((ir.get("manifest") or {}).get("components") or [])
@@ -496,7 +508,7 @@ def _ts_foreground(argv: list, cwd: Path, timeout: int,
     kills only the process it spawned, and a vitest fork worker survived its
     parent at PPID 1, 37% CPU, for ~7 minutes, with the generated workspace
     already deleted (issue #2229). So the child is put in its OWN session and
-    the timeout path kills the whole group — the idiom
+    the timeout path kills the whole group, the idiom
     `tools/hooks/pre-commit` already uses for a wedged suite.
     `start_new_session=True` makes the child the leader of that group, so its
     pid IS the group id, and no `getpgid` lookup is needed.
@@ -506,7 +518,10 @@ def _ts_foreground(argv: list, cwd: Path, timeout: int,
                                start_new_session=True, env=env)
     try:
         stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
+    except BaseException:
+        # Any exit from the wait (the bound, KeyboardInterrupt, ...) must take
+        # the group down: with its own session a terminal Ctrl-C no longer
+        # reaches the child.
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except OSError:
@@ -590,6 +605,10 @@ def run_ts(ir: dict) -> tuple[str, str]:
         return ("skip", Absent(
             "vitest not installed (`cd backends/typescript && npm ci`), or no "
             "node on PATH"))
+    try:
+        _ts_timeout_seconds()
+    except _TsTimeoutInvalid as error:
+        return ("fail", str(error))
     note = _fault_note(ir, "ts")
     try:
         source = _emitter("typescript").emit(_without_fault_tests(ir),

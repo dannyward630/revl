@@ -17,7 +17,14 @@ emitFixtures()
 // Vitest's bound is deliberately the LOWER of the two: on a loaded host it then
 // reports first, naming the test that ran out of time, instead of the runner's
 // outer bound killing the whole run without saying which test was working.
-const TS_TIMEOUT_S = Number(process.env.REVL_TS_TIMEOUT || 180)
+function tsTimeoutSeconds(): number {
+  const raw = process.env.REVL_TS_TIMEOUT
+  if (raw === undefined) return 180
+  if (/^[0-9]+$/.test(raw.trim()) && Number(raw) > 0) return Number(raw)
+  throw new Error(
+    `REVL_TS_TIMEOUT must be a positive integer number of seconds, got '${raw}'`)
+}
+const TS_TIMEOUT_S = tsTimeoutSeconds()
 const TS_TIMEOUT_MS = (TS_TIMEOUT_S * 1000) / 3
 
 export default defineConfig({

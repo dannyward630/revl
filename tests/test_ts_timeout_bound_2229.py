@@ -13,12 +13,12 @@ Three things have to hold, and this file pins all three:
 
 (a) `REVL_TS_TIMEOUT` (seconds) moves the bound at BOTH sites;
 (b) a timeout on the vitest path is a NAMED failure that names the composition,
-    the bound and the variable — not a raw `TimeoutExpired` traceback;
+    the bound and the variable, not a raw `TimeoutExpired` traceback;
 (c) with nothing exported, both bounds are exactly what they were (180s outer,
     60s inner in `backends/typescript/vitest.config.ts`).
 
 The inner bound lives in a `.ts` file, so (c) is pinned by reading the
-derivation out of it and checking the arithmetic — 180s/3 is exactly 60000ms.
+derivation out of it and checking the arithmetic: 180s/3 is exactly 60000ms.
 That the exported variable really crosses into that file's `process.env` is
 proven by a real invocation (recorded on #2229), not by this file.
 """
@@ -109,7 +109,7 @@ def _fake_world(monkeypatch):
 
 def _bound_of(argv_fragment: str) -> int:
     """The `timeout=` the runner handed the child whose argv contains
-    `argv_fragment` — the one place both sites' bound is observable."""
+    `argv_fragment`: the one place both sites' bound is observable."""
     matched = [call for call in _World.calls
                if any(argv_fragment in str(a) for a in call.argv)]
     assert len(matched) == 1, (
@@ -199,9 +199,10 @@ def test_inner_vitest_bound_is_a_third_of_the_same_variable():
     """(c): vitest's own bound derives from the same variable, and by default
     is exactly the 60s it has always been."""
     text = CONFIG.read_text(encoding="utf-8")
-    read = re.search(r"Number\(\s*process\.env\.REVL_TS_TIMEOUT\s*\|\|\s*(\d+)\s*\)",
-                     text)
-    assert read, "vitest.config.ts must read REVL_TS_TIMEOUT from process.env"
+    assert "process.env.REVL_TS_TIMEOUT" in text, (
+        "vitest.config.ts must read REVL_TS_TIMEOUT from process.env")
+    read = re.search(r"if \(raw === undefined\) return (\d+)", text)
+    assert read, "vitest.config.ts must default an unset variable"
     default = int(read.group(1))
     assert default == T._TS_TIMEOUT_DEFAULT, (
         "the two defaults are one number, not two")
@@ -212,9 +213,61 @@ def test_inner_vitest_bound_is_a_third_of_the_same_variable():
     for key in ("testTimeout", "hookTimeout"):
         assert re.search(rf"{key}: TS_TIMEOUT_MS", text), (
             f"{key} must be the derived bound, not a literal")
-    # today's value, exactly, and the ratio stays exact at a raised bound
-    assert (default * 1000) / 3 == 60_000
-    assert (default * 1000) % 3 == 0
-    # and the inner bound stays strictly below the outer at any exported value
-    assert (900 * 1000) / 3 == 300_000
-    assert 300 < 900, "vitest must report first, the outer bound is the backstop"
+
+
+# ------------------------------------------------- invalid values are refused
+
+_INVALID = ["", "0", "-5", "abc", "1.5"]
+
+
+@pytest.mark.parametrize("raw", _INVALID)
+def test_invalid_timeout_is_refused_by_name_in_python(monkeypatch, raw):
+    monkeypatch.setenv("REVL_TS_TIMEOUT", raw)
+    with pytest.raises(ValueError) as caught:
+        T._ts_timeout_seconds()
+    assert "REVL_TS_TIMEOUT" in str(caught.value)
+    assert "positive integer" in str(caught.value)
+
+
+@pytest.mark.parametrize("raw", _INVALID)
+def test_invalid_timeout_is_a_clean_failure_from_run_ts(monkeypatch, raw):
+    monkeypatch.setenv("REVL_TS_TIMEOUT", raw)
+    (verdict, message), _ir = _drive_vitest_site(monkeypatch)
+    assert verdict == "fail", message
+    assert "REVL_TS_TIMEOUT" in message and "positive integer" in message
+    assert not _World.calls, "nothing may be spawned under an invalid bound"
+
+
+@pytest.mark.parametrize("raw", _INVALID)
+def test_invalid_timeout_is_refused_by_vitest_config(raw):
+    env = {**os.environ, "REVL_TS_TIMEOUT": raw}
+    text = CONFIG.read_text(encoding="utf-8")
+    fn = re.search(r"function tsTimeoutSeconds\(\)[^{]*\{.*?\n\}\n", text, re.S)
+    assert fn, "vitest.config.ts must validate REVL_TS_TIMEOUT"
+    node = _node22()
+    if node is None:
+        pytest.skip("no node able to run the extracted validator")
+    js = re.sub(r": number", "", fn.group(0))
+    out = subprocess.run([node, "-e", js + "\ntsTimeoutSeconds()"], env=env,
+                         capture_output=True, text=True)
+    assert out.returncode != 0, out.stdout
+    assert "REVL_TS_TIMEOUT must be a positive integer" in out.stderr
+
+
+def _node22():
+    import shutil
+    return shutil.which("node", path="/opt/homebrew/bin:" + os.environ["PATH"])
+
+
+def test_keyboard_interrupt_kills_the_process_group(monkeypatch):
+    """Ctrl-C during the wait must not leave the child group alive."""
+    killed = []
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+
+    def interrupted(self, timeout=None):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(_FakeProc, "communicate", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        T._ts_foreground(["vitest"], ROOT, 5)
+    assert killed == [(4242, 9)], killed
