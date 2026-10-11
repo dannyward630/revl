@@ -3480,6 +3480,10 @@ def _build_java(ir: dict, tmp: Path) -> str:
 # may be using it).
 _STAGED_KEEP = 8
 _STAGED_MIN_AGE = 600.0
+# A staged key is the 16-hex prefix of a sha256 (`_content_key`). Pruning only
+# ever touches names of this shape, so anything else sharing a stage root
+# survives.
+_STAGED_KEY = re.compile(r"[0-9a-f]{16}")
 
 
 def _content_key(files: dict[str, bytes]) -> str:
@@ -3518,12 +3522,13 @@ def _prune_staged(stage_root: Path, current: str, extra=lambda key: (),
     Never the one just built, never one used within `min_age` seconds. `extra`
     names further paths that belong to a key (the rust binary and its cargo
     artifacts live in the target dir, not in the staged crate). Returns the
-    removed keys."""
+    removed keys. Only key-shaped names (`_STAGED_KEY`) are considered."""
     keep = _STAGED_KEEP if keep is None else keep
     min_age = _STAGED_MIN_AGE if min_age is None else min_age
     if not stage_root.is_dir():
         return []
-    entries = sorted((p for p in stage_root.iterdir() if p.is_dir()),
+    entries = sorted((p for p in stage_root.iterdir()
+                      if p.is_dir() and _STAGED_KEY.fullmatch(p.name)),
                      key=lambda p: p.stat().st_mtime, reverse=True)
     now = time.time()
     removed = []
@@ -3565,9 +3570,14 @@ def rust_runner_lock_manifest() -> Path:
     """Stage the runner crate where its Cargo.lock is resolved, outside the
     source tree, and return its manifest. `rust_runtime_reason` resolves here,
     and `_build_rust` copies the resulting lock into every staged crate, so a
-    new composition never re-resolves and every key builds the same versions."""
-    lock_dir = _rust_runner_target_dir() / "revl-runner-lock"
-    _stage_tree(lock_dir, _rust_runner_sources())
+    new composition never re-resolves and every key builds the same versions.
+
+    The lock dir is named by a hash of the manifest, so a dependency change
+    gets a fresh lock instead of a stale one that `--locked` would refuse."""
+    sources = _rust_runner_sources()
+    manifest_key = _content_key({"Cargo.toml": sources["Cargo.toml"]})
+    lock_dir = _rust_runner_target_dir() / f"revl-runner-lock-{manifest_key}"
+    _stage_tree(lock_dir, sources)
     return lock_dir / "Cargo.toml"
 
 
@@ -3657,7 +3667,8 @@ def _build_rust(ir: dict, tmp: Path) -> str:
 
 def _go_runner_stage_root() -> Path:
     """Where go runner builds are staged: `REVL_GO_RUNNER_STAGE` when set, else
-    the runner's gitignored `staged/`."""
+    the runner's gitignored `staged/`. Keys live in its `revl-go-runner/`
+    subdir, so a shared root keeps its other contents."""
     override = os.environ.get("REVL_GO_RUNNER_STAGE")
     return Path(override) if override else _GO_RUNNER / "staged"
 
@@ -3699,10 +3710,12 @@ def _build_go(ir: dict, tmp: Path) -> str:
     # sentinel so each file carries its own import block.
     module_src, bridge_src = source.split("\f", 1)
     files = _go_runner_sources()
+    # the toolchain is a build input too: a go upgrade gets a new key
+    version = subprocess.run(["go", "version"], capture_output=True, text=True)
     files["emitted/gen.go"] = module_src.encode("utf-8")
     files["emitted/bridge_gen.go"] = bridge_src.encode("utf-8")
-    key = _content_key(files)
-    stage = _go_runner_stage_root() / key
+    key = _content_key({**files, "\0go version": version.stdout.encode("utf-8")})
+    stage = _go_runner_stage_root() / "revl-go-runner" / key
     _stage_tree(stage / "src", files)
     os.utime(stage)
     binary = stage / f"revl_placement_runner_{key}"

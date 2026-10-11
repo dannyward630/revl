@@ -115,7 +115,8 @@ def test_different_compositions_get_different_binaries(target_dir, tmp_path):
     # neither re-resolves from the index nor drifts to other versions
     key = Path(outcome).name.rsplit("_", 1)[1]
     staged_lock = target_dir / "revl-runner-crates" / key / "Cargo.lock"
-    assert staged_lock.read_bytes() == (target_dir / "revl-runner-lock" / "Cargo.lock").read_bytes()
+    lock = _placement.rust_runner_lock_manifest().parent / "Cargo.lock"
+    assert staged_lock.read_bytes() == lock.read_bytes()
     assert Path(again).stat().st_mtime_ns == stamp, \
         "rebuilding identical inputs relinked the binary"
 
@@ -193,27 +194,86 @@ def test_different_go_compositions_get_different_binaries(go_stage, tmp_path):
 # ------------------------------------------------------------------ pruning
 
 
+def _key(i: int) -> str:
+    return f"{i:016x}"
+
+
 def test_pruning_keeps_the_recent_the_current_and_the_young(tmp_path):
     root = tmp_path / "stage"
     old = time.time() - 3600
     for i in range(12):
-        key = root / f"k{i:02d}"
+        key = root / _key(i)
         key.mkdir(parents=True)
-        (tmp_path / f"artifact_k{i:02d}").write_text("x")
-        os.utime(key, (old + i, old + i))  # k11 is the most recent
-    young = root / "young"
+        (tmp_path / f"artifact_{_key(i)}").write_text("x")
+        os.utime(key, (old + i, old + i))  # key 11 is the most recent
+    young = root / _key(99)
     young.mkdir()
-    os.utime(root / "k00", (old - 10, old - 10))  # oldest, but the current build
+    os.utime(root / _key(0), (old - 10, old - 10))  # oldest, but the current build
 
     removed = _placement._prune_staged(
-        root, "k00", lambda key: [tmp_path / f"artifact_{key}"], keep=4, min_age=600)
+        root, _key(0), lambda key: [tmp_path / f"artifact_{key}"], keep=4, min_age=600)
 
     left = sorted(p.name for p in root.iterdir())
-    # the 4 most recent are young + k11..k09; k00 is current; k01..k08 go
-    assert left == ["k00", "k09", "k10", "k11", "young"], left
-    assert sorted(removed) == [f"k{i:02d}" for i in range(1, 9)]
-    assert not (tmp_path / "artifact_k05").exists()
-    assert (tmp_path / "artifact_k10").exists()
+    # the 4 most recent are the young one + keys 11..9; key 0 is current; 1..8 go
+    assert left == sorted([_key(0), _key(9), _key(10), _key(11), _key(99)]), left
+    assert sorted(removed) == [_key(i) for i in range(1, 9)]
+    assert not (tmp_path / f"artifact_{_key(5)}").exists()
+    assert (tmp_path / f"artifact_{_key(10)}").exists()
+
+
+def test_pruning_leaves_names_that_are_not_keys(tmp_path):
+    """A stage root may be shared (REVL_GO_RUNNER_STAGE, CARGO_TARGET_DIR): an
+    old directory that is not key-shaped is never removed."""
+    root = tmp_path / "stage"
+    old = time.time() - 3600
+    for name in ("unrelated", "revl-go-runner", "0123", _key(1), _key(2)):
+        (root / name).mkdir(parents=True)
+        os.utime(root / name, (old, old))
+    removed = _placement._prune_staged(root, _key(2), keep=0, min_age=600)
+    assert removed == [_key(1)]
+    assert sorted(p.name for p in root.iterdir()) == sorted(
+        ["unrelated", "revl-go-runner", "0123", _key(2)])
+
+
+@needs_go
+def test_go_stages_under_its_own_subdir(go_stage, tmp_path):
+    (go_stage / "unrelated").mkdir(parents=True)
+    os.utime(go_stage / "unrelated", (0, 0))
+    work = tmp_path / "work"
+    work.mkdir()
+    binary = Path(_placement._build_go(_ir("counter_pair.rvl"), work))
+    assert binary.parent.parent == go_stage / "revl-go-runner"
+    assert (go_stage / "unrelated").is_dir()
+
+
+@needs_cordis_rs
+def test_a_manifest_change_gets_a_fresh_lock(target_dir, tmp_path, monkeypatch):
+    """With a persisted target dir, a dependency change in the runner manifest
+    must not meet the old lock under --locked: the lock dir is keyed by the
+    manifest, so the build resolves a new one and succeeds."""
+    work = tmp_path / "work"
+    work.mkdir()
+    _placement._build_rust(_ir("outcome.rvl"), work)
+    first_lock = _placement.rust_runner_lock_manifest().parent
+
+    real_sources = _placement._rust_runner_sources
+
+    def with_extra_dependency():
+        files = real_sources()
+        manifest = files["Cargo.toml"].decode("utf-8")
+        # itoa is already in the graph (serde_json needs it), so the offline
+        # resolve finds it in the local registry
+        changed = manifest.replace('serde_json = "1"\n', 'serde_json = "1"\nitoa = "1"\n')
+        assert changed != manifest
+        files["Cargo.toml"] = changed.encode("utf-8")
+        return files
+
+    monkeypatch.setattr(_placement, "_rust_runner_sources", with_extra_dependency)
+    binary = _placement._build_rust(_ir("outcome.rvl"), work)
+    assert Path(binary).exists()
+    second_lock = _placement.rust_runner_lock_manifest().parent
+    assert second_lock != first_lock
+    assert "itoa" in (second_lock / "Cargo.lock").read_text(encoding="utf-8")
 
 
 def test_a_reused_key_is_touched_so_it_survives_pruning(tmp_path):
