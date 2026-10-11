@@ -2237,6 +2237,7 @@ jobs:
           tests/test_total_field_surface.py
           tests/test_ts_seam_int_1566.py
           tests/test_value_stdlib.py
+          tests/test_verdict_test_count_2286.py
           -q
         env:
           REVL_REQUIRE_TIERS: "py,ts,go"

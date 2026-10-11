@@ -374,10 +374,11 @@ def run_py(ir: dict, verbose: bool = False, report: str = None) -> tuple[str, st
             else:
                 print(f"FAIL {name}: {detail}{suffix}")
 
-    # always lead with the plain-test count, even when it is 0 (a document of
-    # only fault, round-trip or prop tests): issue #2286
-    summary = [f"{len(entries) - failures} of {len(entries)} test(s) passed"
-               if failures else _passed(len(entries))]
+    # The verdict leads with the TOTAL of every unit that ran (plain, fault,
+    # round-trip, prop), the same rule as the wasm fold (issue #2286); the
+    # per-kind segments follow. `summary[0]` is filled in at the end.
+    ran_total = len(entries)
+    summary = [""]
     # `--report` owns stdout for the test blocks; the fault/prop/round-trip
     # runners' banners would corrupt the machine-readable payload, so silence
     # them (their verdicts still feed the exit code unchanged).
@@ -400,6 +401,7 @@ def run_py(ir: dict, verbose: bool = False, report: str = None) -> tuple[str, st
             summary.append(reason)
         else:
             failures += fault_failures
+            ran_total += fault_total
             summary.append(
                 f"{fault_total - fault_failures} of {fault_total} fault test(s) passed")
 
@@ -422,6 +424,7 @@ def run_py(ir: dict, verbose: bool = False, report: str = None) -> tuple[str, st
         else:
             failures += rt_failures
             rt_total = rt_dossier["counts"]["effects"]
+            ran_total += rt_total
             summary.append(
                 f"{rt_total - rt_failures} of {rt_total} verified-effect round-trip(s) held")
 
@@ -431,13 +434,16 @@ def run_py(ir: dict, verbose: bool = False, report: str = None) -> tuple[str, st
         prop_failures, prop_dossier = run_prop_units(ir, prop_entries, out=silent)
         failures += prop_failures
         prop_total = prop_dossier["counts"]["props"]
+        ran_total += prop_total
         summary.append(
             f"{prop_total - prop_failures} of {prop_total} prop test(s) held")
 
     if report is not None:
         print(_render_report(results, report))
+    summary[0] = (f"{ran_total - failures} of {ran_total} test(s) passed"
+                  if failures else _passed(ran_total))
     if failures:
-        return ("fail", "; ".join(summary) or f"{failures} test(s) failed")
+        return ("fail", "; ".join(summary))
     return ("pass", "; ".join(summary))
 
 

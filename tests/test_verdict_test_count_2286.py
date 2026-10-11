@@ -113,11 +113,11 @@ def test_the_wasm_fold_totals_pure_and_lifecycle_without_a_runtime():
                               "cordis-wasm: 1 lifecycle test(s) ran (x)")
 
 
-def test_a_py_document_of_only_prop_tests_still_leads_with_a_count():
+def test_a_py_document_of_only_prop_tests_leads_with_the_total_that_ran():
     source = 'prop test "identity holds" (a: Int) { assert a + 0 == a }\n'
     outcome, message = T.RUNNERS["py"](compile_source(source))
     assert outcome == "pass", message
-    assert message.startswith("0 test(s) passed; 1 of 1 prop test(s) held"), message
+    assert message.startswith("1 test(s) passed; 1 of 1 prop test(s) held"), message
 
 
 def test_vitest_count_takes_the_last_tests_line():
