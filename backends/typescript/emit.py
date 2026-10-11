@@ -6072,7 +6072,7 @@ def _emit_temporal(ir: dict) -> str:
     Temporal sink lives in the sibling `emit_temporal.py` and reuses this
     module's machinery, so this module is registered as `sys.modules["emit"]`
     and its directory put on the path before the import, whatever name the
-    caller loaded emit.py under (`revl_bundle_typescript_emit`, a per-test name,
+    caller loaded emit.py under (`revl_typescript_emit`, a per-test name,
     or `__main__`)."""
     import importlib
     import os
@@ -6085,7 +6085,7 @@ def _emit_temporal(ir: dict) -> str:
         _sys.path.insert(0, here)
     # Point the canonical name `emit` at THIS module's namespace so the sink's
     # `from emit import ...` shares one `EmitError` class and one renderer set.
-    # emit.py is loaded under several names (`revl_bundle_typescript_emit` for
+    # emit.py is loaded under several names (`revl_typescript_emit` for
     # the bundle, a per-test name, `__main__` for the standalone CLI) and is not
     # always registered in sys.modules under its own `__name__`, so bind a proxy
     # module whose namespace is this one — unless a real `emit` module already

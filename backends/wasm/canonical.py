@@ -77,10 +77,11 @@ import sys
 # per-path-cached module name so the binding is order-independent regardless of
 # what `import emit` did elsewhere. This is the same discipline
 # `tests/_backend_import.py` uses; sharing the `revl_wasm_emit` name means a
-# combined run still executes the wasm emitter exactly once.
+# combined run still executes the wasm emitter exactly once. This directory is
+# NOT put on `sys.path`: nothing here imports a sibling by bare name, and left
+# there it would answer the next bare `import emit` with this backend's
+# emitter (issue #2204).
 _HERE = pathlib.Path(__file__).resolve().parent
-if str(_HERE) not in sys.path:
-    sys.path.insert(0, str(_HERE))
 
 
 def _load_wasm_emit():
