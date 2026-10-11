@@ -728,7 +728,8 @@ def _deferral_crosscheck(records: list) -> dict:
     """
     last_approved = next((i for i in range(len(records) - 1, -1, -1)
                           if records[i].get("record") == "commit-approved"), -1)
-    flushed = {r.get("seq") for r in records if r.get("record") == "flushed"}
+    from .wal import seqs_of  # noqa: PLC0415
+    flushed = seqs_of(records, ("flushed",))
     flush_failed = {r.get("seq"): r for r in records
                     if r.get("record") == "flush-residue"}
     fired, owed, dropped, outstanding = [], [], [], []
@@ -836,8 +837,8 @@ def _roll_forward(wal: dict, *, session=None, snapshot: Optional[dict] = None) -
     last_run_complete = next(
         (i for i in range(len(tail) - 1, -1, -1)
          if tail[i].get("record") == "run-complete"), -1)
-    settled = {r.get("seq") for r in records
-               if r.get("record") in ("emission-complete", "operator-resolved")}
+    from .wal import settled_seqs  # noqa: PLC0415
+    settled = settled_seqs(records)
     steady = [r for r in tail[last_run_complete + 1:]
               if r.get("record") == "effect"
               and not (r.get("kind") == "emission" and r.get("seq") in settled)]
@@ -1560,7 +1561,8 @@ def _roll_forward_window(wal_path: str, wal: dict, approved: dict, *,
     records = wal["records"]
     descriptors = [r for r in records if r.get("record") == "discharge-descriptor"]
     deferred = [r for r in records if r.get("record") == "deferred-emission"]
-    flushed = {r.get("seq") for r in records if r.get("record") == "flushed"}
+    from .wal import seqs_of  # noqa: PLC0415
+    flushed = seqs_of(records, ("flushed",))
     flush_failed = {r.get("seq"): r for r in records
                     if r.get("record") == "flush-residue"}
     discharged: set = set()
