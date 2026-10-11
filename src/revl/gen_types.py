@@ -49,7 +49,7 @@ import re
 
 from ._paths import relpath_or_abs
 from .errors import RevlError
-from .import_openapi import _comment_safe, _line_of, _pointer
+from ._doc_text import _comment_safe, _line_of, _pointer
 from .lexer import KEYWORDS
 from .type_schema import _JSON_TYPES
 

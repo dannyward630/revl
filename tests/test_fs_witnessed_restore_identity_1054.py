@@ -142,15 +142,29 @@ def test_the_guarded_surface_admits_only_regular_single_linked_targets(root, fra
         fs.write_witnessed("linked.txt", "x")
     assert ei.value.code == "EMULTILINK"
 
+    # nothing was bound by either refusal
+    assert frame._transactional == []
+
+
+def test_the_guarded_surface_refuses_a_target_the_confinement_check_cannot_open(
+        root, frame):
+    """The third kind of target the forward guard refuses: a mode that denies
+    the confinement check its open. Split from the two above so a process that
+    reads through a missing read bit (root, CAP_DAC_OVERRIDE) skips only this
+    case, as tests/test_estop_443.py does, and not the whole probe."""
     unreadable = root / "unreadable.txt"
     unreadable.write_text("v1", encoding="utf-8")
     os.chmod(str(unreadable), 0o200)
-    with pytest.raises(fs.FsOpError) as ei:
-        fs.write_witnessed("unreadable.txt", "x")
-    assert ei.value.code == "EOUTSIDE"
-    os.chmod(str(unreadable), 0o600)
+    try:
+        if os.access(str(unreadable), os.R_OK):
+            pytest.skip("cannot revoke read permission (running as root)")
+        with pytest.raises(fs.FsOpError) as ei:
+            fs.write_witnessed("unreadable.txt", "x")
+        assert ei.value.code == "EOUTSIDE"
+    finally:
+        os.chmod(str(unreadable), 0o600)
 
-    # nothing was bound by any of the three refusals
+    # nothing was bound by the refusal
     assert frame._transactional == []
 
 

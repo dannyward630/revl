@@ -331,4 +331,9 @@ def test_a_component_body_match_decides_the_binder_the_same_way():
     assert len(lines) == 2, out
     label, bump = lines
     assert "lambda" not in label, label
-    assert "(lambda n: (n + 1))(match.value)" in bump, bump
+    # `n + 1` is `Int + Int`, so since issue #2198 the component stratum
+    # annotates it as the `fn` stratum does and python renders the checked
+    # i64 add. What this test is about is the binder: the lambda stays and
+    # the bind is still read inside it.
+    assert ("(lambda n: (_bi if _REVL_I64_MIN <= (_bi := n + 1) <= _REVL_I64_MAX"
+            " else _revl_i64(_bi)))(match.value)") in bump, bump

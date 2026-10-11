@@ -507,10 +507,9 @@ NOT_A_RULE = {
                      "`placement`'s conductor at run time and read by "
                      "`revl recover`. It records crossings; it refuses no "
                      "program.",
-    "import_openapi": "`revl import openapi`, a generator. `gen_types` "
-                      "borrows its pointer, line and comment helpers for "
-                      "`revl gen-types`; the compile-time header check "
-                      "(`check_generated_header`) calls none of them.",
+    "_doc_text": "the pointer, line and comment text helpers `gen_types` "
+                 "shares with the OpenAPI importer (issue #2196); the "
+                 "compile-time header check calls none of them.",
     "refusal": "tells a backend emitter's EmitError apart from its fault "
                "after the frontend has admitted the document; `placement` "
                "reads it only on the emit path. Measured: making "
@@ -602,23 +601,18 @@ def discharged_guarantees() -> list[str]:
 
 
 def compiler_version() -> str:
-    """The revl toolchain version recorded as `checker.compiler`: the installed
-    distribution's version, falling back to the in-repo package version when
-    running from a checkout with no install. `revl.gate` reports the same value
-    as `gate_version().language`.
+    """The revl toolchain version recorded as `checker.compiler`:
+    `revl._version.version()`, the one definition (the source tree's
+    `pyproject.toml`, else installed metadata, else "unknown"). `revl.gate`
+    reports the same value as `gate_version().language`.
 
     Defined here, not in `revl.gate`: the compiler's import chain reaches this
     module, and importing `revl.gate` from it put the gate, and through the
-    gate `revl.mcp`, on that chain (issue #1780)."""
-    try:
-        from importlib.metadata import PackageNotFoundError, version  # noqa: PLC0415
-        try:
-            return version("revl")
-        except PackageNotFoundError:
-            pass
-    except Exception:  # noqa: BLE001 — metadata is a convenience, never fatal
-        pass
-    return "2.0.0"
+    gate `revl.mcp`, on that chain (issue #1780). `revl._version` imports
+    nothing from revl, so it adds nothing to that chain."""
+    from ._version import version  # noqa: PLC0415
+
+    return version()
 
 
 def checker_identity() -> dict:

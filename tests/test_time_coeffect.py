@@ -421,6 +421,10 @@ def test_test_harness_reports_a_clean_follow_on_skip(monkeypatch):
     # must never report the timer follow-on. With the toolchains absent the
     # skip is a plain "not installed", not "not yet lowerable".
     monkeypatch.setattr(test_module.shutil, "which", lambda name: None)
+    # an absent toolchain is a FAILURE where the job requires the tier
+    # (REVL_REQUIRE_TIERS names go in every job that installs it, issue #2264),
+    # and this test simulates exactly that absence, so it asks as a laptop does
+    monkeypatch.delenv("REVL_REQUIRE_TIERS", raising=False)
     for runner, tier in [(run_go, "go"), (run_rust, "rust")]:
         verdict, reason = runner(ir)
         assert verdict == "skip"

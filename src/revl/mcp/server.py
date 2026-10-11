@@ -1841,7 +1841,7 @@ def _change_working_set() -> dict:
 # disk *leads* the session: it still holds the change the session retracted.
 _DISK_RIDES = frozenset({"revl_change", "revl_edit", "revl_source",
                          "revl_export", "revl_undo", "revl_rollback",
-                         "revl_step_back"})
+                         "revl_step_back", "revl_check"})
 
 # issue #2037: the three verbs that revert the session. Their divergence is the
 # mirror of #2032's — the session has retracted a change disk still carries, so
@@ -1952,8 +1952,17 @@ def _ride_disk(name: str, payload) -> None:
     disk, since that is the change the agent believes it has undone."""
     if name not in _DISK_RIDES or not isinstance(payload, dict):
         return
+    if name == "revl_check" and not SESSION.loaded:
+        # issue #2241: a cold check holds nothing to be out of step with disk,
+        # so it keeps its base shape rather than gaining an empty `disk` block.
+        return
     disk = _disk_state()
     payload["disk"] = disk
+    if name == "revl_check":
+        # issue #2241: a check's note is advice about what it checked, so
+        # `_tool_check` sets it where it knows the candidate; a scratch or
+        # unrelated-file check gets the block and no export note.
+        return
     if not disk["inSync"] and payload.get("ok") and not payload.get("note"):
         payload["note"] = (_DISK_NOTE_REVERT if name in _DISK_REVERTS
                            else _DISK_NOTE)
@@ -3043,9 +3052,45 @@ def _tool_check(arguments: dict) -> dict:
             next=_remedy.call("revl_check", {"session": True}),
             draft=True)
     if explicit or not _carries_candidate(arguments):
-        return _check_held(arguments)
+        return _note_session_check_disk(_check_held(arguments))
     sent, _stored, canon = _canonical.prepare(arguments)
-    return _canonical.attach(_check_as_sent(sent), canon)
+    return _note_held_file_differs(
+        arguments, _canonical.attach(_check_as_sent(sent), canon))
+
+
+_CHECK_FILE_DIFFERS_NOTE = ("the file on disk differs from the session's "
+                            "held source, and this check read disk; "
+                            "revl_export writes the held source")
+
+
+def _note_session_check_disk(payload):
+    """The export note on a check of the held composition whose source has not
+    reached disk (issue #2241). Only a loaded session has a disk state to
+    report; `_ride_disk` carries the `disk` block."""
+    if (SESSION.loaded and isinstance(payload, dict) and payload.get("ok")
+            and not payload.get("note") and not _disk_state()["inSync"]):
+        payload["note"] = _DISK_NOTE
+    return payload
+
+
+def _note_held_file_differs(arguments: dict, payload) -> dict:
+    """Say so when `revl_check {files}` compiled a disk file the session holds
+    a different text for (issue #2241).
+
+    That check reads disk, so after a commit that has not been exported it
+    answers for the stale file while the running composition has moved on.
+    The note is set here, not by `_ride_disk`, so only a check that named a
+    held file carries it: a check of an unrelated file gets `disk` alone."""
+    if not (SESSION.loaded and isinstance(payload, dict)) or payload.get("note"):
+        return payload
+    held = _edit.virtual_source(SESSION)
+    texts = held.get(_edit.ORIGIN_FILES_CONTENT) or {}
+    real = {os.path.realpath(p): p for p in texts}
+    named = [real.get(os.path.realpath(p), p)
+             for p in arguments.get("files") or []]
+    if diverged_paths(texts, [p for p in named if p in texts]):
+        payload["note"] = _CHECK_FILE_DIFFERS_NOTE
+    return payload
 
 
 def _carries_candidate(arguments: dict) -> bool:
@@ -5744,6 +5789,21 @@ def _instructions() -> str:
 
 # ---------------------------------------------------------------- protocol
 
+# issue #2232: the short fields a client acts on go first in the text payload,
+# so a client with a result-size cap still receives them. Content is
+# unchanged; `structuredContent` keeps the payload's own order.
+_ACTIONABLE = ("ok", "note", "disk", "next", "hint")
+
+
+def _actionable_first(payload):
+    """`payload` with `_ACTIONABLE` keys first, in that order, then the rest in
+    their original order. A non-dict passes through."""
+    if not isinstance(payload, dict):
+        return payload
+    head = {k: payload[k] for k in _ACTIONABLE if k in payload}
+    return {**head, **{k: v for k, v in payload.items() if k not in head}}
+
+
 def handle(message: dict) -> dict | None:
     """One JSON-RPC request -> one response (or None for a notification)."""
     method = message.get("method")
@@ -5785,7 +5845,7 @@ def handle(message: dict) -> dict | None:
         payload = _repeat.observe(name, params.get("arguments") or {}, payload, state)
         payload = _ambient.stamp(payload, state)
         result = {
-            "content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
+            "content": [{"type": "text", "text": json.dumps(_actionable_first(payload), indent=2)}],
             "isError": not payload.get("ok", False),
             "structuredContent": payload,
         }

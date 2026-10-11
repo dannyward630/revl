@@ -9,9 +9,11 @@ costs X ms" is part of the pitch — not an implementation detail. This script
 measures it and pins a number a regression would move.
 
 What is timed is the *in-memory* round-trip only: parse + check/lower the
-candidate + link it against the running manifest + refuse_admission. There is
-NO disk I/O in the timed section (sources are strings; `compile_source` reads
-and writes nothing), no network and no toolchain. The running composition is
+candidate + link it against the running manifest + refuse_admission. The timed
+section reads and writes no file (sources are strings), and since issue #2195
+its only filesystem call is one `stat` that locates the shipped stdlib: no
+`lstat`, no directory scan (pinned by
+tests/test_compile_hot_path_2195_2197.py). No network and no toolchain. The running composition is
 compiled once up front, outside the timer — an agent holds it in memory across
 generations, so re-deriving it per candidate would not reflect the real loop.
 
@@ -183,8 +185,9 @@ One honestly-measured number for revl's in-memory admission round-trip
 (roadmap item 16). The gate runs per candidate component, per generation,
 inside an agent loop, so this is the per-candidate cost of `compile_source(...,
 manifest=running)`: parse + check/lower the candidate + link it against the
-running composition + `refuse_admission`. No disk I/O, network, or toolchain is
-in the timed section.
+running composition + `refuse_admission`. No file is read or written in the
+timed section (one `stat` locates the shipped stdlib), and no network or
+toolchain is used.
 
 ## Result
 
@@ -213,8 +216,9 @@ the headline).
   one-time import cost is excluded.
 - **Distribution:** {rt['n']} timed iterations; median/p90/p99 reported, not a
   single lucky sample.
-- **Determinism:** pure `compile_source` on in-memory strings — no disk I/O in
-  the timed section, no network, no toolchain.
+- **Determinism:** pure `compile_source` on in-memory strings: no file read or
+  written in the timed section (one `stat` locates the stdlib), no network, no
+  toolchain.
 
 ## Re-run
 

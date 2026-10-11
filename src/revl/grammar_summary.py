@@ -39,6 +39,10 @@ service T { fn m(a: Str) -> Int }
 extern pure fn conn_close(c: Conn) = @py { return None }
 extern acquire fn conn_open(url: Str) -> Conn undo conn_close(result) = @py { return 1 }
 
+// a secret is a name bound to a capability; the value is never in source
+secret api_key for net.send
+extern emission[net.send] fn post(m: Str) -> Int = @py { return len(api_key) }
+
 component C requires k: S provides j: T {
   config { url: Str = "db://local" }
   isolate k in realm("tenant")        // optional realm placement (prelude)
@@ -81,7 +85,9 @@ meaning (effects, inverses, provisions, boundaries) -> distinct revl syntax.
 program   := use* decl*
 use       := 'use' STRING ( '{' IDENT (',' IDENT)* '}' | 'as' IDENT )
 decl      := ['pub'] (typedecl | fndecl | service | component | extern
-                       | test | 'fault' test) | composition
+                       | test | 'fault' test) | composition | layer | proptest
+                       | secret | capdecl | event | retention | model_role
+                       | model_council           -- "other declarations", below
 
 --- types (own syntax; capitalized names; [] generics) ---
 typedecl  := 'type' IDENT ['[' IDENT (',' IDENT)* ']'] '=' (record | variant)
@@ -94,7 +100,8 @@ type      := 'Str'|'Int'|'Float'|'Bool'|'Bytes'|'Unit'
 -- no null/undefined: absence is Opt[T]. Float is IEEE754 (NaN != NaN).
 
 --- pure expressions & functions (stratum 1: TS subset, verbatim syntax) ---
-fndecl    := ['verified'] 'fn' IDENT '(' (IDENT ':' type)* ')' ['->' type] block
+fndecl    := ['verified'] [endorse] 'fn' IDENT '(' (IDENT ':' type)* ')' ['->' type] block
+endorse   := 'endorse' '[' IDENT (',' IDENT)* ']'     -- taint classes the body may declassify
 block     := '{' stmt* '}'
 stmt      := let | var | assign(var-only) | 'if' '(' expr ')' block ['else' block]
              | 'for' '(' IDENT 'of' expr ')' block | 'while' '(' expr ')' block
@@ -119,14 +126,14 @@ expr      := literal | IDENT | expr '.' IDENT | expr '?.' IDENT | expr '??' expr
 -- in pure code, generators, switch (use match), reference/mutable capture.
 
 --- services (interfaces; upper-bound every provider, G4) ---
-service   := ['pub'] 'service' IDENT '{' methodsig* '}'
+service   := ['pub'] ['commutative'] 'service' IDENT '{' methodsig* '}'
 methodsig := ['emission' ['[' IDENT (',' IDENT)* ']']] ['async'] ['commutative']
              'fn' IDENT '(' (IDENT ':' type)* ')' ['->' type]
 -- bare `emission` = any boundary; emission[a,b] = only through capabilities a,b.
 -- async fn: provide-method body may `await` a host promise (not a divert point).
 
 --- components (stratum 3; unchanged core + 2.0 block forms) ---
-component := 'component' IDENT ['requires' bind (',' bind)*]
+component := ['boot'] 'component' IDENT ['requires' bind (',' bind)*]
              ['provides' bind (',' bind)*] '{' cbody* '}'
 bind      := IDENT ':' IDENT
 cbody     := config_block | acquire | 'await' expr | emit_stmt | fail_stmt
@@ -193,8 +200,25 @@ extern    := 'extern' ('pure'|'acquire'|'emission') 'fn' IDENT '(' (IDENT ':' ty
 -- implicit `result` binding only), emission (may carry compensate).
 -- config is resolved once at plug time, bound as `_revl_config` in the body.
 
+--- other declarations (CONTEXTUAL keywords: each heads a decl only in this shape) ---
+secret    := 'secret' IDENT 'for' CAP            -- CAP: dotted capability token, e.g. net.send
+-- binds a NAME to one capability. The value is never in source: it is supplied
+-- at plug and read as a local of the host body of each `extern emission[CAP]`.
+-- It reaches no other extern and no revl construct; a secret with no
+-- emission extern serving CAP is refused. Example: secret api_key for net.send
+capdecl   := 'capability' CAP '(' [IDENT ':' kind (',' IDENT ':' kind)*] ')'
+             kind := 'path' | 'discrete' | 'ceiling'   -- resource dimensions CAP carries
+event     := 'event' IDENT '(' 'key' ':' IDENT [',' 'window' ':' INT] ')' record
+retention := 'retention' IDENT '{' (IDENT ':' (STRING | IDENT (',' IDENT)*))* '}'
+model_role := 'model' 'role' IDENT ('on_device' | 'off_device')
+             ['device' IDENT 'memory' INT 'quant' IDENT] ['reaches' '[' [CAP (',' CAP)* | '*'] ']']   -- [] = reaches nothing
+model_council := 'model' 'council' IDENT '{' ((member | aggregate) [',' | ';'])* '}'
+             member := IDENT '->' IDENT ('reads' IDENT)*
+             aggregate := 'aggregate' IDENT ['quorum' IDENT] ['on_tie' IDENT]
+
 --- tests ---
 test      := ['lifecycle'] 'test' STRING '{' (lcstmt | stmt)* '}'
+proptest  := 'prop' 'test' STRING '(' (IDENT ':' type)* ')' '{' stmt* '}'   -- docs/prop-test.md
 lcstmt    := 'load' IDENT ['with' '{' (IDENT ':' expr)* '}']
              | 'unload' IDENT
              | ['let' IDENT '='] 'call' IDENT '.' IDENT '(' expr* ')'

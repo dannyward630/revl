@@ -2167,6 +2167,12 @@ def _lower_fns(program: Program, filename: str, types: dict | None = None) -> li
         "taken": ({fn.name for fn in program.fn_decls}
                   | {ext.name for ext in program.externs}),
     })
+    # issue #2193: every fn of one module shares one `fn_scopes` value
+    # (compiler.py), so its body namespace is built once per module, not once
+    # per fn. Keyed by identity; `program.fn_scopes` and `default_callables`
+    # keep every keyed object alive for the whole loop.
+    extern_names = {ext.name for ext in program.externs}
+    body_callables: dict[int, frozenset] = {}
     for decl in program.fn_decls:
         # In a multi-file composition `filename` is only the first source
         # (paths[0]); a fn parsed from a LATER file carries its own `source`, so
@@ -2187,7 +2193,11 @@ def _lower_fns(program: Program, filename: str, types: dict | None = None) -> li
             scope[param.name] = False
             type_env[param.name] = marked
         module_callables = program.fn_scopes.get(id(decl), default_callables)
-        callables = _HOST_CALLABLES | _BUILTIN_CONSTRUCTORS | _DECLASSIFY_BUILTINS | set(module_callables) | {ext.name for ext in program.externs}
+        callables = body_callables.get(id(module_callables))
+        if callables is None:
+            callables = frozenset(_HOST_CALLABLES | _BUILTIN_CONSTRUCTORS | _DECLASSIFY_BUILTINS
+                                  | set(module_callables) | extern_names)
+            body_callables[id(module_callables)] = callables
         alias_fns = program.fn_alias_scopes.get(id(decl), {})
         check_list_index_bounds(decl.body, decl_file)
         body: list[dict] = []
@@ -8185,10 +8195,17 @@ def _refuse_callable_shadowing(program: Program, filename: str) -> None:
                      "`let` binds a name once per scope.",
             )
 
+    # issue #2193: one visible set per shared `fn_scopes` value (one per
+    # module), not one rebuild per fn
+    per_scope: dict[int, frozenset] = {}
     for decl in program.fn_decls:
         # exactly the namespace `_lower_fns` resolves this body's bare names in
-        visible = set(program.fn_scopes.get(id(decl), declared)) | externs
-        check(decl, visible & declared, decl.source or filename)
+        scope = program.fn_scopes.get(id(decl), declared)
+        visible = per_scope.get(id(scope))
+        if visible is None:
+            visible = frozenset((set(scope) | externs) & declared)
+            per_scope[id(scope)] = visible
+        check(decl, visible, decl.source or filename)
     # components and `test`/prop-test blocks resolve against the whole merged
     # program (`component_callables` in `check_and_lower`), so their visible
     # set is that same one.

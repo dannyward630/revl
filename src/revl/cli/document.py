@@ -127,8 +127,6 @@ def _composition_document(args, *, label: str | None = None,
     """
     import os  # noqa: PLC0415 — one call site
 
-    from ..composition import compile_composition  # noqa: PLC0415 — lazy
-
     command = label or args.command
     paths = list(args.files if files is None else files)
     docs, layers = _wiring_documents(paths)
@@ -154,6 +152,9 @@ def _composition_document(args, *, label: str | None = None,
             f"an operator reads")
     if not docs:
         return None
+    # lazy, and only past the early return: a plain module compile reaches
+    # this door too and has no composition to resolve (issue #2196)
+    from ..composition import compile_composition  # noqa: PLC0415
 
     names = ", ".join(os.path.basename(doc) for doc in docs)
     if len(docs) > 1:

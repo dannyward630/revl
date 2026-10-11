@@ -25,6 +25,9 @@ rust. Rust was the tier out of step with the syntax, not the other two.
 Declaring the result `Int` is now a type error, with the diagnostic naming
 `Float`.
 
+The wasm tier refuses `Int / Int` by name until it can render a non-integer
+Float; use `div_trunc` / `div_floor` / `div_euclid` there.
+
 ## Integer division has names
 
 Because `/` is true division, integer division needs its own spelling — and
