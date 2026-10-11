@@ -265,6 +265,10 @@ def backend_emit_module(backend: str, root=None):
     from `sys.modules` when that name already holds this path, so every loader
     in the process shares ONE module object. The cache is keyed by the resolved
     path, so two checkouts in one process never alias each other's emitter.
+    Only the default tree's file takes the shared name: a `root` that resolves
+    to another file is bound under `revl_<backend>_emit_<path hash>`, so it
+    never displaces the module the default tree's other loaders (and
+    `backends/wasm/canonical.py`) reuse by name (issue #2204).
 
     This lives here, in the placement layer, and NOT in `revl._paths`:
     `_paths` is on the compile graph (`compiler.py` imports it), and a
@@ -280,6 +284,8 @@ def backend_emit_module(backend: str, root=None):
         import importlib.util  # noqa: PLC0415
 
         name = f"revl_{backend}_emit"
+        if path != (backends_root() / backend / "emit.py").resolve():
+            name += "_" + hashlib.sha256(str(path).encode()).hexdigest()[:12]
         bound = Path(getattr(sys.modules.get(name), "__file__", "") or "")
         if bound.resolve() == path:
             module = sys.modules[name]

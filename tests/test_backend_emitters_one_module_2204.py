@@ -96,3 +96,31 @@ def test_loading_canonical_leaves_sys_path_and_the_bare_name_alone(
         f"a bare `import emit` now answers with the wasm emitter ({origin})")
     # and canonical refuses with the class every other wasm caller catches
     assert canonical.EmitError is placement.backend_emit_module("wasm").EmitError
+
+
+def test_an_emitter_from_another_tree_does_not_take_the_shared_name(
+        tmp_path, monkeypatch, clean_import_state):
+    """A `root` that is not the default tree gets its own module name. Bound
+    under `revl_wasm_emit`, it displaced the module canonical.py reuses by
+    that name, and canonical then held a second `EmitError` class."""
+    real = placement.backend_emit_module("wasm")
+    monkeypatch.setattr(placement, "_EMIT_MODULES", dict(placement._EMIT_MODULES))
+    other = tmp_path / "backends"
+    (other / "wasm").mkdir(parents=True)
+    (other / "wasm" / "emit.py").write_text(
+        "class EmitError(ValueError):\n    pass\n\n\ndef emit(ir):\n    return {}\n",
+        encoding="utf-8")
+
+    fake = placement.backend_emit_module("wasm", root=other)
+    try:
+        assert fake is not real
+        assert fake.__name__ != "revl_wasm_emit"
+        assert sys.modules["revl_wasm_emit"] is real
+        assert placement.backend_emit_module("wasm", root=other) is fake
+        canonical = quarantine._load_canonical()
+        assert canonical is not None
+        assert canonical.EmitError is real.EmitError
+    finally:
+        if sys.modules.get(fake.__name__) is fake:
+            sys.modules.pop(fake.__name__)
+        sys.modules["revl_wasm_emit"] = real

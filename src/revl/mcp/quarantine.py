@@ -148,9 +148,10 @@ def _load_canonical():
 
     ``canonical.py`` binds its emitter by path under ``revl_wasm_emit``, the
     name every loader shares, so nothing here touches the bare name ``emit``.
-    Every ``sys.path`` entry the load adds is taken out again: a backend
-    directory left on it answers the next bare ``import emit`` with that
-    backend's emitter (issue #2204).
+    ``canonical.py`` puts the repository's ``src/`` on ``sys.path`` when it is
+    absent; that one entry is taken out again afterwards, and only when this
+    load is what added it. Nothing else is removed: other threads may change
+    ``sys.path`` meanwhile (issue #2204).
     """
     import sys  # noqa: PLC0415
 
@@ -160,14 +161,16 @@ def _load_canonical():
     if not canonical_path.is_file():
         return None
 
-    saved_path = list(sys.path)
+    # canonical.py's own `_SRC`: `_HERE.parents[1] / "src"`, `_HERE` resolved
+    src_entry = str(canonical_path.resolve().parents[2] / "src")
+    src_was_on_path = src_entry in sys.path
     try:
         return _load_by_path("revl_wasm_canonical_quarantine", canonical_path)
     except Exception:  # pragma: no cover - defensive: a broken backend tree
         return None
     finally:
-        for entry in [p for p in sys.path if p not in saved_path]:
-            sys.path.remove(entry)
+        if not src_was_on_path and src_entry in sys.path:
+            sys.path.remove(src_entry)
 
 
 def _service_name(ir: dict, arguments: dict) -> str:
