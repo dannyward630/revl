@@ -4597,16 +4597,21 @@ def _emit_stc_lifecycle_tests(ir, out) -> None:
                 cfg = step.get("config") or {}
                 out.append("\t{")
                 if _component_has_config(component, components):
-                    # issue #2263: start from the declared defaults and assign
-                    # only the fields the step names, as py/ts and RevlLoad do.
-                    # A bare `CConfig{...}` left every unnamed field at Go's
-                    # zero value.
-                    out.append("\t\t_cfg := Default%sConfig()" % cname)
-                    for fname, ftype in _component_config_fields(component, components):
-                        if fname in cfg:
-                            out.append("\t\t_cfg.%s = %s"
-                                       % (_camel(fname), _expr(cfg[fname], env, ftype)))
-                    sig = "Load%s(root, _cfg)" % cname
+                    # issue #2263: a field the step does not name keeps its
+                    # declared default, as on py/ts and in RevlLoad. A bare
+                    # `CConfig{...}` left it at Go's zero value. One
+                    # expression, no new Go local, so a named field's value
+                    # still sees every test binding (a `_cfg` local would
+                    # shadow a revl binding of that name).
+                    default = "Default%sConfig()" % cname
+                    if cfg:
+                        fields = ", ".join(
+                            "%s: %s" % (_camel(fname),
+                                        _expr(cfg[fname], env, ftype) if fname in cfg
+                                        else "%s.%s" % (default, _camel(fname)))
+                            for fname, ftype in _component_config_fields(component, components))
+                        default = "%sConfig{%s}" % (cname, fields)
+                    sig = "Load%s(root, %s)" % (cname, default)
                 else:
                     sig = "Load%s(root)" % cname
                 out.append("\t\t_f := %s" % sig)

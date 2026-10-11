@@ -3,11 +3,12 @@
 The go lifecycle renderer built `CConfig{...}` from only the fields the `load`
 step named, so every unnamed field read as Go's zero value instead of the
 default written in `config { ... }`. py and ts already loaded with the
-defaults. The fix starts from `DefaultCConfig()` and assigns the named fields
-over it, the way the placement `RevlLoad` already does.
+defaults. The fix fills every unnamed field from `DefaultCConfig()` (and
+passes `DefaultCConfig()` itself when the step names none), in one expression
+so a named field's value still sees every test binding.
 
 Each case runs as a real `revl test` on go, py and ts (toolchain-gated, skip
-with a reason). One emit-only check pins the go shape without a toolchain.
+with a reason). Two emit-only checks pin the go shape without a toolchain.
 """
 
 import os
@@ -71,7 +72,30 @@ lifecycle test "load with no config keeps every default" {
 }
 """
 
-CASES = {"repro": REPRO, "partial": PARTIAL, "no_config": NO_CONFIG}
+# A named field read from a test binding called `_cfg`: the go load must not
+# introduce a local that shadows it. `step` keeps its default, so 7 - 2.
+BINDING = """\
+service Base { fn get() -> Int }
+service Src { fn seed() -> Int }
+component S provides src: Src {
+  provide src { fn seed() = 7 }
+}
+component C provides base: Base {
+  config { start: Int = 40, step: Int = 2 }
+  provide base { fn get() = config.start - config.step }
+}
+lifecycle test "a named field reads a test binding" {
+  load S
+  let _cfg = call src.seed()
+  load C with { start: _cfg }
+  let v = call base.get()
+  assert v == 5
+  unload C
+  unload S
+}
+"""
+
+CASES = {"repro": REPRO, "partial": PARTIAL, "no_config": NO_CONFIG, "binding": BINDING}
 
 
 def _skip_reason(backend: str) -> str | None:
@@ -112,7 +136,11 @@ def test_go_lifecycle_load_starts_from_defaults(tmp_path):
     src = tmp_path / "partial.rvl"
     src.write_text(PARTIAL, encoding="utf-8")
     go = go_emit.emit(compile_files([str(src)]), "probe")
-    assert "_cfg := DefaultCConfig()" in go
-    assert "_cfg.Start = " in go
-    assert "LoadC(root, _cfg)" in go
-    assert "LoadC(root, CConfig{" not in go
+    assert "LoadC(root, CConfig{Start: 50, Step: DefaultCConfig().Step})" in go
+
+
+def test_go_lifecycle_load_without_config_uses_defaults(tmp_path):
+    src = tmp_path / "no_config.rvl"
+    src.write_text(NO_CONFIG, encoding="utf-8")
+    go = go_emit.emit(compile_files([str(src)]), "probe")
+    assert "LoadC(root, DefaultCConfig())" in go
