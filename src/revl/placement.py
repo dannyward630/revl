@@ -3581,16 +3581,22 @@ def rust_runner_lock_manifest() -> Path:
     return lock_dir / "Cargo.toml"
 
 
+def rust_generate_lockfile(manifest: Path, *, offline: bool) -> "subprocess.CompletedProcess[str]":
+    """Run `cargo generate-lockfile` on `manifest`: the resolver only, no build."""
+    flags = ["--offline"] if offline else []
+    return subprocess.run(["cargo", "generate-lockfile", *flags,
+                           "--manifest-path", str(manifest)],
+                          capture_output=True, text=True)
+
+
 def _rust_runner_lock() -> bytes:
     """The runner's Cargo.lock, produced once in the lock dir (offline first,
     as `rust_runtime_reason` does) when nothing has resolved it yet."""
     manifest = rust_runner_lock_manifest()
     lock = manifest.parent / "Cargo.lock"
     if not lock.exists():
-        for flags in (["--offline"], []):
-            resolved = subprocess.run(["cargo", "generate-lockfile", *flags,
-                                       "--manifest-path", str(manifest)],
-                                      capture_output=True, text=True)
+        for offline in (True, False):
+            resolved = rust_generate_lockfile(manifest, offline=offline)
             if resolved.returncode == 0:
                 break
         else:

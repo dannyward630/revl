@@ -92,11 +92,8 @@ def rust_runtime_reason() -> str | None:
                 "(https://rustup.rs), then re-run")
     # resolved in the staged lock crate, outside the source tree; the build
     # copies that lock into every staged crate (issue #2199)
-    manifest = str(_placement.rust_runner_lock_manifest())
-    offline = subprocess.run(
-        ["cargo", "generate-lockfile", "--offline", "--manifest-path", manifest],
-        capture_output=True, text=True,
-    )
+    manifest = _placement.rust_runner_lock_manifest()
+    offline = _placement.rust_generate_lockfile(manifest, offline=True)
     if offline.returncode == 0:
         return None
     blob = ((offline.stderr or "") + (offline.stdout or "")).lower()
@@ -108,10 +105,7 @@ def rust_runtime_reason() -> str | None:
         return ("cordis-rs is not in the local cargo registry and "
                 "index.crates.io is unreachable — run cargo once with network "
                 "to populate ~/.cargo, then re-run")
-    networked = subprocess.run(
-        ["cargo", "generate-lockfile", "--manifest-path", manifest],
-        capture_output=True, text=True,
-    )
+    networked = _placement.rust_generate_lockfile(manifest, offline=False)
     if networked.returncode == 0:
         return None
     detail = (networked.stderr or "").strip().splitlines()
