@@ -866,15 +866,6 @@ def verify(record: Any, key: bytes) -> Verdict:
     return Verdict(True)
 
 
-def verify_or_raise(record: Any, key: bytes) -> dict:
-    """:func:`verify`, raising :class:`EvidenceRefused` instead of returning a
-    refusal. For a caller whose next line would be the record's contents."""
-    verdict = verify(record, key)
-    if not verdict.ok:
-        raise EvidenceRefused(verdict.link, verdict.reason)
-    return dict(record)
-
-
 # ---------------------------------------------------------------------------
 # what a reader does with a verified record
 # ---------------------------------------------------------------------------

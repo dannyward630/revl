@@ -1,10 +1,13 @@
-// Provide-method bodies: multiple methods, params, a plain-`bin` return (no
-// `_revl_i64` in a component body — the i64 helper is still emitted, unused,
-// exactly as the reference gates it), a builtin, and a ternary.
+// Provide-method bodies: multiple methods, params, a plain-`bin` return (an
+// `Int` `+` goes through `_revl_i64` exactly as it does in a `fn`, issue
+// #2198), a builtin, a ternary, and a negation: `Int` is checked like any
+// `Int` `-`, `Float` stays the host's.
 service Calc {
   fn add(a: Int, b: Int) -> Int
   fn name(n: Int) -> Str
   fn pick(flag: Bool) -> Int
+  fn neg(a: Int) -> Int
+  fn drift(x: Float) -> Float
 }
 
 component Adder provides calc: Calc {
@@ -12,5 +15,7 @@ component Adder provides calc: Calc {
     fn add(a, b) = a + b
     fn name(n) = n.to_str()
     fn pick(flag) = flag ? 1 : 0
+    fn neg(a) = -a
+    fn drift(x) = -x
   }
 }

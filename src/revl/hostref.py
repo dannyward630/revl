@@ -217,6 +217,9 @@ def resolve_refs(program, module_dir: str, root_dirs: list[str],
     """
     from .parser import HostRef
 
+    # issue #2195: no ref, nothing to jail; skip the realpath of every root
+    if not program_has_ref(program):
+        return
     if install_root is not None:
         jail_roots = [os.path.realpath(install_root)]
         root_kind: str | None = "stdlib"

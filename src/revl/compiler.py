@@ -57,8 +57,14 @@ def _default_search_path() -> list[str]:
     return path
 
 
-def _backend_python_module_names() -> set[str]:
-    """Return importable top-level names from the Python backend tree.
+#: issue #2195: the one live `_backend_python_module_names` entry, keyed by
+#: the backends/python path and its `(st_mtime_ns, st_size, st_nlink)`.
+_BACKEND_NAMES_CACHE: dict[tuple, frozenset[str]] = {}
+
+
+def _backend_python_module_names() -> frozenset[str]:
+    """Return importable top-level names from the Python backend tree, as a
+    frozenset (callers only test membership).
 
     Inline Python in user modules must not be able to turn the runtime's
     backend search path into an undeclared host dependency.  The compiler
@@ -66,7 +72,26 @@ def _backend_python_module_names() -> set[str]:
     also applies to generated artifacts loaded by another process.
     """
     root = backends_root() / "python"
-    return {path.stem for path in root.glob("*.py") if path.stem != "__init__"}
+    # issue #2195: one glob per process, not one per module per compile. The
+    # set only changes when an entry of the directory does, which moves its
+    # mtime, so the key is the directory and its stat: a test that points
+    # `backends_root` at another tree, or adds a module to it, gets a fresh set.
+    # The size and link count back up a coarse mtime clock. A stale key needs
+    # an in-process edit of the installed backend tree within one clock tick,
+    # which no compile does.
+    try:
+        st = root.stat()
+        stamp = (st.st_mtime_ns, st.st_size, st.st_nlink)
+    except OSError:
+        stamp = None
+    key = (str(root), stamp)
+    cached = _BACKEND_NAMES_CACHE.get(key)
+    if cached is None:
+        cached = frozenset(path.stem for path in root.glob("*.py")
+                           if path.stem != "__init__")
+        _BACKEND_NAMES_CACHE.clear()
+        _BACKEND_NAMES_CACHE[key] = cached
+    return cached
 
 
 #: Backend modules whose trusted surface is re-exported through a revl stdlib
@@ -110,36 +135,46 @@ def _backend_import_hint(offender: str) -> str:
     )
 
 
+def _py_host_bodies(program: Program) -> list:
+    """Every inline `@py` body in `program`, as `(extern, body)` in source
+    order. Most programs have none, and then the import check below has
+    nothing to look at (issue #2195)."""
+    return [(extern, body)
+            for extern in program.externs
+            for body in extern.bodies
+            if isinstance(body, _ast.HostBody) and body.backend == "py"]
+
+
 def _check_user_py_body_imports(program: Program, install_origin: bool) -> None:
     """Refuse backend imports in inline `@py` bodies from user modules."""
     if install_origin:
         return
+    bodies = _py_host_bodies(program)
+    if not bodies:
+        return
     backend_names = _backend_python_module_names()
-    for extern in program.externs:
-        for body in extern.bodies:
-            if not isinstance(body, _ast.HostBody) or body.backend != "py":
-                continue
-            try:
-                tree = ast.parse(textwrap.dedent(body.text), mode="exec")
-            except SyntaxError:
-                # The Python backend reports body syntax errors at emission;
-                # do not replace that diagnostic with an import-policy error.
-                continue
-            for node in ast.walk(tree):
-                imported: list[str] = []
-                if isinstance(node, ast.Import):
-                    imported = [alias.name.split(".", 1)[0] for alias in node.names]
-                elif isinstance(node, ast.ImportFrom) and node.module:
-                    imported = [node.module.split(".", 1)[0]]
-                offender = next((name for name in imported if name in backend_names), None)
-                if offender is not None:
-                    raise RevlError(
-                        program.filename,
-                        body.line + max(node.lineno - 1, 0),
-                        f"user-origin @py body for extern `{extern.name}` imports "
-                        f"backend module `{offender}`",
-                        hint=_backend_import_hint(offender),
-                    )
+    for extern, body in bodies:
+        try:
+            tree = ast.parse(textwrap.dedent(body.text), mode="exec")
+        except SyntaxError:
+            # The Python backend reports body syntax errors at emission;
+            # do not replace that diagnostic with an import-policy error.
+            continue
+        for node in ast.walk(tree):
+            imported: list[str] = []
+            if isinstance(node, ast.Import):
+                imported = [alias.name.split(".", 1)[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported = [node.module.split(".", 1)[0]]
+            offender = next((name for name in imported if name in backend_names), None)
+            if offender is not None:
+                raise RevlError(
+                    program.filename,
+                    body.line + max(node.lineno - 1, 0),
+                    f"user-origin @py body for extern `{extern.name}` imports "
+                    f"backend module `{offender}`",
+                    hint=_backend_import_hint(offender),
+                )
 
 
 @dataclass
@@ -295,6 +330,9 @@ class _ModuleLoader:
         # text that was PARSED, not a later re-read: a session anchors
         # knowledge records to what it compiled (see `mcp/notes.load_vendored`).
         self.dependencies: dict[str, str] = {}
+        # issue #2195: `(realpath(stdlib_root()), str(stdlib_root().parent))`,
+        # taken once per loader instead of once per origin question.
+        self._stdlib_paths: tuple[str, str] | None = None
 
     def _note_dependency(self, abs_path: str, text: str) -> None:
         """Record a module this compile read from disk that the caller did not
@@ -332,6 +370,19 @@ class _ModuleLoader:
         same way, so a compiled ref specifier and the driver agree."""
         return sorted({os.path.dirname(p) for p in self._root_paths})
 
+    def _stdlib_real_and_parent(self) -> tuple[str, str]:
+        """`stdlib_root()`'s realpath and its parent, computed once per loader
+        (issue #2195). A loader lives for one compile, so a test that points
+        `stdlib_root` at a stand-in tree before compiling still sees it."""
+        if self._stdlib_paths is None:
+            root = stdlib_root()
+            self._stdlib_paths = (os.path.realpath(str(root)), str(root.parent))
+        return self._stdlib_paths
+
+    def stdlib_real(self) -> str:
+        """`os.path.realpath(str(stdlib_root()))`, cached for this loader."""
+        return self._stdlib_real_and_parent()[0]
+
     def _origin_install_root(self, abs_path: str) -> str | None:
         """item 410: the INSTALL ROOT a module's refs jail to, or `None` for a
         user-origin module (refs jail to `_root_dirs()`, unchanged 396(B)).
@@ -354,9 +405,9 @@ class _ModuleLoader:
         recorded = self._install_root_of.get(abs_path)
         if recorded is not None:
             return recorded
-        if _contained(os.path.realpath(abs_path),
-                      os.path.realpath(str(stdlib_root()))):
-            return str(stdlib_root().parent)
+        stdlib_real, stdlib_parent = self._stdlib_real_and_parent()
+        if _contained(os.path.realpath(abs_path), stdlib_real):
+            return stdlib_parent
         return None
 
     def _check_generated(self, abs_path: str, virtual: str | None) -> None:
@@ -549,7 +600,7 @@ class _ModuleLoader:
         if not written.startswith("stdlib/"):
             return
         real = os.path.realpath(resolved)
-        if _contained(real, os.path.realpath(str(stdlib_root()))):
+        if _contained(real, self.stdlib_real()):
             return
         entry = {"written": written, "resolved": real, "origin": origin}
         if entry not in self.stdlib_shadow:
@@ -623,9 +674,17 @@ class _ModuleLoader:
             # user module jails to the composition's root trees, byte-identical
             # to 396(B). A user ref never resolves against the install root and
             # vice versa — the loader passes the single set the origin selects.
+            # issue #2195: the origin (a realpath of `abs_path`, and of the
+            # stdlib once per loader) matters only to a ref, an asset or an
+            # `@py` body, so a module with none of them does not ask, and one
+            # with any asks once: nothing below records a new origin.
+            py_bodies = _py_host_bodies(program)
+            install_root = (self._origin_install_root(abs_path)
+                            if py_bodies or _program_has_ref(program)
+                            or _program_has_asset(program) else None)
             _resolve_refs(program, os.path.dirname(abs_path),
                           self._root_dirs(), self._sources, virtual is not None,
-                          install_root=self._origin_install_root(abs_path))
+                          install_root=install_root)
             # item 459 F1: resolve every `asset "<path>"` under the SAME jail
             # the ref above resolves under (same roots, same origin rule, same
             # containment check). After this each asset node is a record
@@ -635,10 +694,11 @@ class _ModuleLoader:
             _resolve_assets(program, os.path.dirname(abs_path),
                             self._root_dirs(), self._sources,
                             virtual is not None,
-                            install_root=self._origin_install_root(abs_path))
-            _check_user_py_body_imports(
-                program, self._origin_install_root(abs_path) is not None
-                or _contained(abs_path, os.path.realpath(str(stdlib_root()))))
+                            install_root=install_root)
+            if py_bodies:
+                _check_user_py_body_imports(
+                    program, install_root is not None
+                    or _contained(abs_path, self.stdlib_real()))
             module = _LoadedModule(abs_path, os.path.dirname(abs_path), program)
             for fn in program.fn_decls:
                 if fn.public:
@@ -1204,10 +1264,14 @@ def compile_files(paths: list[str], manifest: dict | None = None,
     # Build checker scopes for every emitted function so a module-private
     # declaration from another module is not accidentally callable.
     for module in included:
+        # issue #2195: a module with no `@py` body has nothing to check, so
+        # its origin (a realpath per module) is not asked.
+        if not _py_host_bodies(module.program):
+            continue
         _check_user_py_body_imports(
             module.program,
             loader._origin_install_root(module.path) is not None
-            or _contained(module.path, os.path.realpath(str(stdlib_root()))))
+            or _contained(module.path, loader.stdlib_real()))
     for module in included:
         own_fns = {fn.name for fn in module.program.fn_decls}
         callables = own_fns | set(module.named_fns)
