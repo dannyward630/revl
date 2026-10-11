@@ -8,7 +8,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "backends" / "python"))
 import replay  # noqa: E402
 from revl.recovery import recover  # noqa: E402
-from revl.wal import settled_seqs  # noqa: E402
+from revl.wal import seqs_of, settled_seqs  # noqa: E402
 
 
 def _wal_with_seqless_tail(path):
@@ -37,3 +37,21 @@ def test_seqless_emission_complete_does_not_settle_a_seqless_effect(tmp_path):
     _wal_with_seqless_tail(path)
     report = recover(path)
     assert report["residue"]["clean"] is False
+    crossing = report["residue"]["outstanding"][0]["crossing"]
+    assert (crossing["key"], crossing["method"]) == ("bus", "send")
+
+
+def test_bool_seq_does_not_settle_seq_one():
+    assert settled_seqs([{"record": "emission-complete", "seq": True}]) == set()
+    assert seqs_of([{"record": "flushed", "seq": True}], ("flushed",)) == set()
+
+
+def test_seqless_flushed_does_not_flush_a_seqless_deferred_emission():
+    from revl.recovery import _deferral_crosscheck
+    records = [{"record": "deferred-emission", "receiver": "s", "method": "m",
+                "args": []},
+               {"record": "commit-approved"},
+               {"record": "flushed"}]
+    out = _deferral_crosscheck(records)
+    assert out["flushed"] == []
+    assert len(out["owed"]) == 1
