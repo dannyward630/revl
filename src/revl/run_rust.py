@@ -90,7 +90,9 @@ def rust_runtime_reason() -> str | None:
     if shutil.which("cargo") is None:
         return ("cargo not on PATH — install a Rust toolchain "
                 "(https://rustup.rs), then re-run")
-    manifest = str(_RUNNER / "Cargo.toml")
+    # resolved in the staged lock crate, outside the source tree; the build
+    # copies that lock into every staged crate (issue #2199)
+    manifest = str(_placement.rust_runner_lock_manifest())
     offline = subprocess.run(
         ["cargo", "generate-lockfile", "--offline", "--manifest-path", manifest],
         capture_output=True, text=True,

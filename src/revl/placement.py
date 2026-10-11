@@ -3472,6 +3472,74 @@ def _build_java(ir: dict, tmp: Path) -> str:
     return str(out)
 
 
+# Issue #2199: the native runners build from a staged copy of their source,
+# keyed by a hash of everything that goes into the build, so the source tree is
+# only read and two compositions never share a binary. These keep the staging
+# root bounded on a dev machine: the most recent _STAGED_KEEP keys stay, and a
+# key used within _STAGED_MIN_AGE seconds is never removed (a concurrent build
+# may be using it).
+_STAGED_KEEP = 8
+_STAGED_MIN_AGE = 600.0
+
+
+def _content_key(files: dict[str, bytes]) -> str:
+    digest = hashlib.sha256()
+    for name in sorted(files):
+        digest.update(b"\0" + name.encode("utf-8") + b"\0" + files[name])
+    return digest.hexdigest()[:16]
+
+
+def _write_if_changed(dest: Path, data: bytes) -> None:
+    """Write atomically, and not at all when the bytes are already there (so
+    the build tool sees no new mtime). Same-key stagers in other threads or
+    processes write the same bytes; os.replace makes the last one win whole."""
+    if dest.exists() and dest.read_bytes() == data:
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, part = tempfile.mkstemp(dir=dest.parent, prefix=f".{dest.name}.", suffix=".part")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.replace(part, dest)
+    except BaseException:
+        Path(part).unlink(missing_ok=True)
+        raise
+
+
+def _stage_tree(root: Path, files: dict[str, bytes]) -> None:
+    for rel, data in files.items():
+        _write_if_changed(root / rel, data)
+    os.utime(root)  # mark the key as recently used, for _prune_staged
+
+
+def _prune_staged(stage_root: Path, current: str, extra=lambda key: (),
+                  keep: int | None = None, min_age: float | None = None) -> list[str]:
+    """Remove all but the `keep` most recently used keys under `stage_root`.
+    Never the one just built, never one used within `min_age` seconds. `extra`
+    names further paths that belong to a key (the rust binary and its cargo
+    artifacts live in the target dir, not in the staged crate). Returns the
+    removed keys."""
+    keep = _STAGED_KEEP if keep is None else keep
+    min_age = _STAGED_MIN_AGE if min_age is None else min_age
+    if not stage_root.is_dir():
+        return []
+    entries = sorted((p for p in stage_root.iterdir() if p.is_dir()),
+                     key=lambda p: p.stat().st_mtime, reverse=True)
+    now = time.time()
+    removed = []
+    for entry in entries[keep:]:
+        if entry.name == current or now - entry.stat().st_mtime < min_age:
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
+        for path in extra(entry.name):
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
+        removed.append(entry.name)
+    return removed
+
+
 def _rust_runner_target_dir() -> Path:
     """The cargo target dir the rust runner builds into: `CARGO_TARGET_DIR` when
     set, else the runner's own (gitignored) `target/`. It is shared on purpose,
@@ -3482,42 +3550,78 @@ def _rust_runner_target_dir() -> Path:
     return Path(override) if override else _RUST_RUNNER / "target"
 
 
+def _rust_runner_sources() -> dict[str, bytes]:
+    """The committed runner crate as staged files: the manifest made its own
+    workspace root (so the copy builds wherever the target dir is) and every
+    source file. components.rs is the committed golden here; a build replaces
+    it with the composition's emission."""
+    manifest = (_RUST_RUNNER / "Cargo.toml").read_text(encoding="utf-8") + "\n[workspace]\n"
+    src = _RUST_RUNNER / "src"
+    files = {f"src/{p.relative_to(src).as_posix()}": p.read_bytes() for p in sorted(src.rglob("*.rs"))}
+    return {"Cargo.toml": manifest.encode("utf-8"), **files}
+
+
+def rust_runner_lock_manifest() -> Path:
+    """Stage the runner crate where its Cargo.lock is resolved, outside the
+    source tree, and return its manifest. `rust_runtime_reason` resolves here,
+    and `_build_rust` copies the resulting lock into every staged crate, so a
+    new composition never re-resolves and every key builds the same versions."""
+    lock_dir = _rust_runner_target_dir() / "revl-runner-lock"
+    _stage_tree(lock_dir, _rust_runner_sources())
+    return lock_dir / "Cargo.toml"
+
+
+def _rust_runner_lock() -> bytes:
+    """The runner's Cargo.lock, produced once in the lock dir (offline first,
+    as `rust_runtime_reason` does) when nothing has resolved it yet."""
+    manifest = rust_runner_lock_manifest()
+    lock = manifest.parent / "Cargo.lock"
+    if not lock.exists():
+        for flags in (["--offline"], []):
+            resolved = subprocess.run(["cargo", "generate-lockfile", *flags,
+                                       "--manifest-path", str(manifest)],
+                                      capture_output=True, text=True)
+            if resolved.returncode == 0:
+                break
+        else:
+            raise RuntimeError(f"cargo generate-lockfile (rust runner) failed:\n"
+                               f"{resolved.stderr.strip()}")
+    return lock.read_bytes()
+
+
 def _stage_rust_runner(components: str, target_dir: Path) -> tuple[Path, str]:
-    """Copy the runner crate, with this composition's components.rs, to a
-    directory named by the hash of its whole content, and give its binary a name
-    carrying the same hash. Returns (crate dir, binary name).
+    """Copy the runner crate, with this composition's components.rs and the
+    runner's Cargo.lock, to a directory named by the hash of its whole content,
+    and give its binary a name carrying the same hash. Returns (crate dir,
+    binary name).
 
     Identical inputs land on the same crate and the same binary (cargo then has
     nothing to do); different inputs never share either. The committed crate in
     the source tree is only read."""
-    src = _RUST_RUNNER / "src"
-    files = {p.relative_to(src).as_posix(): p.read_bytes()
-             for p in sorted(src.rglob("*.rs")) if p.name != "components.rs"}
-    files["components.rs"] = components.encode("utf-8")
-    manifest = (_RUST_RUNNER / "Cargo.toml").read_text(encoding="utf-8")
-    digest = hashlib.sha256()
-    digest.update(manifest.encode("utf-8"))
-    for name in sorted(files):
-        digest.update(b"\0" + name.encode("utf-8") + b"\0" + files[name])
-    key = digest.hexdigest()[:16]
+    files = _rust_runner_sources()
+    files["src/components.rs"] = components.encode("utf-8")
+    files["Cargo.lock"] = _rust_runner_lock()
+    key = _content_key(files)
     binary = f"revl_placement_runner_{key}"
-    # `[workspace]` keeps the copy its own root wherever the target dir is.
-    manifest = manifest.replace('name = "revl_placement_runner"\npath',
-                                f'name = "{binary}"\npath') + "\n[workspace]\n"
-    if f'name = "{binary}"' not in manifest:
+    manifest = files["Cargo.toml"].decode("utf-8")
+    renamed = manifest.replace('name = "revl_placement_runner"\npath',
+                               f'name = "{binary}"\npath')
+    if renamed == manifest:
         raise RuntimeError("rust runner Cargo.toml: no [[bin]] revl_placement_runner to rename")
+    files["Cargo.toml"] = renamed.encode("utf-8")
     crate = target_dir / "revl-runner-crates" / key
-    files_out = {"Cargo.toml": manifest.encode("utf-8"),
-                 **{f"src/{name}": data for name, data in files.items()}}
-    for rel, data in files_out.items():
-        dest = crate / rel
-        if dest.exists() and dest.read_bytes() == data:
-            continue  # leave the mtime alone so cargo sees nothing new
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        part = dest.with_name(f".{dest.name}.{os.getpid()}.part")
-        part.write_bytes(data)
-        os.replace(part, dest)  # atomic, so a concurrent same-key stage is safe
+    _stage_tree(crate, files)
     return crate, binary
+
+
+def _rust_key_artifacts(target_dir: Path):
+    debug = target_dir / "debug"
+    def artifacts(key: str):
+        name = f"revl_placement_runner_{key}"
+        yield from debug.glob(f"{name}*")
+        yield from (debug / "deps").glob(f"{name}-*")
+        yield from (debug / "incremental").glob(f"{name}-*")
+    return artifacts
 
 
 def _build_rust(ir: dict, tmp: Path) -> str:
@@ -3533,7 +3637,7 @@ def _build_rust(ir: dict, tmp: Path) -> str:
     dirty. Now `_stage_rust_runner` copies the crate with the emitted module to
     a content-hashed directory under the target dir and names the binary after
     the same hash, so each composition has its own binary and identical inputs
-    reuse it."""
+    reuse it. `--locked` holds every key to the one resolved Cargo.lock."""
     ir_json = tmp / "rust_ir.json"
     ir_json.write_text(json.dumps(ir), encoding="utf-8")
     emitted = subprocess.run([sys.executable, str(_BACKENDS_DIR / "rust" / "emit.py"), str(ir_json)],
@@ -3542,12 +3646,33 @@ def _build_rust(ir: dict, tmp: Path) -> str:
         raise RuntimeError(f"rust emit failed:\n{emitted.stderr.strip()}")
     target_dir = _rust_runner_target_dir()
     crate, binary = _stage_rust_runner(emitted.stdout, target_dir)
-    build = subprocess.run(["cargo", "build", "--manifest-path", str(crate / "Cargo.toml"),
+    build = subprocess.run(["cargo", "build", "--locked", "--manifest-path", str(crate / "Cargo.toml"),
                             "--target-dir", str(target_dir)],
                            capture_output=True, text=True)
     if build.returncode:
         raise RuntimeError(f"cargo build (rust runner) failed:\n{build.stderr.strip()}")
+    _prune_staged(crate.parent, crate.name, _rust_key_artifacts(target_dir))
     return str(target_dir / "debug" / binary)
+
+
+def _go_runner_stage_root() -> Path:
+    """Where go runner builds are staged: `REVL_GO_RUNNER_STAGE` when set, else
+    the runner's gitignored `staged/`."""
+    override = os.environ.get("REVL_GO_RUNNER_STAGE")
+    return Path(override) if override else _GO_RUNNER / "staged"
+
+
+def _go_runner_sources() -> dict[str, bytes]:
+    """The committed go runner module as staged files: go.mod, go.sum and every
+    non-test .go file, without the per-composition `emitted` package and
+    without any staging output."""
+    files = {name: (_GO_RUNNER / name).read_bytes() for name in ("go.mod", "go.sum")}
+    for path in sorted(_GO_RUNNER.rglob("*.go")):
+        rel = path.relative_to(_GO_RUNNER)
+        if rel.parts[0] in ("emitted", "staged") or path.name.endswith("_test.go"):
+            continue
+        files[rel.as_posix()] = path.read_bytes()
+    return files
 
 
 def _build_go(ir: dict, tmp: Path) -> str:
@@ -3555,7 +3680,12 @@ def _build_go(ir: dict, tmp: Path) -> str:
     bridge: proxy/stub/dispatch + runner entry points) from the running IR, then
     `go build`. Regenerating per composition is what makes the go runner general
     — cordis-go services are static Go interfaces, so generality is codegen, not
-    a runtime-generic proxy (the same shape the rust runner takes)."""
+    a runtime-generic proxy (the same shape the rust runner takes).
+
+    Like the rust runner (issue #2199), the build never writes the source tree:
+    the module and the emitted package are staged to a directory named by the
+    hash of their content, and the binary carries the same hash, so two
+    compositions never share one and identical inputs reuse it."""
     emit_module = _tier_emitter("revl_go_emit", _GO_DIR / "emit.py")
     # A go tier limit becomes the one-diagnostic `RuntimeError` every caller
     # already reports. Narrowed from `except Exception` for issue #1406: that
@@ -3568,15 +3698,26 @@ def _build_go(ir: dict, tmp: Path) -> str:
     # emit_placement concatenates gen.go and bridge_gen.go with a form-feed
     # sentinel so each file carries its own import block.
     module_src, bridge_src = source.split("\f", 1)
-    emitted = _GO_RUNNER / "emitted"
-    emitted.mkdir(parents=True, exist_ok=True)
-    (emitted / "gen.go").write_text(module_src, encoding="utf-8")
-    (emitted / "bridge_gen.go").write_text(bridge_src, encoding="utf-8")
-    binary = _GO_RUNNER / "revl_placement_runner"
-    build = subprocess.run(["go", "build", "-o", str(binary), "."],
-                           cwd=str(_GO_RUNNER), capture_output=True, text=True)
-    if build.returncode:
-        raise RuntimeError(f"go build (go runner) failed:\n{build.stderr.strip()}")
+    files = _go_runner_sources()
+    files["emitted/gen.go"] = module_src.encode("utf-8")
+    files["emitted/bridge_gen.go"] = bridge_src.encode("utf-8")
+    key = _content_key(files)
+    stage = _go_runner_stage_root() / key
+    _stage_tree(stage / "src", files)
+    os.utime(stage)
+    binary = stage / f"revl_placement_runner_{key}"
+    if not binary.exists():
+        fd, part = tempfile.mkstemp(dir=stage, prefix=f".{binary.name}.", suffix=".part")
+        os.close(fd)
+        try:
+            build = subprocess.run(["go", "build", "-o", part, "."],
+                                   cwd=str(stage / "src"), capture_output=True, text=True)
+            if build.returncode:
+                raise RuntimeError(f"go build (go runner) failed:\n{build.stderr.strip()}")
+            os.replace(part, binary)
+        finally:
+            Path(part).unlink(missing_ok=True)
+    _prune_staged(stage.parent, key)
     return str(binary)
 
 
