@@ -114,6 +114,10 @@ def test_revl_check_parse_count_is_flat_in_comments(counted):
 
 
 # Digests of the entries on the base commit (84e0357df), before the change.
+# "notes" pins examples/app/notes.rvl as it was then: an edit to that example
+# legitimately moves its digest. Recompute it with `_digest` on the edited
+# file, and check first that the edit is the only change to `index_text`'s
+# inputs (a change to the indexer itself must keep the old digest).
 NOTES = ROOT / "examples" / "app" / "notes.rvl"
 EXPECTED = {
     "synthetic": "19d6ce55d9db324a81458455c11f215b751947bcd828de6ca5174becff93d69d",
