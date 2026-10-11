@@ -3411,7 +3411,9 @@ fn emit_module(ir: Any, combined: Bool) -> Str {
     var comp_lines = []
     for (l of marked_comp) { comp_lines = comp_lines.push(strip_marks(l)) }
     comp_strconv = has_text(comp_lines, "strconv.Format")
-    comp_ovf32 = has_text(comp_lines, "revlToI32(")
+    // a method body's Int32 `+ - *` and unary minus (issue #2262) render the
+    // I32 helpers, which the same flag writes with the narrow
+    comp_ovf32 = text_has_any(comp_lines.join(newline()), ["revlToI32(", "revlAddI32(", "revlSubI32(", "revlMulI32("])
     // `_COMP_NEEDS_OVERFLOW`: a method body's Int `+ - *` and unary minus
     // render the checked helpers, so a call to any of them marks the trio.
     comp_ovf = has_text(comp_lines, "revlAdd(") || has_text(comp_lines, "revlSub(") || has_text(comp_lines, "revlMul(")
@@ -3998,6 +4000,12 @@ fn comp_typed_arith(n: Any, left: Str, right: Str, env: CEnv) -> Str {
     if (op == "-") { h = "revlSub" }
     return `${h}(${l}, ${r})`
   }
+  if (opnd == "Int32" && list_contains(["+", "-", "*"], op)) {
+    var h = "revlMulI32"
+    if (op == "+") { h = "revlAddI32" }
+    if (op == "-") { h = "revlSubI32" }
+    return `${h}(${l}, ${r})`
+  }
   if (op == "/" && list_contains(["Int", "Int32", "Float"], opnd)) {
     return opnd == "Float" ? `revlDiv(${l}, ${r})` : `revlDiv(float64(${l}), float64(${r}))`
   }
@@ -4037,6 +4045,7 @@ fn comp_expr_bare(n: Any, env: CEnv, expected: Str) -> Str {
     if (op == "!") { return `(!${operand})` }
     if (op == "~") { return `(^${operand})` }
     if (node_operands(n) == "Int") { return `revlSub(0, ${operand})` }
+    if (node_operands(n) == "Int32") { return `revlSubI32(0, ${operand})` }
     return `(-${operand})`
   }
   if (k == "if") {
