@@ -242,26 +242,10 @@ def _major_minor(version: str | None) -> tuple[int, int] | None:
 
 
 def revl_version() -> str:
-    """The installed revl version, or a best-effort read from the source tree
-    when running uninstalled (no metadata)."""
-    try:
-        from importlib.metadata import version  # noqa: PLC0415
-        return version("revl")
-    except Exception:  # noqa: BLE001 — any metadata failure falls back
-        pass
-    # uninstalled src checkout: read the version out of pyproject.toml if we can
-    root = Path(__file__).resolve().parents[2]
-    pyproject = root / "pyproject.toml"
-    try:
-        for line in pyproject.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if stripped.startswith("version"):
-                match = re.search(r'"([^"]+)"', stripped)
-                if match:
-                    return match.group(1)
-    except OSError:
-        pass
-    return "unknown"
+    """The revl version, `revl._version.version()`: the one definition shared
+    with the attestation, the gate and the MCP build id (issue #2203)."""
+    from revl._version import version  # noqa: PLC0415
+    return version()
 
 
 # ------------------------------------------------------------------- checks
