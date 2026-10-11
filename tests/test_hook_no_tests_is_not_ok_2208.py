@@ -11,7 +11,10 @@ run.
 A FULL selection now runs a defined core subset under the ceiling, reports how
 many tests it passed, and refuses the commit when the subset times out, runs no
 test, or fails. An affected selection that collects nothing, or whose every
-test skips, is refused the same way.
+test skips (a machine without a backend's toolchain), does not block the
+commit, but the step reads SKIPPED and the hook never ends with a bare ok.
+Only pytest's summary line counts: a warning that says "1 passed" is not a
+pass.
 
 Each case builds a throwaway repository with the real hook, a stub selector
 and a stub pytest, stages a checker-only change, and commits through the hook.
@@ -68,6 +71,9 @@ _PYTEST_MAIN = (
     "    print('540 passed, 1 skipped in 2.09s')\n"
     "elif mode == 'skip':\n"
     "    print('3 skipped in 0.10s')\n"
+    "elif mode == 'skip-warn':\n"
+    "    print('tests/test_x.py:3: UserWarning: expected 1 passed')\n"
+    "    print('3 skipped, 1 warning in 0.10s')\n"
     "elif mode == 'empty':\n"
     "    print('no tests ran in 0.01s')\n"
     "    sys.exit(5)\n"
@@ -193,16 +199,37 @@ def test_a_full_selection_runs_the_core_subset_and_says_so(checkout, stub_python
     assert "ok (core subset only: 540 passed; the full suite did not run)" in out, out
 
 
-@pytest.mark.parametrize("selector,mode,expected", [
-    (_FULL_SELECTOR, "skip", "pytest passed no test"),
-    (_FULL_SELECTOR, "empty", "pytest collected no tests"),
-    (_AFFECTED_SELECTOR, "skip", "pytest passed no test"),
-    (_AFFECTED_SELECTOR, "empty", "pytest collected no tests"),
-], ids=["full-all-skipped", "full-none-collected", "affected-all-skipped",
-        "affected-none-collected"])
-def test_a_selection_that_runs_no_test_is_not_ok(checkout, stub_python, selector,
-                                                 mode, expected):
-    proc, out, _ran = _commit_checker_change(checkout, stub_python, selector, mode)
+@pytest.mark.parametrize("mode,expected", [
+    ("skip", "pytest passed no test"),
+    ("skip-warn", "pytest passed no test"),
+    ("empty", "pytest collected no tests"),
+], ids=["all-skipped", "all-skipped-warning-says-passed", "none-collected"])
+def test_a_full_selection_whose_core_subset_runs_no_test_refuses(checkout,
+                                                                 stub_python,
+                                                                 mode, expected):
+    proc, out, _ran = _commit_checker_change(checkout, stub_python, _FULL_SELECTOR,
+                                             mode)
     assert "pre-commit: ok" not in out, out
     assert proc.returncode != 0, out
     assert expected in out, out
+
+
+@pytest.mark.parametrize("mode,expected", [
+    ("skip", "SKIPPED (0 passed, 3 skipped: nothing verified)"),
+    ("skip-warn", "SKIPPED (0 passed, 3 skipped: nothing verified)"),
+    ("empty", "SKIPPED (0 passed, 0 skipped: nothing verified)"),
+], ids=["all-skipped", "all-skipped-warning-says-passed", "none-collected"])
+def test_an_affected_selection_that_runs_no_test_is_skipped_not_ok(checkout,
+                                                                   stub_python,
+                                                                   mode, expected):
+    """It does not block: a machine without a backend's toolchain skips that
+    backend's tests, and blocking would only teach --no-verify. But it is not
+    reported as ok either."""
+    proc, out, _ran = _commit_checker_change(checkout, stub_python,
+                                             _AFFECTED_SELECTOR, mode)
+    lines = [line.strip() for line in out.splitlines()]
+    assert proc.returncode == 0, out
+    assert expected in out, out
+    assert "pre-commit: ok" not in lines, out
+    assert ("pre-commit: ok, but the affected tests verified nothing "
+            "(see SKIPPED above)") in lines, out

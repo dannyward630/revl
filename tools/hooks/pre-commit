@@ -46,13 +46,22 @@ if [ -d "$root/src/revl" ]; then
 fi
 
 fail=0
+# Set when a step ran and verified nothing (every test skipped, or none was
+# collected). It does not fail the commit, but the final line says so.
+unverified=0
 step() {
     printf '  %-36s' "$1"
     shift
     if out=$("$@" 2>&1); then
-        # A pytest step says how many tests passed, so "ok" is never bare.
-        _passed=$(printf '%s\n' "$out" | grep -Eo '[0-9]+ passed' | tail -1)
-        echo "ok${_passed:+ ($_passed)}"
+        _unverified=$(printf '%s\n' "$out" | tail -1 | sed -n 's/^UNVERIFIED //p')
+        if [ -n "$_unverified" ]; then
+            echo "SKIPPED (${_unverified}: nothing verified)"
+            unverified=1
+        else
+            # A pytest step says how many tests passed, so "ok" is never bare.
+            _passed=$(pytest_count passed "$out")
+            echo "ok${_passed:+ ($_passed passed)}"
+        fi
     else
         echo "FAILED"
         echo "$out" | tail -25 | sed 's/^/      /'
@@ -60,29 +69,51 @@ step() {
     fi
 }
 
+# The number of tests of one outcome ($1: passed, skipped) that a `pytest -q`
+# run's output ($2) reports, or nothing. Only the summary, the last line, is
+# read: a warning or a test's own output earlier on can contain "1 passed".
+# "1 xpassed" is not a pass: the outcome word must follow the count directly.
+pytest_count() {
+    printf '%s\n' "$2" | tail -1 | grep -Eo "(^|[^0-9])[0-9]+ $1" \
+        | grep -Eo '[0-9]+' | tail -1
+}
+
 # Judge a finished pytest run by what it ran, not only by its exit status
 # (issue #2208). pytest exits 5 when the selection collected nothing, and 0
 # when every selected test skipped or was deselected. In both cases no test
 # checked the change, so neither may read as "ok". Takes the exit status and
 # the output; returns 0 only when at least one test passed, and prints why not
-# otherwise.
+# otherwise. The FULL branch below refuses the commit on that answer.
 pytest_ran_tests() {
     if [ "$1" -eq 5 ]; then
         echo "pytest collected no tests from the selection: nothing checked this change"
         return 5
     fi
     [ "$1" -eq 0 ] || return "$1"
-    if ! printf '%s\n' "$2" | grep -Eq '(^|[^0-9])[1-9][0-9]* passed'; then
+    _n=$(pytest_count passed "$2")
+    if [ "${_n:-0}" -eq 0 ]; then
         echo "pytest passed no test (every selected test skipped or was deselected): nothing checked this change"
         return 5
     fi
 }
 
-# Run the pytest command line "$@" and hold it to pytest_ran_tests.
+# Run the affected pytest command line "$@" for `step`. A failure is a failure.
+# A run that passed no test (all skipped, or exit 5 for nothing collected) does
+# not block the commit: a machine without a backend's toolchain skips that
+# backend's tests, and blocking would only teach --no-verify. It ends with an
+# `UNVERIFIED <counts>` line instead, which `step` reports as SKIPPED and which
+# turns the final line into "ok, but ... verified nothing".
 pytest_counted() {
     if _out=$("$@" 2>&1); then _rc=0; else _rc=$?; fi
     printf '%s\n' "$_out"
-    pytest_ran_tests "$_rc" "$_out"
+    if [ "$_rc" -ne 0 ] && [ "$_rc" -ne 5 ]; then
+        return "$_rc"
+    fi
+    _n=$(pytest_count passed "$_out")
+    if [ "${_n:-0}" -eq 0 ]; then
+        _s=$(pytest_count skipped "$_out")
+        echo "UNVERIFIED 0 passed, ${_s:-0} skipped"
+    fi
 }
 
 # Run "$@" with a wall-clock ceiling, capturing combined output on stdout. Exit
@@ -144,8 +175,10 @@ fi
 # running no test at all (issue #2208).
 #
 # So a FULL selection runs a DEFINED core subset, CORE_TESTS, under the
-# wall-clock ceiling FULL_BUDGET. Both files drive the whole frontend pipeline
-# (parse, check, lower, emit) and together take about 2s. The test_formal_*
+# wall-clock ceiling FULL_BUDGET. test_frontend and test_doc_examples drive the
+# whole frontend pipeline (parse, check, lower, emit); the goldens and the four
+# diagnostics files add the checker's negative cases. Together they are about
+# 600 tests in about 8s on a loaded machine. The test_formal_*
 # rows are left out: they took 4.5 minutes here and need lake, so they could
 # never finish inside the ceiling. The step reports the core count and says the
 # full suite did not run. If the core subset fails, runs no test, or exceeds
@@ -154,7 +187,10 @@ fi
 # way past it. `make pre-merge` still runs everything before land.
 # Override with REVL_HOOK_FULL_BUDGET=<seconds> and REVL_HOOK_CORE_TESTS="<paths>".
 FULL_BUDGET=${REVL_HOOK_FULL_BUDGET:-60}
-CORE_TESTS=${REVL_HOOK_CORE_TESTS:-"tests/test_frontend.py tests/test_doc_examples.py"}
+CORE_TESTS=${REVL_HOOK_CORE_TESTS:-"tests/test_frontend.py tests/test_doc_examples.py \
+tests/test_goldens.py tests/test_multi_error_reporting.py \
+tests/test_assert_diagnostics.py tests/test_parser_ergonomics.py \
+tests/test_lower_ergonomics.py"}
 # A commit that stages nothing (`--allow-empty`, a message-only `--amend`)
 # changes no file, so no test can be affected by it. The selector cannot tell
 # that case apart: it sees an empty change set, which it must treat as "could
@@ -218,8 +254,8 @@ else
             echo " FAILED (the core subset exceeded the ${FULL_BUDGET}s budget)"
             fail=1
         elif why=$(pytest_ran_tests "$rc" "$out"); then
-            passed=$(printf '%s\n' "$out" | grep -Eo '[0-9]+ passed' | tail -1)
-            echo " ok (core subset only: ${passed}; the full suite did not run)"
+            passed=$(pytest_count passed "$out")
+            echo " ok (core subset only: ${passed} passed; the full suite did not run)"
         else
             echo " FAILED"
             echo "$out" | tail -25 | sed 's/^/      /'
@@ -289,4 +325,8 @@ then
     echo "  note: crates.io unreachable — rust cargo checks are CI-only here."
 fi
 
-echo "pre-commit: ok"
+if [ "$unverified" -ne 0 ]; then
+    echo "pre-commit: ok, but the affected tests verified nothing (see SKIPPED above)"
+else
+    echo "pre-commit: ok"
+fi
