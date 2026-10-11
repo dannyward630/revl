@@ -27,7 +27,10 @@ from pathlib import Path
 UNKNOWN = "unknown"
 
 # `<repo>/pyproject.toml` for a source checkout (`<repo>/src/revl/_version.py`).
-_PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
+# `None` when the package sits too close to the filesystem root to have one.
+_here = Path(__file__).resolve()
+_PYPROJECT = (_here.parents[2] / "pyproject.toml"
+              if len(_here.parents) > 2 else None)
 
 
 def _metadata_version() -> str | None:
@@ -44,7 +47,9 @@ def _metadata_version() -> str | None:
         return None
 
 
-def _pyproject_version(path: Path) -> str | None:
+def _pyproject_version(path: Path | None) -> str | None:
+    if path is None:
+        return None
     try:
         import tomllib  # noqa: PLC0415 - stdlib, py3.11+
 

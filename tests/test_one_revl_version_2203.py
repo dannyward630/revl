@@ -1,7 +1,7 @@
 """One definition of "the revl version" (issue #2203).
 
 There used to be four, with three different fallbacks. With no installed
-metadata (the `PYTHONPATH=src` pattern, the playground wheel), the attestation's
+metadata (the `PYTHONPATH=src` pattern, a copied source tree), the attestation's
 `checker.compiler`, the gate's `language` and the truc reproducer all fell back
 to a hard-coded "2.0.0", while `revl doctor` read `pyproject.toml`. After any
 version bump they disagreed, and an attestation claimed the wrong compiler.
@@ -154,13 +154,17 @@ def test_attestation_stamps_the_real_version_not_a_literal(uninstalled_result):
 def test_installed_metadata_wins_and_matches_in_process():
     """In this process revl is installed, so every caller reports the
     distribution's version, the first link of the chain."""
+    from importlib.metadata import PackageNotFoundError
     from importlib.metadata import version as dist_version
 
     from revl import _version, attest, gate
     from revl.mcp import identity
     from revl.truc import reproduce
 
-    expected = dist_version("revl")
+    try:
+        expected = dist_version("revl")
+    except PackageNotFoundError:
+        pytest.skip("revl is not installed in this interpreter")
     assert _version.version() == expected
     assert attest.compiler_version() == expected
     assert gate.gate_version()["language"] == expected
