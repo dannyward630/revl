@@ -948,6 +948,57 @@ def test_native_driver_links_the_pure_closure_externs(
     assert got == want
 
 
+_UNLINKABLE = {
+    # The reference renames both private `h` apart (`h__m0`, `h__m1`); emitting
+    # two `h` would let the document's `f` call a.rvl's.
+    "private_extern_collision": ("collides", {
+        "doc.rvl": (
+            'use "a.rvl" { g }\n\n'
+            "extern pure fn h(x: Int) -> Int = @py { return x } = @ts { return x }\n\n"
+            "fn f(x: Int) -> Int { return h(g(x)) }\n"),
+        "a.rvl": (
+            "pub extern pure fn g(x: Int) -> Int = @py { return x } = @ts { return x }\n\n"
+            "extern pure fn h(x: Int) -> Int = @py { return x + 1 } = @ts { return x + 1n }\n"),
+    }),
+    "pub_fn": ("`functions`", {
+        "doc.rvl": 'use "a.rvl" { helper }\n\nfn f(x: Int) -> Int { return helper(x) }\n',
+        "a.rvl": "pub fn helper(x: Int) -> Int { return x + 1 }\n",
+    }),
+    "type": ("`types`", {
+        "doc.rvl": 'use "a.rvl" { Pt }\n\nfn f(p: Pt) -> Int { return p.x }\n',
+        "a.rvl": "pub type Pt = { x: Int }\n",
+    }),
+    "secret": ("`secrets`", {
+        "doc.rvl": 'use "a.rvl" { post }\n\nfn f(x: Int) -> Int { return x }\n',
+        "a.rvl": (
+            "secret api_key for net.send\n\n"
+            "pub extern emission[net.send] fn post(m: Str) -> Int"
+            " = @py { return len(m) + len(api_key) } = @ts { return 1n }\n"),
+    }),
+    "alias": ("by alias", {
+        "doc.rvl": 'use "a.rvl" as m\n\nfn f(x: Int) -> Int { return m.helper(x) }\n',
+        "a.rvl": "pub fn helper(x: Int) -> Int { return x + 1 }\n",
+    }),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_UNLINKABLE))
+def test_native_driver_refuses_what_it_cannot_link(compile_rvl, tmp_path, case):
+    """Issue #2181: where the native link would emit something other than the
+    reference (two declarations under one name, or a dependency whose functions,
+    types or secrets it does not carry), the driver refuses loudly with
+    `REFUSED|LINK|` instead of emitting silently different source. The
+    reference compiles every one of these documents."""
+    why, files = _UNLINKABLE[case]
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    compile_files([str(doc)])
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
+    assert got.startswith("REFUSED|LINK|"), got[:120]
+    assert why in got
+
+
 def test_six_way_composition_co_compiles(compile_rvl):
     """SEAM 2 is closed for ALL SIX TIERS (roadmap item 146, gap 2): lower.rvl plus
     emit_{py,ts,go,java,rust,wasm}.rvl ``use``d together in compile.rvl compile into

@@ -95,8 +95,16 @@ path, which is what the resolution needs:
   sorted by absolute path, each module once), lowers each module and appends its
   externs after the document's own, creating the `externs` array when the
   document declares none. A module imported only for a service adds no extern.
-  Not covered: a `use "m" as alias` import (no `{ }` list) and the reference's
-  renaming of a private extern whose name collides across modules.
+  Where the result would differ from the reference, the driver returns
+  `REFUSED|LINK|<message>` instead of emitting different source:
+  - an appended extern whose name the document already declares as an extern or
+    function (the reference renames colliding private names apart, this driver
+    does not);
+  - a pure dependency that carries anything but externs: functions, types,
+    secrets, tests or any other section, which the reference merges and this
+    driver does not;
+  - a `use "m" as alias` import, which makes the whole module a dependency;
+  - a dependency that declares externs none of which lowered natively.
 
 This is the honest multi-file native compile: the whole chain still runs in revl,
 and the only host crossing is the read the reference loader also performs. It
