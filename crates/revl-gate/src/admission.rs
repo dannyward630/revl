@@ -75,7 +75,13 @@
 //! a replacement, whose handoff and unmet-consumer reasoning belongs to the fold
 //! and to item 53's relation. Withheld. A running component the wire does not
 //! name is one that carries no provision and no requirement row, so replacing it
-//! hands off no state and strands no consumer.
+//! hands off no state and strands no consumer. A candidate component whose name
+//! differs from a wire-named one only in letter case or underscores is withheld
+//! too: the reference refuses it unless the admission withdraws the running one.
+//! Caveat: the reference refuses the same folded name against a running
+//! component the wire does NOT name, and this gate cannot see that component, so
+//! it still certifies such a candidate. That is a false admission, open as a
+//! follow-up; closing it needs the wire to name a component with no rows.
 //!
 //! The second is what an AMBIENT service's operations are declared to be, which
 //! is what a certified provide-method body's calls are typed against. Both

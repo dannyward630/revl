@@ -617,6 +617,32 @@ def test_the_manifest_admission_arm_withholds_a_name_folded_onto_a_running_compo
         compile_source(candidate("Kvstore"), "incoming.rvl", manifest=running)
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "known false admission, open as a follow-up: the manifest wire does not "
+    "name a running component with no rows, so the crate cannot withhold a "
+    "candidate whose name folds onto it"))
+def test_the_manifest_admission_arm_withholds_a_name_folded_onto_a_rowless_running_component(consumer):
+    """The reference refuses `LONE` into a composition keeping `component Lone
+    {}` (issue #2276). `Lone` provides and requires nothing, so the wire has no
+    row for it and the crate certifies `LONE`. Strict: when the wire names such a
+    component and the crate withholds this, the xfail turns red."""
+    from revl.compiler import compile_source
+    from revl.manifest import manifest_wire
+    running = compile_source(
+        "service Store {\n  fn get(key: Str) -> Str\n}\n"
+        "component KVStore provides a: Store {\n  provide a {\n"
+        "    fn get(key) = key\n  }\n}\ncomponent Lone {\n}\n", "running.rvl")
+    wire = manifest_wire(running)
+    candidate = ("service Local {\n  fn get(key: Str) -> Str\n}\n"
+                 "component LONE provides b: Local {\n  provide b {\n"
+                 "    fn get(key) = key\n  }\n}\n")
+    with pytest.raises(Exception, match="collides with running component `Lone`"):
+        compile_source(candidate, "incoming.rvl", manifest=running)
+    (verdict,) = _crate_verdicts(consumer, [candidate], "--admission-into", wire)
+    assert verdict["admitted"] is False, (
+        f"the crate certified `LONE` beside a running `Lone` on {wire!r}: {verdict}")
+
+
 def test_every_refusal_the_crate_issues_is_a_real_reference_refusal(agreement):
     """The sound direction, held on its own over the whole corpus at once: the
     crate must never REFUSE a program the reference admits either — that would
