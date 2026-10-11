@@ -185,6 +185,12 @@ CORPUS = [
     # astral-aware `revlCharCodeAt` redirect. Added red, exactly as on the py
     # tier: no ts corpus document called any of them.
     "classify.rvl",
+    # Issue #2297: block match arms capturing structural records (a record,
+    # records inside lists, a nested record, an empty record) lift into
+    # helpers whose signatures carry `{ a: bigint; ... }`. No other document
+    # renders a structural record type, so the port's `ts_record_type` was
+    # unreached.
+    "block_arm_records.rvl",
     "../../../backends/typescript/tests/fixtures/unique_writes.rvl",
     "../../../bench/results/gpt-oss-20b-oneshot/03-user-cache/v1/attempt-1.rvl",
     "../../../stdlib/str.rvl",
@@ -557,3 +563,16 @@ def test_a_host_identifier_collision_is_refused_by_name(reference):
     with pytest.raises(reference.EmitError,
                        match="both spell the host identifier"):
         reference.emit(ir)
+
+
+@pytest.mark.parametrize("surface", [
+    "{}", "{a: Int, b: Str}", "{a: {b: Int, c: List[Str]}, d: Bool}",
+    "{function: Int}", "Map[Str, {x: Int, y: Int}]", "Opt[{a: Int}]",
+    "({a: Int}) -> {b: Str}", "List[Opt[Int]]", "List[Result[Int, Str]]",
+    "List[{a: Opt[Int]}]", "List[(Int) -> Opt[Str]]", "List[Map[Str, Opt[Int]]]",
+])
+def test_ts_type_matches_reference_on_structural_types_2297(emitted, reference, surface):
+    """Issue #2297: the port's `ts_type` renders a structural record, and a list
+    of a union, exactly as the reference `_ts_v3_type` does. The corpus document
+    `block_arm_records.rvl` covers the lifted-arm signatures end to end."""
+    assert emitted["ts_type"](surface) == reference._ts_v3_type(surface)

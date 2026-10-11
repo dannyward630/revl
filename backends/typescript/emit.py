@@ -3102,13 +3102,17 @@ _V3_ATOMIC_KINDS = {"var", "field", "index", "call", "lit"}
 
 
 def _split_v3_types(inner: str) -> list[str]:
+    """Split a type list on its top-level commas.
+
+    Braces nest like brackets, so a structural record type (`{a: Int, b: Str}`)
+    stays one part when it is a type argument or a field value (issue #2297)."""
     parts: list[str] = []
     depth = 0
     current: list[str] = []
     for ch in inner:
-        if ch in "[(":
+        if ch in "[({":
             depth += 1
-        elif ch in "])":
+        elif ch in "])}":
             depth -= 1
         if ch == "," and depth == 0:
             parts.append("".join(current).strip())
@@ -3129,6 +3133,8 @@ def _ts_v3_type(type_name: object) -> str:
     name = type_name.strip()
     if name in _TS_V3_TYPE:
         return _TS_V3_TYPE[name]
+    if name.startswith("{") and name.endswith("}"):
+        return _ts_v3_record_type(name)
     fn = _split_fn_type(name)
     if fn is not None:
         # revl `(Int, Str) -> Bool` is TS `((a0: number, a1: string) => boolean)`.
@@ -3145,7 +3151,7 @@ def _ts_v3_type(type_name: object) -> str:
         if base == "Opt":
             return f"{_ts_v3_type(args[0])} | undefined"
         if base == "List":
-            return f"{_ts_v3_type(args[0])}[]"
+            return _ts_v3_list_type(_ts_v3_type(args[0]))
         if base == "Map":
             return f"Map<{_ts_v3_type(args[0])}, {_ts_v3_type(args[1])}>"
         if base == "Result":
@@ -3160,6 +3166,44 @@ def _ts_v3_type(type_name: object) -> str:
             return f"Promise<{_ts_v3_type(args[0])}>"
         return base + "<" + ", ".join("unknown" for _ in args) + ">"
     return _ident(name, "type name")
+
+
+def _ts_v3_list_type(elem: str) -> str:
+    """`T[]`, with a union element parenthesised (issue #2297).
+
+    `Opt[T]` and `Result[T, E]` render as unions, and `[]` binds tighter than
+    `|`, so `List[Opt[Int]]` written as `bigint | undefined[]` would mean a
+    bigint or an array of undefined. Only a `|` at the top level counts: one
+    inside a record, a `Map<...>` or a function type is already enclosed."""
+    depth = 0
+    for i, ch in enumerate(elem):
+        if ch in "([{<":
+            depth += 1
+        elif ch in ")]}" or (ch == ">" and elem[i - 1:i] != "="):
+            depth -= 1
+        elif ch == "|" and depth == 0:
+            return f"({elem})[]"
+    return f"{elem}[]"
+
+
+def _ts_v3_record_type(name: str) -> str:
+    """A structural record type `{a: Int, b: List[Str]}` -> `{ a: bigint; b: string[] }`.
+
+    The checker gives this spelling to a record literal with no declared type.
+    It reaches a signature when a block match arm captures such a binding, or
+    returns one, and the arm is lifted into a helper fn (issue #2297). Each
+    field type goes back through `_ts_v3_type`, so nested records, lists and
+    generics close correctly. A field key is a property key, so it is written
+    by `_prop_key`, the same as in a declared record's interface."""
+    inner = name[1:-1].strip()
+    if not inner:
+        return "{}"
+    fields = []
+    for part in _split_v3_types(inner):
+        key, _, ftype = part.partition(":")
+        fields.append(f"{_prop_key(key.strip(), 'record field')}: "
+                      f"{_ts_v3_type(ftype.strip())}")
+    return "{ " + "; ".join(fields) + " }"
 
 
 class _Ctx:

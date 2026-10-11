@@ -1,0 +1,64 @@
+// Issue #2297: a block match arm lifts into a helper fn (`match_arm_N`) whose
+// parameters are the bindings it reads. A binding holding a record literal with
+// no declared type carries the structural spelling `{name: Str, rows: List[Str]}`,
+// and the ts tier rendered it unclosed, with revl type names, swallowing the next
+// parameters. These arms capture a record, records inside lists, and a record
+// nested in a record, and return a structural record.
+pub type S = { name: Str, rows: List[Str] }
+
+fn pick(r: Result[List[S], Str], name: Str) -> S {
+  let missing = { name: "", rows: ["missing"] }
+  return match r {
+    Ok(xs) => {
+      var found = missing
+      for (x of xs) { if (x.name == name) { found = x } }
+      found
+    },
+    Err(e) => { name: e, rows: [] },
+  }
+}
+
+fn tally(r: Result[Int, Str], k: Str) -> Int {
+  let pairs = [{ k: "a", v: 1 }, { k: "b", v: 2 }]
+  let grid = [[{ w: 10 }], [{ w: 20 }, { w: 30 }]]
+  return match r {
+    Ok(v) => {
+      var total = v
+      for (p of pairs) { if (p.k == k) { total = total + p.v } }
+      for (row of grid) { total = total + row.length() }
+      total
+    },
+    Err(e) => 0,
+  }
+}
+
+fn nested(r: Result[Int, Str]) -> Int {
+  let base = { inner: { a: 1, tags: ["x"] }, n: 2 }
+  return match r {
+    Ok(v) => {
+      var cur = base
+      if (v > 0) { cur = { inner: { a: v, tags: ["y", "z"] }, n: v } }
+      cur.inner.a + cur.n
+    },
+    Err(e) => 0,
+  }
+}
+
+fn empty_capture(r: Result[Int, Str]) -> Int {
+  let blank = {}
+  return match r {
+    Ok(v) => {
+      let keep = blank
+      v
+    },
+    Err(e) => 0,
+  }
+}
+
+test "block arms over records" {
+  assert pick(Ok([{ name: "a", rows: [] }]), "a").name == "a"
+  assert pick(Err("e"), "a").name == "e"
+  assert tally(Ok(1), "b") == 6
+  assert nested(Ok(5)) == 10
+  assert empty_capture(Ok(3)) == 3
+}

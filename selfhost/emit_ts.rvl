@@ -346,7 +346,8 @@ fn last_index(s: Str, ch: Str) -> Int {
   return -1
 }
 
-// `_split_v3_types`: split a type-arg list on the top-level commas only.
+// `_split_v3_types`: split a type-arg list on the top-level commas only. Braces
+// nest like brackets, so a structural record type stays one part (issue #2297).
 fn split_type_args(inner: Str) -> List[Str] {
   var parts = []
   var depth = 0
@@ -355,11 +356,11 @@ fn split_type_args(inner: Str) -> List[Str] {
   let n = inner.length()
   while (i < n) {
     let ch = inner.charAt(i)
-    if (ch == "[" || ch == "(") {
+    if (ch == "[" || ch == "(" || ch == "{") {
       depth += 1
       current = current.concat(ch)
     } else {
-      if (ch == "]" || ch == ")") {
+      if (ch == "]" || ch == ")" || ch == "}") {
         depth -= 1
         current = current.concat(ch)
       } else {
@@ -418,10 +419,53 @@ fn is_async_fn_type(name: Str) -> Bool {
   return returns.slice(0, 6) == "Async["
 }
 
+// `_ts_v3_list_type`: `T[]`, with a top-level union element parenthesised, since
+// `[]` binds tighter than `|` (issue #2297). `=>` is not a closing `>`.
+fn ts_list_type(elem: Str) -> Str {
+  var depth = 0
+  var i = 0
+  let n = elem.length()
+  while (i < n) {
+    let ch = elem.charAt(i)
+    if (ch == "(" || ch == "[" || ch == "{" || ch == "<") {
+      depth += 1
+    } else {
+      if (ch == ")" || ch == "]" || ch == "}") {
+        depth -= 1
+      } else {
+        if (ch == ">") {
+          if (i == 0 || elem.charAt(i - 1) != "=") { depth -= 1 }
+        } else {
+          if (ch == "|" && depth == 0) { return `(${elem})[]` }
+        }
+      }
+    }
+    i += 1
+  }
+  return elem.concat("[]")
+}
+
+// `_ts_v3_record_type`: a structural record type `{a: Int, b: List[Str]}` ->
+// `{ a: bigint; b: string[] }`, each field type rendered by `ts_type` and each
+// key by `prop_key` (issue #2297).
+fn ts_record_type(name: Str) -> Str {
+  let inner = py_strip(name.slice(1, name.length() - 1))
+  if (inner == "") { return "{}" }
+  var fields = []
+  for (part of split_type_args(inner)) {
+    let colon = part.indexOf(":")
+    let key = py_strip(part.slice(0, colon))
+    let ftype = py_strip(part.slice(colon + 1, part.length()))
+    fields = fields.push(`${prop_key(key)}: ${ts_type(ftype)}`)
+  }
+  return `{ ${fields.join("; ")} }`
+}
+
 fn ts_type(name: Str) -> Str {
   if (name == "") { return "unknown" }
   let mapped = ts_scalar_type(name)
   if (mapped != "") { return mapped }
+  if (name.startsWith("{") && name.endsWith("}")) { return ts_record_type(name) }
   let arrow = fn_type_arrow_index(name)
   if (arrow >= 0) {
     let n = name.length()
@@ -449,7 +493,7 @@ fn ts_type(name: Str) -> Str {
     let inner = name.slice(bi + 1, last_index(name, "]"))
     let args = split_type_args(inner)
     if (base == "Opt") { return ts_type(args[0]).concat(" | undefined") }
-    if (base == "List") { return ts_type(args[0]).concat("[]") }
+    if (base == "List") { return ts_list_type(ts_type(args[0])) }
     if (base == "Map") { return `Map<${ts_type(args[0])}, ${ts_type(args[1])}>` }
     if (base == "Result") {
       return `{ kind: "Ok"; value: ${ts_type(args[0])} } | { kind: "Err"; value: ${ts_type(args[1])} }`
