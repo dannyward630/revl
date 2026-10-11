@@ -403,8 +403,9 @@ unchanged.
 a composition is loaded, `revl_check` carries the same
 `"disk": {"inSync": bool, "stale": [path]}` block as the change loop (issue
 #2032). A committed change that has not reached disk leaves `inSync` false, so a
-green check no longer reads as done over an unchanged file. On a success,
-`revl_check {session: true}` also carries a `note` naming `revl_export`. A
+green check no longer reads as done over an unchanged file. On a success
+with `inSync` false, `revl_check {}` and `revl_check {session: true}` also carry
+a `note` naming `revl_export`; with `inSync` true they carry none. A
 `revl_check {files}` that names a file the session holds, whose held text differs
 from disk, compiles the disk text and carries one `note` saying so and that
 `revl_export` writes the held source. A check of an unrelated file or a `source`
