@@ -4,9 +4,9 @@
 time it is called, and `select()` calls it once per word heuristic, about 22
 times per changed file. `tests/test_affected_tests.py` asks `select()` about
 several hundred paths, so most of its wall time went to listing the same
-directory again. On the 268 files `playground/build_wheel.py` reads, the
-selector took 82 s with the plain listing and 30 s with this cache, and gave
-the same answer for every file.
+directory again. On the files `playground/build_wheel.py` reads, the cache
+cut the selector's time by about two thirds and gave the same answer for
+every file.
 
 The listing depends only on the entry names in `<root>/tests`, so the key is
 the root plus a SHA-256 of those names. Adding, removing or renaming any entry
@@ -25,8 +25,8 @@ def listing_key(root: Path) -> tuple[str, str]:
     """The root, and a SHA-256 of every entry name in `<root>/tests`.
 
     Raises OSError when `<root>/tests` cannot be listed."""
-    names = sorted(os.listdir(Path(root) / "tests"))
-    digest = hashlib.sha256("\0".join(names).encode("utf-8")).hexdigest()
+    names = sorted(os.fsencode(n) for n in os.listdir(root / "tests"))
+    digest = hashlib.sha256(b"\0".join(names)).hexdigest()
     return str(root), digest
 
 
