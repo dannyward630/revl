@@ -609,11 +609,10 @@ def test_the_go_runner_resolves_stc_go_before_it_runs_the_module(monkeypatch):
     """An unobtainable pinned module is reported as itself, not as `go test
     exited 1` from a cold cache.
 
-    The verdict stays a FAILURE rather than the rust tier's `Absent` skip: `go`
-    is exempt from `REVL_REQUIRE_TIERS`
-    (tests/test_env_gated_skips_run_somewhere.py), so no job would catch the
-    skip, and a pinned module that cannot be obtained is a provisioning break
-    rather than an absent toolchain."""
+    The verdict stays a FAILURE rather than the rust tier's `Absent` skip,
+    even where `REVL_REQUIRE_TIERS` does not name go: a pinned module that
+    cannot be obtained is a provisioning break rather than an absent
+    toolchain."""
     monkeypatch.setattr(test_module, "_STC_GO_REASON", "")  # not probed yet
     monkeypatch.setattr(test_module.shutil, "which", lambda _name: "/usr/bin/go")
     monkeypatch.setattr(

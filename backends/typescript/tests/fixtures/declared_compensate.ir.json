@@ -231,7 +231,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   },
                   "mutable": false
                 },
@@ -420,7 +421,8 @@
                     "right": {
                       "kind": "lit",
                       "value": 1
-                    }
+                    },
+                    "operands": "Int"
                   },
                   "mutable": false
                 },

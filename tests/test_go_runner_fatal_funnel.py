@@ -138,7 +138,8 @@ _FATAL_PRINT = (
 )
 
 
-def _build(work: Path, *, replace: tuple[str, str] | None = None) -> str:
+def _build(work: Path, *, replace: tuple[str, str] | None = None,
+           doc: str = _PANIC_DOC) -> str:
     """Build the runner + the generated `emitted` package for `_PANIC_DOC` in a
     COPY of the runner dir, so a test can edit the entry point before building.
 
@@ -159,7 +160,7 @@ def _build(work: Path, *, replace: tuple[str, str] | None = None) -> str:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            return placement._build_go(compile_source(_PANIC_DOC), work)
+            return placement._build_go(compile_source(doc), work)
     finally:
         placement._GO_RUNNER = saved
 
@@ -475,3 +476,46 @@ def test_without_the_crossing_guard_the_runtime_prints_the_value(tmp_path):
     assert CANARY in err, err
     assert "goroutine " in err, err
     assert "FATAL" not in err, err
+
+
+# ---------------------------------------------------------------------------
+# an unknown component is fatal (issue #2223, the go half of #2200)
+# ---------------------------------------------------------------------------
+
+_UNDO_DOC = '''
+service Vault { fn show(user: Str) -> Str }
+
+extern pure fn mark(what: Str) -> Str = @go {
+	println("MARK " + what)
+	return what
+}
+
+component Impl provides vault: Vault {
+  let slot = effect mark("applied") undo mark("INVERSE-RAN")
+
+  provide vault {
+    fn show(user) { return "shown " + user }
+  }
+}
+'''
+
+
+def test_an_unknown_component_is_fatal_and_disposes_what_booted(tmp_path):
+    """The spec names `Ghost`, which the binary lacks, after `Impl`, which it
+    has. The run must exit non-zero with a message naming `Ghost`, claim neither
+    `UP` nor `NO-RESIDUE` nor `DOWN`, and have really torn `Impl` down: its
+    inverse ran before the exit. `Fiber.Dispose` only requests the teardown, so
+    the log line alone proves nothing; the inverse marker does."""
+    binary = _build(tmp_path, doc=_UNDO_DOC)
+    spec = tmp_path / "ghost.json"
+    spec.write_text(json.dumps({**_SPEC, "components": ["Impl", "Ghost"], "probe": []}))
+    done = subprocess.run([binary, str(spec)], capture_output=True, text=True,
+                          timeout=300, stdin=subprocess.DEVNULL)
+    assert done.returncode != 0, (done.stdout, done.stderr)
+    assert "Ghost" in done.stderr and "FATAL" in done.stderr, done.stderr
+    for claim in ("UP", "NO-RESIDUE", "DOWN"):
+        assert f"] {claim}" not in done.stdout, done.stdout
+    out = done.stdout + done.stderr
+    assert "MARK applied" in out, out
+    assert "MARK INVERSE-RAN" in out, out
+    assert out.index("MARK applied") < out.index("MARK INVERSE-RAN"), out

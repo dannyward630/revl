@@ -397,10 +397,6 @@ def _sign(body: Mapping, key: bytes, domain: bytes) -> str:
                     hashlib.sha256).hexdigest()
 
 
-def _public_members(record: Mapping) -> dict:
-    return {k: v for k, v in record.items() if k != SIGNATURE_FIELD}
-
-
 @dataclass(frozen=True)
 class EnclaveEvidence:
     """The attester's answer to one challenge: what is running, where, and with

@@ -584,12 +584,10 @@ def build_bundle(sources: list[str], out: str, *, backends=DEFAULT_BACKENDS,
 
 
 def _toolchain_version() -> str:
-    """The current revl toolchain version, the pyproject version through the
-    installed metadata when present, else a stable fallback (verbatim from
-    `truc.reproduce._toolchain_version`)."""
-    from .truc.reproduce import _toolchain_version as tv  # noqa: PLC0415
+    """The current revl toolchain version, `revl._version.version()`."""
+    from ._version import version  # noqa: PLC0415
 
-    return tv()
+    return version()
 
 
 # --------------------------------------------------------------- one-file bundle
