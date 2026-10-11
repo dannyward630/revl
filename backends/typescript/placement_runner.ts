@@ -289,6 +289,29 @@ for (const [key, info] of Object.entries<any>(spec.proxies || {})) {
 // sweep skipped it.
 for (const cname of spec.components as string[]) {
   const config = (spec.config || {})[cname]
+  // issue #2252: a component the bundle does not export is a FATAL spec/build
+  // mismatch, as in the rust (#2200) and go runners. `plug` on `undefined`
+  // died on a TypeError that named nothing and left the components already
+  // booted undisposed. Dispose what did boot, last first, print one redacted
+  // line and exit 1. `process.exit`, not `teardown`, so no `DOWN` is claimed
+  // for a boot that failed.
+  if (mod[cname] === undefined) {
+    for (const [label, booted] of [...fibers].reverse()) {
+      try {
+        await booted.dispose()
+      } catch {
+        /* best-effort */
+      }
+      log('swap', label, 'dispose')
+    }
+    fs.writeSync(
+      2,
+      `[${name}] FATAL ${redactText(
+        `unknown component ${cname}: the spec names a component this build does not have`,
+      )}\n`,
+    )
+    process.exit(1)
+  }
   // issue #1567: `plug` applies the component's `isolate` placements before
   // plugging. `ctx.plugin` dropped them, so an isolated provision landed in
   // the shared realm and two tenants of one key collided in one process.

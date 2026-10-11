@@ -455,3 +455,34 @@ def test_with_the_funnel_unregistered_node_prints_the_raw_failure(tmp_path):
     # merge verbatim.
     assert f"Error: boom {CANARY}" in err, err
     assert len([line for line in err.splitlines() if line.strip()]) > 1, err
+
+
+# ---------------------------------------------------------------------------
+# an unknown component is fatal (issue #2252, the ts half of #2200)
+# ---------------------------------------------------------------------------
+
+@needs_node
+def test_an_unknown_component_is_fatal_and_disposes_what_booted(tmp_path):
+    """The spec names `Ghost`, which the bundle lacks, after `Impl`, which it
+    has. Before the fix `plug(ctx, undefined)` died on a TypeError that named
+    nothing and left `Impl` undisposed. The run must exit 1 with one FATAL line
+    naming `Ghost`, dispose `Impl`, and claim neither `UP` nor `NO-RESIDUE`
+    nor `DOWN`."""
+    module = _emitted(tmp_path)
+    spec = tmp_path / "ghost.json"
+    spec.write_text(json.dumps({
+        "name": "vault", "module": str(module), "components": ["Impl", "Ghost"],
+        "config": {}, "provides": ["vault"], "proxies": {}, "probe": [],
+        "once": True,
+    }), encoding="utf-8")
+    code, out, err = _run(spec)
+    assert code == 1, (code, out, err)
+    assert "FATAL" in err and "Ghost" in err, err
+    assert "TypeError" not in err and "isolate" not in err, err
+    for claim in ("UP", "NO-RESIDUE", "DOWN"):
+        assert f"] {claim}" not in out, out
+    lines = out.splitlines()
+    loaded = [i for i, ln in enumerate(lines) if "load" in ln and "Impl" in ln]
+    disposed = [i for i, ln in enumerate(lines)
+                if "swap" in ln and "Impl" in ln and "dispose" in ln]
+    assert loaded and disposed and loaded[0] < disposed[0], out
