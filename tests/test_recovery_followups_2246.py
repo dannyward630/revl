@@ -98,6 +98,8 @@ def test_cli_maps_the_driver_exception_to_one_line_exit_1(
 
 
 def test_cli_pre_check_still_exits_1_with_one_line(tmp_path, capsys):
+    """Regression guard only: the pre-check already behaved this way on the
+    base, so this test was never shown failing."""
     from revl.__main__ import main  # noqa: PLC0415
     wal = _unsettled_wal(tmp_path / "run.wal")
     source = tmp_path / "app.rvl"
@@ -134,15 +136,24 @@ def test_open_calls_seqless_flushed_does_not_close_a_seqless_descriptor():
     assert _open_calls(records) == {None: _CALL}
 
 
-def test_recover_window_path_seqless_flushed_keeps_the_emission_owed(tmp_path):
+def test_recover_window_path_seqless_flushed_keeps_the_emission_owed(
+        tmp_path, monkeypatch):
+    """commit-approved with NO activation-complete is the approved-to-discharged
+    window, so `recover` takes `_roll_forward_window` (not `_roll_forward`)."""
+    import revl.recovery as recovery  # noqa: PLC0415
     path = str(tmp_path / "window.wal")
-    wal = replay.WriteAheadLog(path, ir={}, generation=1).open()
-    wal.commit_activation(["Svc"])
-    wal.close()
+    replay.WriteAheadLog(path, ir={}, generation=1).open().close()
     with open(path, "a", encoding="utf-8") as handle:
-        for record in ({"record": "deferred-emission", "call": _CALL},
-                       {"record": "commit-approved"},
+        for record in ({"record": "commit-approved"},
+                       {"record": "deferred-emission", "call": _CALL},
                        {"record": "flushed"}):
             handle.write(json.dumps(record) + "\n")
+    reached = []
+    real = recovery._roll_forward_window
+    monkeypatch.setattr(recovery, "_roll_forward_window",
+                        lambda *a, **k: reached.append(1) or real(*a, **k))
     report = recover(path)
+    assert reached == [1]
     assert report["residue"]["clean"] is False
+    assert report["flushed"] == []
+    assert [(o["seq"], o["referent"]) for o in report["owedFlushes"]] == [(None, "s.m")]
