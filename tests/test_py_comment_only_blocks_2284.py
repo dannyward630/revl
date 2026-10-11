@@ -17,6 +17,11 @@ a `lifecycle test`, which needs cordis-py to run. Not listed, because the
 checker rejects them before any emitter sees them: a component `if` guard
 ("guard cannot be empty") and a match arm (an arm is an expression, never a
 block).
+
+Five cases emitted invalid Python before the fix: fn-if-then, fn-if-both-arms,
+fn-nested-if-in-loop, effect-setup-if and extern-py-body. The others were
+already guarded by ad-hoc checks, now folded into the one helper; they stay to
+hold every block form to it.
 """
 
 import importlib.util
@@ -238,4 +243,6 @@ def test_a_comment_only_extern_body_keeps_its_comment_and_gains_pass():
 def test_a_block_with_a_statement_gains_no_pass():
     """`pass` is only for an empty body: a non-empty one is byte-identical."""
     source = "pub fn f(n: Int) -> Int {\n  if (n > 0) { return 1 }\n  return n\n}\n"
-    assert "pass" not in _emitted(source, "nonempty")
+    lines = _emitted(source, "nonempty").splitlines()
+    head = lines.index("    if (n > 0):")
+    assert lines[head + 1:head + 3] == ["        return 1", "    return n"]
