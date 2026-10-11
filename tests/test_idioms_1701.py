@@ -46,6 +46,10 @@ ENTRIES = idioms.table()
 HOST_CODE_IDIOMS = frozenset({"secret"})
 
 
+def test_the_host_code_idioms_exist():
+    assert HOST_CODE_IDIOMS <= set(ENTRIES)
+
+
 def _compile(source, name, profile=None):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
