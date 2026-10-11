@@ -742,7 +742,7 @@ def _run_program(tier: str, source: str) -> tuple[str, str]:
     import io  # noqa: PLC0415
 
     compile_source, runners = _revl()
-    from revl.tiers import short_tier  # noqa: PLC0415 — _revl() put src on sys.path
+    from revl.tiers import short_tier  # noqa: PLC0415: _revl() put src on sys.path
 
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):
