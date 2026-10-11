@@ -455,3 +455,106 @@ def test_with_the_funnel_unregistered_node_prints_the_raw_failure(tmp_path):
     # merge verbatim.
     assert f"Error: boom {CANARY}" in err, err
     assert len([line for line in err.splitlines() if line.strip()]) > 1, err
+
+
+# ---------------------------------------------------------------------------
+# an unknown component is fatal (issue #2252, the ts half of #2200)
+# ---------------------------------------------------------------------------
+
+_UNDO_DOC = """
+service Vault { fn show(user: Str) -> Str }
+service Other { fn peek(user: Str) -> Str }
+
+extern pure fn mark(what: Str) -> Str = @ts {
+  process.getBuiltinModule("node:fs").writeSync(1, "MARK " + what + "\\n")
+  return what
+}
+
+component Impl provides vault: Vault {
+  let slot = effect mark("first-applied") undo mark("first-INVERSE-RAN")
+
+  provide vault {
+    fn show(user) { return "shown " + user }
+  }
+}
+
+component Second provides other: Other {
+  let slot = effect mark("second-applied") undo mark("second-INVERSE-RAN")
+
+  provide other {
+    fn peek(user) { return "peeked " + user }
+  }
+}
+"""
+
+
+@needs_node
+def test_an_unknown_component_is_fatal_and_disposes_what_booted(tmp_path):
+    """The spec names `Ghost`, which the bundle lacks, after `Impl` and `Second`,
+    which it has. Before the fix `plug(ctx, undefined)` died on a TypeError that
+    named nothing and left both undisposed. The run must exit 1 with exactly one
+    FATAL line naming `Ghost`, claim neither `UP` nor `NO-RESIDUE` nor `DOWN`,
+    and have really torn the booted components down, last first: their inverses
+    ran, not just a log line."""
+    module = _emitted(tmp_path, _UNDO_DOC)
+    spec = tmp_path / "ghost.json"
+    spec.write_text(json.dumps({
+        "name": "vault", "module": str(module),
+        "components": ["Impl", "Second", "Ghost"],
+        "config": {}, "provides": ["vault", "other"], "proxies": {}, "probe": [],
+        "once": True,
+    }), encoding="utf-8")
+    code, out, err = _run(spec)
+    assert code == 1, (code, out, err)
+    fatal = [ln for ln in err.splitlines() if "FATAL unknown component Ghost" in ln]
+    assert len(fatal) == 1, err
+    assert "TypeError" not in err and "isolate" not in err, err
+    for claim in ("UP", "NO-RESIDUE", "DOWN"):
+        assert f"] {claim}" not in out, out
+    assert "MARK first-applied" in out and "MARK second-applied" in out, out
+    assert out.index("MARK second-applied") < out.index("MARK second-INVERSE-RAN"), out
+    assert out.index("MARK first-applied") < out.index("MARK first-INVERSE-RAN"), out
+    # last first: Second's inverse and dispose line precede Impl's
+    assert out.index("MARK second-INVERSE-RAN") < out.index("MARK first-INVERSE-RAN"), out
+    lines = out.splitlines()
+    disposed = [ln for ln in lines if "swap" in ln and "dispose" in ln]
+    labels = [ln.split("|")[1].strip() for ln in disposed]
+    assert labels == ["Second", "Impl"], (labels, out)
+    assert not any("NOT confirmed" in ln for ln in disposed), out
+
+
+_HANG_DOC = """
+service Vault { fn show(user: Str) -> Str }
+
+extern pure fn stall(what: Str) -> Str = @ts {
+  return new Promise(() => {})
+}
+
+component Impl provides vault: Vault {
+  let slot = effect stall("applied") undo stall("never")
+
+  provide vault {
+    fn show(user) { return "shown " + user }
+  }
+}
+"""
+
+
+@needs_node
+def test_a_dispose_that_never_settles_still_reports_and_exits_1(tmp_path):
+    """A dispose that holds no handle must not let the event loop drain: node
+    would exit 13 with its own unredacted warning. The 5 s budget keeps the
+    process alive, then the line says the dispose was not confirmed."""
+    module = _emitted(tmp_path, _HANG_DOC)
+    spec = tmp_path / "hang.json"
+    spec.write_text(json.dumps({
+        "name": "vault", "module": str(module), "components": ["Impl", "Ghost"],
+        "config": {}, "provides": ["vault"], "proxies": {}, "probe": [],
+        "once": True,
+    }), encoding="utf-8")
+    code, out, err = _run(spec)
+    assert code == 1, (code, out, err)
+    assert len([ln for ln in err.splitlines()
+                if "FATAL unknown component Ghost" in ln]) == 1, err
+    assert "NOT confirmed: timed out" in out, out
+    assert "unsettled" not in err and "Warning" not in err, err

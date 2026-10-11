@@ -157,9 +157,10 @@ def produce_rust() -> dict[str, str]:
         "backends/rust/golden/user_cache.rs": user_cache,
         "backends/rust/golden/jsonwire.rs": emit.emit(jsonwire),
         # The placement runner's components module (issue #1089). `revl run
-        # --placement --backend rust` REGENERATES this file from the running
-        # IR and restores it afterwards (src/revl/placement.py::_build_rust,
-        # tests/test_run_rust.py), so the committed copy is the reference
+        # --placement --backend rust` emits this module from the running IR
+        # into a staged copy of the crate and never writes this file
+        # (src/revl/placement.py::_build_rust, issue #2199), so the committed
+        # copy is the reference
         # composition's emission and nothing else — the same bytes as the
         # golden above, from the same producer and the same IR. It was a
         # committed emitted artifact that no target declared and no test

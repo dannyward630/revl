@@ -577,10 +577,19 @@ def _bound_names(node: Any, found: set) -> set:
 
 
 def _visible(summary: dict, fn_like: dict) -> dict:
-    """`summary` with every name this body binds removed."""
-    shadowed = _bound_names(fn_like.get("body"), set())
+    """The entries of `summary` this body can look up: every name it calls
+    through a plain `var` callee, minus every name it binds.
+
+    `_arg_retention` reads no other key, so this slice answers every lookup
+    the full summary would. Building it costs the size of this body, not of
+    the module: copying the whole summary for each body made `annotate_ir`
+    O(F^2) in the number of functions (issue #2193).
+    """
+    body = fn_like.get("body")
+    shadowed = _bound_names(body, set())
     shadowed.update(p.get("name") for p in fn_like.get("params") or [])
-    return {name: keeps for name, keeps in summary.items() if name not in shadowed}
+    return {name: summary[name] for name in _callee_names(body, set())
+            if name in summary and name not in shadowed}
 
 
 def _callee_names(node: Any, found: set) -> set:

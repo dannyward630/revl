@@ -168,7 +168,9 @@ is a documented fact instead of a surprise in production.
 If components are increasingly written by AI agents, the question that matters
 is whether a generated component is safe to deploy into a system that is
 already running. revl's answer is to make the compiler the admission gate.
-`revl mcp serve` gives an agent `revl_check` and `revl_admit` instead of
+`revl mcp serve` (to connect it to an MCP client working on your own project,
+see [the client recipe](docs/guide-ai-agents.md#wiring-revl-mcp-serve-into-a-working-session))
+gives an agent `revl_check` and `revl_admit` instead of
 filesystem access: drafts are held server-side, edited by delta, and nothing
 lands until the same checker that guards human commits says yes. A rejected
 candidate cannot deploy, and every rejection carries the guarantee it violated

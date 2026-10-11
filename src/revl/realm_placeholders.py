@@ -76,6 +76,11 @@ def bind(program, bindings: dict | None) -> None:
     after binding: two of its entries that land in one realm route the key to
     the same `(key, realm)` twice, refused G2 as a repeated literal would be."""
     from .parser import RouteStmt  # noqa: PLC0415 - import cycle
+    # issue #2197: the parser records whether it built a placeholder, so a
+    # program with none (almost every one) skips the generic AST walk. `None`
+    # (not recorded) walks, as before.
+    if getattr(program, "has_realm_placeholder", None) is False:
+        return
     found: list = []
     _placeholders(program.components, found)
     bindings = bindings or {}

@@ -358,6 +358,81 @@ stdio (it is a module entry point, not a `revl lsp` subcommand, run with the
 explanations, and go-to-definition from the resolver (`src/revl/lsp/`).
 Same admission gate, a different transport.
 
+### Wiring `revl mcp serve` into a working session
+
+The MCP server is only useful to a session that has it connected. A developer
+or agent working on a downstream project (a repo that depends on revl but is not
+the revl checkout) gets `revl_check`, `revl_plan` and `revl_swap` by adding
+`revl mcp serve` to the config of an MCP client. It speaks stdio, so a client
+needs four values: a command, its args, a working directory and an environment
+(no port, no token).
+
+If revl is installed in a virtualenv (a wheel, or `sh backends/python/setup.sh`
+in a checkout, which installs revl and the pinned cordis-py editable), the
+shortest config is that venv's console script, and no environment is needed:
+
+```json
+{
+  "mcpServers": {
+    "revl": {
+      "command": "/path/to/revl/backends/python/.venv/bin/revl",
+      "args": ["mcp", "serve"],
+      "cwd": "/path/to/your-project"
+    }
+  }
+}
+```
+
+If you run revl from a source checkout without installing it, point an
+interpreter at the checkout with `PYTHONPATH`. Do not write that value by hand:
+`revl doctor` run from the checkout prints the exact line for that checkout, and
+`revl doctor --json` carries it as `checkout.pythonpath` (a list) and
+`checkout.export`:
+
+```text
+$ revl doctor --no-smoke
+...
+source checkout: to boot a composition from it with another interpreter, run
+  export PYTHONPATH=/path/to/revl/src:/path/to/revl/backends/python/.cordis-py/src:/path/to/revl/backends/python
+```
+
+The three entries are `<revl>/src`, cordis-py's `src` and
+`<revl>/backends/python`. Put them in the client's `env`, joined with `:` (`;` on
+Windows), and run the module with `-P`:
+
+```json
+{
+  "mcpServers": {
+    "revl": {
+      "command": "python3",
+      "args": ["-P", "-m", "revl", "mcp", "serve"],
+      "cwd": "/path/to/your-project",
+      "env": {
+        "PYTHONPATH": "/path/to/revl/src:/path/to/revl/backends/python/.cordis-py/src:/path/to/revl/backends/python"
+      }
+    }
+  }
+}
+```
+
+Field names differ between clients (`command`, `args`, `cwd` and `env` are the
+common spelling); the values are what matter. `cwd` is the project the session
+works on, so the paths the agent passes resolve against it. Use a `python3` that
+has revl's dependencies, which the checkout's virtualenv does.
+
+Check the connection by asking the client to list the server's tools: the core
+tier includes `revl_check`, `revl_plan` and `revl_swap`. `revl_swap` and the other
+verbs that need a live composition require the cordis-py runtime. If the server
+cannot import it, it starts anyway, names those verbs on stderr and answers each
+with a refusal whose `next` is the fix; when `revl doctor` prints
+`cordis-py not found, expected at ...`, run `sh backends/python/setup.sh` from the
+revl checkout (or point `CORDIS_PY` at an existing clone) and restart the server.
+
+A bare `ModuleNotFoundError: No module named 'cordis'` from a revl command means
+the same thing: the interpreter that ran it has no cordis on its path. Run
+`revl doctor` with that interpreter; its `cordis-py runtime` row and the
+`PYTHONPATH` line say where cordis is expected.
+
 ### The modern agent loop, scaffold → fill → resolve → admit
 
 For the CLI-side counterpart of this loop (`revl scaffold` generating the

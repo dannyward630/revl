@@ -354,6 +354,9 @@ byte-identical) handles:
   `-0.0` → `"0"` (the documented sign-loss wart). Whole-number and
   negative-zero probes pass on real wasmtime.
 
+wasm refuses `Int / Int` by name until it can render a non-integer Float
+(`7 / 2` is `3.5`); `div_trunc` / `div_floor` / `div_euclid` still lower.
+
 Float literals lower to `f64.const` (bit-exact, via Python `float.hex()`) and
 `+`/`-`/`*`/`/` on `Float` operands lower to the matching `f64` op — but only
 to feed `$f64_to_str`; no `Float` ever reaches an i32/8-byte slot, a local, a

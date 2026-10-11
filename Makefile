@@ -172,6 +172,8 @@ demo-flagship:
 # evidence. A missing elan/lake skips LOUDLY (never a false green),
 # matching the pre-merge discipline. The logic lives in a script, not
 # recipe lines: each recipe line is its own shell, so an in-Makefile
-# skip-guard cannot stop the target.
+# skip-guard cannot stop the target. The script exits 77 for that skip so
+# tools/pre_merge.sh can report it as SKIPPED; here it stays a success, since
+# the SKIP line above it already says what was not checked.
 formal:
-	sh formal/scripts/run_gate.sh
+	sh formal/scripts/run_gate.sh || [ $$? -eq 77 ]

@@ -177,3 +177,19 @@ def test_the_join_reads_a_runtime_path_spend_without_a_use():
         {"requestId": "a", "use": None, "fired": True},
         {"requestId": "b", "use": None, "fired": False}]
     assert json.dumps(approval_spends([])) == "[]"
+
+
+def test_same_key_spends_join_in_order_one_emission_fires_only_the_first():
+    """Two `use=None` spends on one requestId and a single emission: the
+    emission is consumed by the first spend, so the second reads as owed (a
+    crash cut it before it fired). Without the decrement both would read as
+    fired."""
+    records = [{"record": "approval-consumed", "requestId": "a"},
+               {"record": "approval-emission", "requestId": "a",
+                "capability": "c", "component": "C"},
+               {"record": "approval-consumed", "requestId": "a"}]
+    assert [s["fired"] for s in approval_spends(records)] == [True, False]
+    # the same shape with the emission written last still pairs it with the
+    # earliest spend, because the join is in order on requestId alone
+    reordered = [records[0], records[2], records[1]]
+    assert [s["fired"] for s in approval_spends(reordered)] == [True, False]

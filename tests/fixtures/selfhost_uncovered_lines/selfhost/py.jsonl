@@ -34,11 +34,11 @@
 
 ["function", "empty-provide-class-and-timer-body-pass-statements", "timer_emit", 1, 1]
 
-["reason", "extern-formatting-residuals-emit-externs-selects-async-def", "Extern residuals: emit_externs emits `pass` for an empty body, identical to the reference (the `async def` selection is exercised by async_colour.rvl since item 391); it refuses a bodiless `@py ref` extern by name; and it writes the capability-bound secret store (`secrets_block`) and each bound extern's `_revl_secret` local, byte-identical to the reference but reachable by no census-directory document, because the self-host gate refuses a top-level `secret ... for` declaration. tests/test_selfhost_emit_py.py pins the secret agreement and the ref refusal from inline sources. Verbatim sync bodies and the extern config helper are covered by externs.rvl and extern_config.rvl."]
+["reason", "extern-formatting-residuals-emit-externs-selects-async-def", "Extern residuals: emit_externs closes its body through the shared `close_block` (issue #2284), identical to the reference (the `async def` selection is exercised by async_colour.rvl since item 391); it refuses a bodiless `@py ref` extern by name; and it writes the capability-bound secret store (`secrets_block`) and each bound extern's `_revl_secret` local, byte-identical to the reference but reachable by no census-directory document, because the self-host gate refuses a top-level `secret ... for` declaration. tests/test_selfhost_emit_py.py pins the secret agreement and the ref refusal from inline sources. Verbatim sync bodies and the extern config helper are covered by externs.rvl and extern_config.rvl."]
 
-["function", "extern-formatting-residuals-emit-externs-selects-async-def", "emit_externs", 5, 5]
+["function", "extern-formatting-residuals-emit-externs-selects-async-def", "emit_externs", 4, 4]
 
-["reason", "extern-residuals-emit-externs-emits-pass-for-an", "Extern residuals: emit_externs emits `pass` for an empty body, identical to the reference (the `async def` selection is exercised by async_colour.rvl since item 391); it refuses a bodiless `@py ref` extern by name; and it writes the capability-bound secret store (`secrets_block`) and each bound extern's `_revl_secret` local, byte-identical to the reference but reachable by no census-directory document, because the self-host gate refuses a top-level `secret ... for` declaration. tests/test_selfhost_emit_py.py pins the secret agreement and the ref refusal from inline sources. Verbatim sync bodies and the extern config helper are covered by externs.rvl and extern_config.rvl."]
+["reason", "extern-residuals-emit-externs-emits-pass-for-an", "Extern residuals: emit_externs closes its body through the shared `close_block` (issue #2284), identical to the reference (the `async def` selection is exercised by async_colour.rvl since item 391); it refuses a bodiless `@py ref` extern by name; and it writes the capability-bound secret store (`secrets_block`) and each bound extern's `_revl_secret` local, byte-identical to the reference but reachable by no census-directory document, because the self-host gate refuses a top-level `secret ... for` declaration. tests/test_selfhost_emit_py.py pins the secret agreement and the ref refusal from inline sources. Verbatim sync bodies and the extern config helper are covered by externs.rvl and extern_config.rvl."]
 
 ["function", "extern-residuals-emit-externs-emits-pass-for-an", "secrets_block", 2, 2]
 
@@ -66,7 +66,7 @@
 
 ["function", "inline-template-rejects-guarded-return-with-missing-expressi", "inline_template", 1, 1]
 
-["reason", "issue-721-method-block-renders-pass-for-an", "issue #721: `method_block` renders `pass` for an EMPTY provide-method control-flow arm, which is the one line of its own the reference's `block` helper adds. services_control_flow.rvl reaches every other statement; an empty arm is legal but writing one into a corpus document would pin a shape no author produces. The reference half of the same line is recorded under `_ComponentEmitter._method_control.block`."]
+["reason", "issue-721-method-block-renders-pass-for-an", "issue #721: `method_block` renders `pass` for an EMPTY provide-method control-flow arm. services_control_flow.rvl reaches every other statement, and no corpus document holds an empty arm. The reference renders the same `pass` through `_Lines.close_block` (issue #2284), which every other block shares, so it has no uncovered twin; tests/test_selfhost_emit_py.py `test_comment_only_blocks_agree` holds the two to the same bytes on empty arms."]
 
 ["function", "issue-721-method-block-renders-pass-for-an", "method_block", 1, 1]
 

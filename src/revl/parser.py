@@ -2417,6 +2417,12 @@ class Program:
     # the untrusted-author refusal need no AST walk, and an asset can never be
     # missed by a walker that forgot a statement kind.
     assets: list = field(default_factory=list)
+    # issue #2197: whether the parser built any `realm(?name)` or
+    # `realms(..., ?name, ...)` isolate, so `realm_placeholders.bind` can skip
+    # its AST walk for the programs (almost all) that have none. `None` means
+    # "not recorded" (a Program built outside `Parser.parse`), and bind then
+    # walks as it always did.
+    has_realm_placeholder: bool | None = None
 
 
 # `===` -> `==`, `!==` -> `!=`: both spellings, one meaning (structural,
@@ -2507,6 +2513,9 @@ class Parser:
         self._src_lines = source.split("\n")
         self._line_offset = line_offset
         self.pos = 0
+        # issue #2197: set when an `isolate` names a realm placeholder; the
+        # program records it as `Program.has_realm_placeholder`.
+        self._saw_realm_placeholder = False
         # issue #1938: the capability resource DIMENSIONS this program declares,
         # token -> {name: kind}. Filled by `_collect_capability_decls` BEFORE the
         # real pass (so a use may precede its declaration) and re-registered,
@@ -3086,6 +3095,7 @@ class Parser:
                 self._reject_foreign_keyword(tok)  # item 384
                 raise self.err(tok.line, f"expected a top-level declaration, found {tok.value!r}")
         program.assets = self._assets  # item 459 F1
+        program.has_realm_placeholder = self._saw_realm_placeholder  # issue #2197
         return program
 
     def use_decl(self) -> UseDecl:
@@ -6642,9 +6652,12 @@ class Parser:
             # KEYWORDS set (and the selfhosted lexer that mirrors it) is untouched.
             if self.at("ident", "realms"):
                 realms, strategy, held = self.realms_route()
+                if held:
+                    self._saw_realm_placeholder = True
                 return RouteStmt(key, realms, strategy, tok.line, placeholders=held)
             if self._at_realm_placeholder():
                 name = self.realm_placeholder()
+                self._saw_realm_placeholder = True
                 return IsolateStmt(key, f"?{name}", tok.line, placeholder=name)
             return IsolateStmt(key, self.realm_label(), tok.line)
         if tok.kind == "ident" and tok.value == "route" \

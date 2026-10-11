@@ -402,11 +402,6 @@ def compute_repair_patch(profile: dict) -> dict:
     }
 
 
-def repair_patch_from_files(composition: str, trace: str) -> dict:
-    """Load a composition and a trace and compute the proposed repair patch."""
-    return compute_repair_patch(profile_from_files(composition, trace))
-
-
 # --------------------------------------------------------------------------
 # loaders
 # --------------------------------------------------------------------------

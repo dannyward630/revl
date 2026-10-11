@@ -680,6 +680,39 @@ class _Lines:
     def text(self) -> str:
         return "\n".join(self._lines)
 
+    def mark(self) -> int:
+        """Where a block body starts, for `close_block`."""
+        return len(self._lines)
+
+    def close_block(self, mark: int, indent: int) -> None:
+        """Python has no empty block (issue #2284). Every block whose body is
+        rendered from the author's steps closes here: when nothing since `mark`
+        is a statement (no line at all, or only blank and comment lines) the
+        body gets a `pass`. A branch holding only a comment lowers to no steps,
+        and a `@py` body can hold only comments, so the guard is on the
+        rendered lines, not on the step list."""
+        if not any(_is_statement_line(text) for text in self._lines[mark:]):
+            self.add(indent, "pass")
+
+
+# ASCII whitespace exactly as stdlib/str.rvl `is_space` reads it (the self-host
+# port tests the same set), never Python's wider Unicode `str.strip()`.
+_ASCII_SPACE = " \t\n\r\x0b\x0c"
+
+
+def _is_statement_line(text: str) -> bool:
+    stripped = text.strip(_ASCII_SPACE)
+    return stripped != "" and not stripped.startswith("#")
+
+
+def _emit_block(out: "_Lines", indent: int, steps, render) -> None:
+    """Render `steps` as one block body at `indent`, then guarantee it is
+    non-empty. `render(step)` writes one step; the caller binds the indent."""
+    mark = out.mark()
+    for step in steps or ():
+        render(step)
+    out.close_block(mark, indent)
+
 
 class _UsesScan:
     """The single-pass answer to every preamble `_uses_*` gate (issue #540).
@@ -1058,6 +1091,78 @@ def _bounded(operation: str, width: int) -> str:
     tmp = _BOUNDED_TMP
     return (f"({tmp} if _REVL_I{width}_MIN <= ({tmp} := {operation}) "
             f"<= _REVL_I{width}_MAX else _revl_i{width}({tmp}))")
+
+
+def _annotated_bin(node: dict, render) -> str | None:
+    """Render an arithmetic `bin` node from its `operands` annotation, or
+    `None` when the annotation asks for nothing special.
+
+    THE one place the `operands` annotation is turned into python. This module
+    has two expression renderers (the module-level `_expr` for a `fn` body and
+    `_ComponentEmitter._expr` for a component body), and the component one used
+    to ignore the annotation and spell every operator with the raw host form
+    (issue #2198). That is the whole reason a `provide` method disagreed with a
+    module `fn` on the same source: python's `%` FLOORS (`-7 % 2` is `1`) where
+    docs/arithmetic.md specifies the truncated `-1` every other tier computes,
+    and its `/` on two Ints had to be true division through `_revl_div` rather
+    than `/`. `render` is the caller's own child renderer, so recursion, error
+    prefixes and the component renderer's `where` label all stay with the
+    caller; the annotation is the only thing shared.
+
+    `+ - *` on `Int`/`Int32` go through `_bounded`: python is arbitrary
+    precision, so it is the tier that has to *impose* the bound rather than
+    detect it; without it a program that overflows on every other tier quietly
+    succeeds here, the reference tier disagreeing with all five others.
+    """
+    op = node.get("op")
+    operands = node.get("operands")
+    if op in ("+", "-", "*") and operands in ("Int", "Int32"):
+        # The bound is imposed INLINE (roadmap item 436 F5): the in-range
+        # answer, which is every answer a correct program produces, no longer
+        # costs a Python frame. `_revl_i64` stays as the trapping tail, so the
+        # raise and its message are still written once.
+        width = 64 if operands == "Int" else 32
+        return _bounded(f"{render(node['left'])} {op} "
+                        f"{render(node['right'])}", width)
+    if op == "/":
+        # true division, IEEE at zero (docs/arithmetic.md), regardless of the
+        # operand type, since `Int / Int` is Float.
+        return f"_revl_div({render(node['left'])}, {render(node['right'])})"
+    if op == "%" and operands == "Float":
+        # The Float remainder is IEEE `fmod`, and IEEE gives it a VALUE at a
+        # zero divisor: `x % 0.0` is NaN, not a fault. python's own `%` raises
+        # `ZeroDivisionError` there, exactly as its `/` does, so it is the one
+        # tier that has to build the IEEE answer (issue #721). `_revl_rem` is
+        # the Int form and must keep faulting at zero.
+        return f"_revl_frem({render(node['left'])}, {render(node['right'])})"
+    if op == "%" and operands == "Int":
+        # `%` is the TRUNCATED remainder (it takes the sign of the dividend,
+        # as in TypeScript, §0), and pairs with `div_trunc` so that
+        # (a.div_trunc(b)) * b + a % b == a. Python's `%` floors and takes the
+        # sign of the *divisor*, so it is the one tier that has to build this.
+        # The Euclidean remainder is `mod`, a different operation with a
+        # different name (docs/arithmetic.md). The same form serves Int and
+        # Float (it is `math.fmod` written out), so an emitted module needs no
+        # import for it. A preamble helper, not a lambda built and applied at
+        # every evaluation (item 436 F6).
+        return f"_revl_rem({render(node['left'])}, {render(node['right'])})"
+    return None
+
+
+def _annotated_un(node: dict, render) -> str | None:
+    """Render a unary-minus node from its `operands` annotation, or `None`.
+
+    The same split, the same drift (issue #2198): the component renderer
+    spelled `-x` as the host's `-x`, so negating `Int.MIN` inside a `provide`
+    method quietly came back as 2^63 where rust, java and go trap, and the
+    module renderer already had the fix. Negation is `0 - x`, so it goes
+    through the bound like any other subtraction (docs/arithmetic.md).
+    Both callers have already matched `-`.
+    """
+    operands = node.get("operands")
+    if operands in ("Int", "Int32"):
+        return f"_revl_i{'64' if operands == 'Int' else '32'}(-{render(node['operand'])})"
+    return None
 
 
 # The field-read temp; see `_field_read`. Same single-name argument as
@@ -1898,6 +2003,15 @@ class _ComponentEmitter:
                 if binder == f"({reader})":
                     return f"({rhs} if {reader} is None else {reader})"
                 return f"({reader} if {binder} is not None else {rhs})"
+            # A component body is a second renderer on this tier, so an
+            # annotated `+ - * / %` here has to reach the SAME rendering a
+            # module `fn` gets: `_annotated_bin` is that one rendering
+            # (issue #2198). Spelling these with the host operator is what
+            # made `config.a % config.b` come back as python's floored `1`
+            # in a `provide` method and the truncated `-1` in a `fn`.
+            annotated = _annotated_bin(expr, lambda n: self._expr(n, where))
+            if annotated is not None:
+                return annotated
             op = _PY_BIN_OPS.get(expr.get("op"))
             if op is None:
                 raise EmitError(f"{where}: unsupported binary operator {expr.get('op')!r}")
@@ -1906,6 +2020,9 @@ class _ComponentEmitter:
             if expr.get("op") == "!":
                 return f"(not {self._expr(expr.get('operand'), where)})"
             if expr.get("op") == "-":
+                annotated = _annotated_un(expr, lambda n: self._expr(n, where))
+                if annotated is not None:
+                    return annotated
                 return f"(-{self._expr(expr.get('operand'), where)})"
             raise EmitError(f"{where}: unsupported unary operator {expr.get('op')!r}")
         if kind == "if":
@@ -2032,13 +2149,13 @@ class _ComponentEmitter:
         elif kind == "expr":
             out.add(indent, self._expr(step.get("expr"), where))
         elif kind == "if":
-            out.add(indent, f"if {self._expr(step.get('cond'), where)}:")
-            for nested in step.get("then") or []:
+            def arm(nested: dict) -> None:
                 self._setup_step(out, indent + 1, nested, where)
+            out.add(indent, f"if {self._expr(step.get('cond'), where)}:")
+            _emit_block(out, indent + 1, step.get("then"), arm)
             if step.get("else"):
                 out.add(indent, "else:")
-                for nested in step.get("else") or []:
-                    self._setup_step(out, indent + 1, nested, where)
+                _emit_block(out, indent + 1, step.get("else"), arm)
         elif kind == "assert":
             out.add(indent, f"assert {self._expr(step.get('expr'), where)}")
         else:
@@ -2099,13 +2216,13 @@ class _ComponentEmitter:
         elif kind == "fail":
             out.add(indent, f"raise RuntimeError({self._expr(step.get('message'), where)})")
         elif kind == "if":
-            out.add(indent, f"if {self._expr(step.get('cond'), where)}:")
-            for nested in step.get("then") or []:
+            def arm(nested: dict) -> None:
                 self._body_step(out, indent + 1, nested, where)
+            out.add(indent, f"if {self._expr(step.get('cond'), where)}:")
+            _emit_block(out, indent + 1, step.get("then"), arm)
             if step.get("else"):
                 out.add(indent, "else:")
-                for nested in step.get("else") or []:
-                    self._body_step(out, indent + 1, nested, where)
+                _emit_block(out, indent + 1, step.get("else"), arm)
         elif kind == "emit":
             deferred = self._deferred_extern(step.get("expr"))
             if deferred is not None:
@@ -2870,12 +2987,12 @@ class _ComponentEmitter:
 
         if not step.get("async"):
             out.add(indent, f"def {fn}():")
-            if not emissions:  # pragma: no cover — the parser rejects an empty body
-                out.add(indent + 1, "pass")
+            mark = out.mark()
             for emission in emissions:
                 out.add(indent + 1,
                         self._emission_fire(emission.get("expr"), where))
                 self._timer_compensation(out, indent + 1, emission, where)
+            out.close_block(mark, indent + 1)  # the parser rejects an empty body
             out.add(indent, f"{handle} = {_runtime_ref(schedule)}({interval}, {fn})")
             out.add(indent, f"yield lambda: {handle}.cancel()")
             return
@@ -2888,8 +3005,7 @@ class _ComponentEmitter:
         inflight = f"{fn}_inflight"
         out.add(indent, f"{inflight} = set()")
         out.add(indent, f"def {fn}():")
-        if not emissions:  # pragma: no cover — the parser rejects an empty body
-            out.add(indent + 1, "pass")
+        mark = out.mark()
         for emission in emissions:
             expr = emission.get("expr")
             rendered = self._emission_fire(expr, where)
@@ -2903,6 +3019,7 @@ class _ComponentEmitter:
                 # a sync emission in a mixed body still runs inline
                 out.add(indent + 1, rendered)
                 self._timer_compensation(out, indent + 1, emission, where)
+        out.close_block(mark, indent + 1)  # the parser rejects an empty body
         out.add(indent, f"{handle} = {_runtime_ref(schedule)}({interval}, {fn})")
         cancel = f"{fn}_cancel"
         out.add(indent, f"def {cancel}():")
@@ -2989,6 +3106,7 @@ class _ComponentEmitter:
             indent,
             f"{'async ' if method_is_async else ''}def {name}(self{''.join(', ' + p for p in params)}):",
         )
+        mark = out.mark()
         # item 421 F6: a parameter the service declared `Secret[T]` is a declared
         # DISCLOSURE RECEIVER. The qualifier itself is stripped in `taint.py`, so
         # `params[i]["secret"]` is the only surviving record that this position is
@@ -3027,8 +3145,7 @@ class _ComponentEmitter:
                         f"{_runtime_ref('mark_secret')}({', '.join(secret_params)})")
         body = method.get("body") or []
         if not body:
-            if not secret_params:
-                out.add(indent + 1, "pass")
+            out.close_block(mark, indent + 1)
             return
         # item 121 Slice 2: the model-hop value-flow analysis over THIS body,
         # before a line of it renders — `_expr` reads the marks it leaves.
@@ -3048,6 +3165,7 @@ class _ComponentEmitter:
             out.add(indent + 1, f"with _revl_frame.{scope}("
                                 f"{provide_name + '.' + name!r}):")
             body_indent = indent + 2
+            mark = out.mark()
         self._route_value_emissions = True
         try:
             for step in body:
@@ -3055,6 +3173,7 @@ class _ComponentEmitter:
         finally:
             self._in_async = prev_async
             self._route_value_emissions = False
+        out.close_block(mark, body_indent)
 
     def _method_step(
         self,
@@ -3227,12 +3346,10 @@ class _ComponentEmitter:
         kind = step.get("step")
 
         def block(steps: list) -> None:
-            if not steps:
-                out.add(indent + 1, "pass")
-                return
-            for s in steps:
+            def render(s: dict) -> None:
                 self._method_step(out, indent + 1, provide_name, method_name,
-                                   s, where, method_is_async)
+                                  s, where, method_is_async)
+            _emit_block(out, indent + 1, steps, render)
 
         if kind == "if":
             out.add(indent, f"if {self._expr(step.get('cond'), where)}:")
@@ -3964,46 +4081,13 @@ def _expr(node: dict) -> str:
             # expression evaluates FIRST, so the `then` branch reads a value
             # the operand produced exactly once
             return f"({reader} if {binder} is not None else {rhs})"
-        if node["op"] in ("+", "-", "*") and node.get("operands") == "Int":
-            # Int is bounded 64-bit and overflow TRAPS (docs/arithmetic.md).
-            # python is arbitrary precision, so it is the tier that has to
-            # *impose* the bound rather than detect it — without this, a
-            # program that overflows on every other tier quietly succeeds here,
-            # which is the reference tier disagreeing with all five others.
-            #
-            # The bound is imposed INLINE (roadmap item 436 F5): the in-range
-            # answer, which is every answer a correct program produces, no
-            # longer costs a Python frame. `_revl_i64` stays as the trapping
-            # tail, so the raise and its message are still written once.
-            return _bounded(f"{_expr(node['left'])} {node['op']} "
-                            f"{_expr(node['right'])}", 64)
-        if node["op"] in ("+", "-", "*") and node.get("operands") == "Int32":
-            # Int32 traps at the 32-bit edge, the same imposition at half the
-            # width (docs/arithmetic.md).
-            return _bounded(f"{_expr(node['left'])} {node['op']} "
-                            f"{_expr(node['right'])}", 32)
-        if node["op"] == "/":
-            # true division, IEEE at zero (docs/arithmetic.md)
-            return f"_revl_div({_expr(node['left'])}, {_expr(node['right'])})"
-        if node["op"] == "%" and node.get("operands") == "Float":
-            # The Float remainder is IEEE `fmod`, and IEEE gives it a VALUE at
-            # a zero divisor — `x % 0.0` is NaN, not a fault. python's own `%`
-            # raises `ZeroDivisionError` there, exactly as its `/` does, so it
-            # is the one tier that has to build the IEEE answer (issue #721).
-            # `_revl_rem` below is the Int form and must keep faulting at zero.
-            return f"_revl_frem({_expr(node['left'])}, {_expr(node['right'])})"
-        if node["op"] == "%" and node.get("operands") == "Int":
-            # `%` is the TRUNCATED remainder — it takes the sign of the
-            # dividend, as in TypeScript (§0) — and pairs with `div_trunc` so
-            # that (a.div_trunc(b)) * b + a % b == a. Python's `%` floors and
-            # takes the sign of the *divisor*, so it is the one tier that has
-            # to build this. The Euclidean remainder is `mod`, which is a
-            # different operation with a different name (docs/arithmetic.md).
-            # The same form serves Int and Float (it is `math.fmod` written
-            # out), so an emitted module needs no import for it.
-            # A preamble helper, not a lambda built and applied at every
-            # evaluation (item 436 F6).
-            return f"_revl_rem({_expr(node['left'])}, {_expr(node['right'])})"
+        # Every annotated arithmetic node is rendered by the ONE function the
+        # component renderer calls too (`_annotated_bin`), so a `fn` body and a
+        # `provide`-method body cannot disagree about `+ - * / %` again
+        # (issue #2198).
+        annotated = _annotated_bin(node, _expr)
+        if annotated is not None:
+            return annotated
         if node["op"] in ("&", "|", "^"):
             # Int32 bitwise AND/OR/XOR (item 366). These are bit patterns, not
             # arithmetic, so they never trap. python's ints are signed and, for
@@ -4035,15 +4119,15 @@ def _expr(node: dict) -> str:
             # in i32 range for any in-range `x`, so no re-wrap is needed.
             return f"(~{_expr(node['operand'])})"
         if node["op"] == "-":
-            if node.get("operands") == "Int":
-                # Negation is `0 - x`, and `0 - Int.MIN` overflows: it goes
-                # through the bound like any other subtraction (docs/
-                # arithmetic.md). Without this, `-Int.MIN` — which traps on
-                # rust and wasm — quietly came back as 2^63 here, out of the
-                # range python itself imposes on every other operation.
-                return f"_revl_i64(-{_expr(node['operand'])})"
-            if node.get("operands") == "Int32":
-                return f"_revl_i32(-{_expr(node['operand'])})"
+            # Negation is `0 - x`, and `0 - Int.MIN` overflows: it goes through
+            # the bound like any other subtraction (docs/arithmetic.md).
+            # Without this, `-Int.MIN`, which traps on rust and wasm,
+            # quietly came back as 2^63 here, out of the range python itself
+            # imposes on every other operation. Shared with the component
+            # renderer, which had the same gap (issue #2198).
+            annotated = _annotated_un(node, _expr)
+            if annotated is not None:
+                return annotated
             return f"(-{_expr(node['operand'])})"
         raise EmitError(f"unsupported unary operator {node['op']!r}")
     if kind == "call":
@@ -4339,6 +4423,11 @@ def _py_inplace_stmts(name: str, value: dict) -> list[str]:
     return [f"_revl_key = {key}", f"{recv}[_revl_key] = {_expr(val_node)}"]
 
 
+def _fn_block(steps, out: "_Lines", indent: int) -> None:
+    """A fn-grammar block body (fn, test, if/else, while, for) at `indent`."""
+    _emit_block(out, indent, steps, lambda s: _fn_stmt(s, out, indent))
+
+
 def _fn_stmt(node: dict, out: "_Lines", indent: int) -> None:
     step = node["step"]
     if step in ("let", "assign"):
@@ -4365,28 +4454,18 @@ def _fn_stmt(node: dict, out: "_Lines", indent: int) -> None:
             out.add(indent, f"return {_expr(node['expr'])}")
     elif step == "if":
         out.add(indent, f"if {_expr(node['cond'])}:")
-        for s in node["then"]:
-            _fn_stmt(s, out, indent + 1)
+        _fn_block(node["then"], out, indent + 1)
         if node["else"]:
             out.add(indent, "else:")
-            for s in node["else"]:
-                _fn_stmt(s, out, indent + 1)
+            _fn_block(node["else"], out, indent + 1)
     elif step == "while":
         _guard_frame_neutral_loop(node["body"])
         out.add(indent, f"while {_expr(node['cond'])}:")
-        if not node["body"]:
-            out.add(indent + 1, "pass")
-        else:
-            for s in node["body"]:
-                _fn_stmt(s, out, indent + 1)
+        _fn_block(node["body"], out, indent + 1)
     elif step == "for":
         _guard_frame_neutral_loop(node["body"])
         out.add(indent, f"for {_mangle(node['bind'])} in {_expr(node['iterable'])}:")
-        if not node["body"]:
-            out.add(indent + 1, "pass")
-        else:
-            for s in node["body"]:
-                _fn_stmt(s, out, indent + 1)
+        _fn_block(node["body"], out, indent + 1)
     elif step == "break":
         out.add(indent, "break")
     elif step == "continue":
@@ -4494,10 +4573,7 @@ def _emit_functions(functions: list) -> "_Lines":
         if memoized:
             name = f"_revl_uncached_{name}"
         out.add(0, f"{'async def' if is_async else 'def'} {name}({params}):")
-        if not fn.get("body"):
-            out.add(1, "pass")
-        for stmt in fn.get("body") or []:
-            _fn_stmt(stmt, out, 1)
+        _fn_block(fn.get("body"), out, 1)
         out.add(0)
         if memoized:
             out.extend(_emit_memo_wrapper(
@@ -4702,6 +4778,7 @@ def _emit_externs(externs: list, crossings: dict | None = None,
         # A non-async extern stays a blocking `def`, unchanged.
         kw = "async def" if ext.get("async") else "def"
         out.add(0, f"{kw} {name}({params}):")
+        mark = out.mark()
         # item 256 Slice 1: a bound secret is injected as the FIRST body local of
         # every emission extern whose declared capability it is bound to, and
         # NOWHERE else (a component/service method body has no `_revl_secret` call
@@ -4736,8 +4813,9 @@ def _emit_externs(externs: list, crossings: dict | None = None,
         if body:
             for line in body.splitlines() or [""]:
                 out.add(1, line)
-        elif not ext.get("config") and not ext.get("secrets"):
-            out.add(1, "pass")
+        # an injected secret or config local is a statement in its own right;
+        # a body of only comments is not (issue #2284)
+        out.close_block(mark, 1)
         out.add(0)
     return out
 
@@ -4756,10 +4834,7 @@ def _emit_tests(tests: list) -> "_Lines":
             out.add(0)
             continue
         out.add(0, f"def {fn_name}():")
-        if not test.get("body"):
-            out.add(1, "pass")
-        for stmt in test.get("body") or []:
-            _fn_stmt(stmt, out, 1)
+        _fn_block(test.get("body"), out, 1)
         out.add(0)
         out.add(0, f"REVL_TESTS.append(({test['name']!r}, {fn_name}))")
         out.add(0)
@@ -4982,11 +5057,8 @@ def _emit_lifecycle_test(test: dict, fn_name: str) -> "_Lines":
     out.add(2, "_revl_set_trace(events.append)")
     out.add(2, "try:")
     out.add(3, "baseline = _revl_residue(root)")
-    body = test.get("body") or []
-    if not body:
-        out.add(3, "pass")
-    for step in body:
-        _lifecycle_step(out, 3, step, where)
+    _emit_block(out, 3, test.get("body"),
+                lambda step: _lifecycle_step(out, 3, step, where))
     out.add(2, "finally:")
     out.add(3, "_revl_set_trace(None)")
     if uses_abort:

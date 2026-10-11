@@ -27,7 +27,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -123,6 +125,58 @@ def _fault_note(ir: dict, tier: str) -> str:
               f"(docs/prop-test.md)")
         note += f"; {len(props)} prop test(s) skipped (py tier only)"
     return note
+
+
+def _passed(count: int) -> str:
+    """The test count every tier's verdict leads with, in one shape (issue
+    #2286): ``N test(s) passed``, the wording the py tier always printed."""
+    return f"{count} test(s) passed"
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_VITEST_TESTS = re.compile(r"^\s*Tests\s+(.*)$", re.MULTILINE)
+_VITEST_PASSED = re.compile(r"(\d+) passed")
+_CARGO_RESULT = re.compile(r"^test result: .*?(\d+) passed;", re.MULTILINE)
+_GO_PASS = re.compile(r"^--- PASS: ", re.MULTILINE)
+
+
+def _vitest_passed(output: str) -> int | None:
+    """Tests vitest reports passing in its ``Tests  N passed (M)`` summary, or
+    None when the summary line is absent. Counted from what ran, never from the
+    source's declared tests."""
+    lines = _VITEST_TESTS.findall(_ANSI.sub("", output))
+    if not lines:
+        return None
+    # the LAST `Tests` line: the summary prints after every test's own stdout
+    passed = _VITEST_PASSED.search(lines[-1])
+    # a summary of only skipped/todo tests has no `passed` part: nothing passed
+    return int(passed.group(1)) if passed else 0
+
+
+def _cargo_passed(output: str) -> int | None:
+    """The ``test result: ok. N passed`` of the lib harness in one ``cargo test``
+    run, or None when there is no result line. The first result line is the
+    lib's unit tests; later ones are doc-tests, which are rustdoc's own units
+    and not revl tests."""
+    counts = _CARGO_RESULT.findall(output)
+    return int(counts[0]) if counts else None
+
+
+def _count_disagreement(tier: str, ran: int, ir: dict) -> str | None:
+    """A failure message when the tool ran a different number of tests than the
+    document has, else None. The collected units are `ir["tests"]` (plain and
+    lifecycle); fault, round-trip and prop units are py-only and not in it."""
+    collected = len(ir.get("tests") or [])
+    if ran == collected:
+        return None
+    return (f"the {tier} tier ran {ran} test(s) but the document has {collected}; "
+            f"a verdict that disagrees with the collected tests is not a pass")
+
+
+def _go_passed(output: str) -> int:
+    """Top-level tests ``go test -v`` reports as ``--- PASS``. A run with no
+    such line ran no test, which is a real 0, so there is no unreadable case."""
+    return len(_GO_PASS.findall(output))
 
 
 class Absent(str):
@@ -292,7 +346,7 @@ def run_py(ir: dict, verbose: bool = False, report: str = None) -> tuple[str, st
     if not entries and not fault_entries and not roundtrip_entries and not prop_entries:
         if report is not None:
             print(_render_report([], report))
-        return ("pass", "no tests emitted by the backend")
+        return ("pass", _passed(0) + "; no tests emitted by the backend")
 
     failures = 0
     results = []  # per-test {"name", "status", "duration_ms"} for --report
@@ -320,10 +374,11 @@ def run_py(ir: dict, verbose: bool = False, report: str = None) -> tuple[str, st
             else:
                 print(f"FAIL {name}: {detail}{suffix}")
 
-    summary = []
-    if entries:
-        summary.append(f"{len(entries) - failures} of {len(entries)} test(s) passed"
-                       if failures else f"{len(entries)} test(s) passed")
+    # The verdict leads with the TOTAL of every unit that ran (plain, fault,
+    # round-trip, prop), the same rule as the wasm fold (issue #2286); the
+    # per-kind segments follow. `summary[0]` is filled in at the end.
+    ran_total = len(entries)
+    summary = [""]
     # `--report` owns stdout for the test blocks; the fault/prop/round-trip
     # runners' banners would corrupt the machine-readable payload, so silence
     # them (their verdicts still feed the exit code unchanged).
@@ -346,6 +401,7 @@ def run_py(ir: dict, verbose: bool = False, report: str = None) -> tuple[str, st
             summary.append(reason)
         else:
             failures += fault_failures
+            ran_total += fault_total
             summary.append(
                 f"{fault_total - fault_failures} of {fault_total} fault test(s) passed")
 
@@ -368,6 +424,7 @@ def run_py(ir: dict, verbose: bool = False, report: str = None) -> tuple[str, st
         else:
             failures += rt_failures
             rt_total = rt_dossier["counts"]["effects"]
+            ran_total += rt_total
             summary.append(
                 f"{rt_total - rt_failures} of {rt_total} verified-effect round-trip(s) held")
 
@@ -377,13 +434,16 @@ def run_py(ir: dict, verbose: bool = False, report: str = None) -> tuple[str, st
         prop_failures, prop_dossier = run_prop_units(ir, prop_entries, out=silent)
         failures += prop_failures
         prop_total = prop_dossier["counts"]["props"]
+        ran_total += prop_total
         summary.append(
             f"{prop_total - prop_failures} of {prop_total} prop test(s) held")
 
     if report is not None:
         print(_render_report(results, report))
+    summary[0] = (f"{ran_total - failures} of {ran_total} test(s) passed"
+                  if failures else _passed(ran_total))
     if failures:
-        return ("fail", "; ".join(summary) or f"{failures} test(s) failed")
+        return ("fail", "; ".join(summary))
     return ("pass", "; ".join(summary))
 
 
@@ -441,6 +501,110 @@ def _node_version() -> "tuple[int, int] | None":
     return (int(match.group(1)), int(match.group(2))) if match else None
 
 
+# --- the ts tier's wall-clock bound (issue #2229) ---------------------------
+#
+# Each generated ts test module is executed by ONE `vitest run <file>`, and on
+# the green path re-run under plain node. Both are wall-clock deadlines on a
+# process whose runtime is a property of the HOST, not of the code under test:
+# on an idle machine they finish in seconds, and on a loaded one a test that is
+# still working is killed and reported as a failure. Measured on 2026-10-10 at
+# a 15-minute load average around 12, two compositions reported
+# `subprocess.TimeoutExpired ... timed out after 180 seconds`: timeouts, not
+# assertion failures, and both passed on a quiet host.
+#
+# `REVL_TS_TIMEOUT` (seconds) raises the bound. The vitest bound INSIDE the run
+# is derived from the SAME variable in backends/typescript/vitest.config.ts, at
+# the ratio the two literals already had (60/180), so an unset variable is
+# byte-identical to the old behaviour and an exported one moves both. Keeping
+# the inner bound strictly below the outer is deliberate: vitest then reports
+# first, with the named test that ran out of time, instead of the outer bound's
+# blunt kill of the whole run.
+_TS_TIMEOUT_DEFAULT = 180
+# One day. Beyond ~6.4M s the inner vitest value overflows Node's 2^31-1 ms
+# timer limit (clamped to 1 ms) and a huge outer value overflows communicate().
+_TS_TIMEOUT_MAX = 86400
+
+
+class _TsTimeoutInvalid(ValueError):
+    """``REVL_TS_TIMEOUT`` is not a positive integer (reported, not raised raw)."""
+
+
+def _ts_timeout_seconds() -> int:
+    """The ts tier's wall-clock bound in seconds (``REVL_TS_TIMEOUT``).
+
+    Read at call time, not at import: the same `os.environ` this returns from is
+    the one handed to the vitest child below, so the outer bound and the inner
+    one `vitest.config.ts` derives from it always come from one snapshot.
+    """
+    raw = os.environ.get("REVL_TS_TIMEOUT")
+    if raw is None:
+        return _TS_TIMEOUT_DEFAULT
+    if re.fullmatch(r"[0-9]+", raw.strip()) and 0 < int(raw) <= _TS_TIMEOUT_MAX:
+        return int(raw)
+    raise _TsTimeoutInvalid(
+        f"REVL_TS_TIMEOUT must be a positive integer number of seconds, "
+        f"at most {_TS_TIMEOUT_MAX}, got {raw!r}")
+
+
+def _composition_name(ir: dict) -> str:
+    """Name the composition in a tier message (issue #2229).
+
+    A verdict that says "the composition ran out of time" is only actionable if
+    it also says WHICH composition: the caller's own log is the only other place
+    the name appears, and the point of the message is that the caller does not
+    have to go and correlate it. The name is the distinct source files the
+    manifest was compiled from: what the caller named on the command line.
+    """
+    files = sorted({entry.get("file") for entry
+                    in ((ir.get("manifest") or {}).get("components") or [])
+                    if entry.get("file")})
+    return ", ".join(files) if files else "the composition"
+
+
+def _ts_foreground(argv: list, cwd: Path, timeout: int,
+                   env: "dict | None" = None) -> subprocess.CompletedProcess:
+    """`subprocess.run(..., capture_output=True)` that kills the process GROUP.
+
+    A killed `vitest run` does not take its children with it: `subprocess.run`
+    kills only the process it spawned, and a vitest fork worker survived its
+    parent at PPID 1, 37% CPU, for ~7 minutes, with the generated workspace
+    already deleted (issue #2229). So the child is put in its OWN session and
+    the timeout path kills the whole group, the idiom
+    `tools/hooks/pre-commit` already uses for a wedged suite.
+    `start_new_session=True` makes the child the leader of that group, so its
+    pid IS the group id, and no `getpgid` lookup is needed.
+    """
+    process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True,
+                               start_new_session=True, env=env)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except BaseException:
+        # Any exit from the wait (the bound, KeyboardInterrupt, ...) must take
+        # the group down: with its own session a terminal Ctrl-C no longer
+        # reaches the child.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            process.kill()
+        process.communicate()
+        raise
+    return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+
+
+def _ts_timeout_message(ir: dict, bound: int) -> str:
+    """The named failure a ts run reports when the bound fires (issue #2229).
+
+    It has to read as "this ran out of time", not as an unnamed crash: the
+    caller must be able to tell a bound-versus-host from a broken test, and be
+    told which knob moves the bound.
+    """
+    return (f"{_composition_name(ir)} ran out of time under vitest: nothing "
+            f"failed, the run was still working when the {bound}s bound fired. "
+            f"On a loaded host raise it with REVL_TS_TIMEOUT=<seconds> (the "
+            f"vitest bound inside the run is a third of it) and rerun")
+
+
 def _ts_runtime_contract(path: Path) -> tuple[str, str]:
     """Re-run the module vitest just passed under PLAIN NODE.
 
@@ -460,10 +624,9 @@ def _ts_runtime_contract(path: Path) -> tuple[str, str]:
                         f"the tier's (docs/ts-runtime-contract.md)")
     runner = BACKENDS / "typescript" / "scripts" / "node-tier-runner.mjs"
     try:
-        result = subprocess.run(
-            ["node", str(runner), str(path)],
-            cwd=BACKENDS / "typescript",
-            capture_output=True, text=True, timeout=180,
+        result = _ts_foreground(
+            ["node", str(runner), str(path)], BACKENDS / "typescript",
+            _ts_timeout_seconds(),
         )
     except subprocess.TimeoutExpired:
         return ("fail", "the emitted module did not terminate under plain node "
@@ -503,6 +666,10 @@ def run_ts(ir: dict) -> tuple[str, str]:
         return ("skip", Absent(
             "vitest not installed (`cd backends/typescript && npm ci`), or no "
             "node on PATH"))
+    try:
+        _ts_timeout_seconds()
+    except _TsTimeoutInvalid as error:
+        return ("fail", str(error))
     note = _fault_note(ir, "ts")
     try:
         source = _emitter("typescript").emit(_without_fault_tests(ir),
@@ -541,17 +708,29 @@ def run_ts(ir: dict) -> tuple[str, str]:
             f"{json.dumps(str(stdlib_root().parent))}\n\n"
         )
         path.write_text(stdlib_ref_root_stmt + source, encoding="utf-8")
-        result = subprocess.run(
-            [*vitest, "run", str(path)],
-            cwd=BACKENDS / "typescript",
-            capture_output=True, text=True, timeout=180,
-            env={**os.environ, "CI": "1"},
-        )
+        bound = _ts_timeout_seconds()
+        try:
+            result = _ts_foreground(
+                [*vitest, "run", str(path)], BACKENDS / "typescript", bound,
+                env={**os.environ, "CI": "1"},
+            )
+        except subprocess.TimeoutExpired:
+            # No handler here before #2229, so the caller saw the raw
+            # `subprocess.TimeoutExpired` traceback: an unnamed crash rather
+            # than "this composition ran out of the host's time".
+            return ("fail", _ts_timeout_message(ir, bound))
         output = (result.stdout + result.stderr).strip()
         if output:
             print(output)
         if result.returncode != 0:
             return ("fail", f"vitest exited {result.returncode}")
+        ran = _vitest_passed(output)
+        if ran is None:
+            return ("fail", "vitest passed but printed no `Tests  N passed` "
+                            "summary, so the tier cannot state how many tests ran")
+        mismatch = _count_disagreement("ts", ran, ir)
+        if mismatch:
+            return ("fail", mismatch)
         # Green under vitest says nothing about the runtime the tier ships on.
         # The contract check runs on the SAME file, and only on the green path
         # (a failing assertion is vitest's to report, legibly).
@@ -562,7 +741,7 @@ def run_ts(ir: dict) -> tuple[str, str]:
         return ("fail", detail)
     if contract == "skip":
         return ("skip", detail)
-    return ("pass", "vitest: all emitted tests passed" + detail + note)
+    return ("pass", f"vitest: {_passed(ran)}" + detail + note)
 
 
 _CRATES_IO: bool | None = None
@@ -617,7 +796,14 @@ def run_rust(ir: dict) -> tuple[str, str]:
         print(output)
     if result.returncode != 0:
         return ("fail", f"cargo test exited {result.returncode}")
-    return ("pass", "cargo test: all emitted tests passed" + note)
+    ran = _cargo_passed(output)
+    if ran is None:
+        return ("fail", "cargo test passed but printed no `test result:` line, "
+                        "so the tier cannot state how many tests ran")
+    mismatch = _count_disagreement("rust", ran, ir)
+    if mismatch:
+        return ("fail", mismatch)
+    return ("pass", f"cargo test: {_passed(ran)}" + note)
 
 
 #: `run_go`'s stc-go resolve probe: ``""`` = not probed yet, ``None`` =
@@ -698,10 +884,9 @@ def run_go(ir: dict) -> tuple[str, str]:
             reason = _stc_go_reason()
             if reason is not None:
                 # a resolution failure stays a FAILURE rather than the rust
-                # tier's `Absent` skip: `go` is exempt from REVL_REQUIRE_TIERS
-                # (tests/test_env_gated_skips_run_somewhere.py), so no job would
-                # catch the skip, and a pinned module that cannot be obtained is
-                # a provisioning break rather than an absent toolchain.
+                # tier's `Absent` skip, even where go is not required: a pinned
+                # module that cannot be obtained is a provisioning break rather
+                # than an absent toolchain.
                 return ("fail", f"stc-go could not be resolved: {reason}")
             # the module is in the cache now; an offline resolve is the gate
             env["GOPROXY"] = "off"
@@ -716,7 +901,7 @@ def run_go(ir: dict) -> tuple[str, str]:
         # emitter's output runs", not "it passes go vet's style rules";
         # `-vet=off` restores that contract without distorting revl's
         # semantics to satisfy a linter (architect decision, roadmap 314).
-        result = subprocess.run([go, "test", "-vet=off", "./..."], cwd=tmp,
+        result = subprocess.run([go, "test", "-vet=off", "-v", "./..."], cwd=tmp,
                                 capture_output=True, text=True, timeout=600,
                                 env=env)
         output = (result.stdout + result.stderr).strip()
@@ -724,7 +909,11 @@ def run_go(ir: dict) -> tuple[str, str]:
         print(output)
     if result.returncode != 0:
         return ("fail", f"go test exited {result.returncode}")
-    return ("pass", "go test: all emitted tests passed" + note)
+    ran = _go_passed(output)
+    mismatch = _count_disagreement("go", ran, ir)
+    if mismatch:
+        return ("fail", mismatch)
+    return ("pass", f"go test: {_passed(ran)}" + note)
 
 
 def _java_toolchain() -> tuple[str, str] | str:
@@ -868,8 +1057,12 @@ def run_java(ir: dict) -> tuple[str, str]:
         runner.write_text(
             "public class RunRevlTests {\n"
             "    public static void main(String[] args) {\n"
-            "        revl.Components.REVL_TESTS.forEach(Runnable::run);\n"
-            "        System.out.println(\"REVL_TESTS_OK\");\n"
+            "        int ran = 0;\n"
+            "        for (Runnable test : revl.Components.REVL_TESTS) {\n"
+            "            test.run();\n"
+            "            ran++;\n"
+            "        }\n"
+            "        System.out.println(\"REVL_TESTS_OK \" + ran);\n"
             "    }\n"
             "}\n",
             encoding="utf-8")
@@ -884,10 +1077,15 @@ def run_java(ir: dict) -> tuple[str, str]:
 
     if run.returncode != 0:
         return ("fail", run.stderr.strip() or f"JVM exited {run.returncode}")
-    if "REVL_TESTS_OK" not in run_output:
+    done = re.findall(r"REVL_TESTS_OK (\d+)", run_output)
+    if not done:
         return ("fail", "REVL_TESTS did not complete")
     lifecycle = _lifecycle_count(ir)
-    detail = "JVM: all REVL_TESTS ran"
+    ran = int(done[-1])
+    mismatch = _count_disagreement("java", ran, ir)
+    if mismatch:
+        return ("fail", mismatch)
+    detail = f"JVM: {_passed(ran)}"
     if lifecycle:
         detail += (f", including {lifecycle} lifecycle test(s) "
                    "(load -> call -> unload -> no-residue)")
@@ -925,7 +1123,7 @@ def _run_wasm_pure(ir: dict, wasmtime: str, note: str) -> tuple[str, str] | None
     except Exception as error:  # noqa: BLE001 — an emit refusal is a tier failure
         return ("fail", f"emitter refused: {error}")
     if not exports:
-        return ("pass", "no tests emitted by the backend" + note)
+        return ("pass", _passed(0) + "; no tests emitted by the backend" + note)
     source = modules.get("functions")
     if source is None:
         return ("fail", "emitter produced no functions module for the tests")
@@ -947,7 +1145,7 @@ def _run_wasm_pure(ir: dict, wasmtime: str, note: str) -> tuple[str, str] | None
 
     if failures:
         return ("fail", f"{failures} of {len(exports)} test(s) failed" + note)
-    return ("pass", f"wasmtime: {len(exports)} test(s) passed" + note)
+    return ("pass", f"wasmtime: {_passed(len(exports))}" + note)
 
 
 def _run_wasm_lifecycle(ir: dict, lifecycle: list) -> tuple[str, str]:
@@ -1047,8 +1245,26 @@ def _run_wasm_lifecycle(ir: dict, lifecycle: list) -> tuple[str, str]:
     if result.returncode != 0 or passed != ran:
         return ("fail", f"{ran - passed} of {ran} lifecycle test(s) failed on the "
                         f"live cordis-wasm runtime" + tail)
-    return ("pass", f"cordis-wasm: {ran} lifecycle test(s) ran (boot -> call -> "
-                    f"unload -> no-residue)" + tail)
+    return ("pass", f"{_passed(ran)}; cordis-wasm: {ran} lifecycle test(s) ran "
+                    f"(boot -> call -> unload -> no-residue)" + tail)
+
+
+_LEADING_COUNT = re.compile(r"^(?:wasmtime: )?(\d+) test\(s\) passed(?:; )?")
+
+
+def _wasm_pass_total(present: list) -> str | None:
+    """The folded message of a pure + lifecycle pass: it leads with the TOTAL of
+    both, so a mixed document reports the same number here as on java. None
+    when fewer than two portions passed with a count (nothing to total)."""
+    passes = [m for o, m in present if o == "pass" and _LEADING_COUNT.match(m)]
+    if len(passes) < 2:
+        return None
+    total = sum(int(_LEADING_COUNT.match(m).group(1)) for m in passes)
+    pure, lifecycle = passes[0], passes[1]
+    # the lifecycle message repeats its own count first; the total replaces it
+    rest = _LEADING_COUNT.sub("", lifecycle, count=1)
+    others = [m for o, m in present if m not in (pure, lifecycle) and m]
+    return "; ".join([_passed(total), pure, rest, *others])
 
 
 def _combine_wasm_verdicts(*verdicts: tuple[str, str] | None) -> tuple[str, str]:
@@ -1062,7 +1278,7 @@ def _combine_wasm_verdicts(*verdicts: tuple[str, str] | None) -> tuple[str, str]
     if any(o == "fail" for o, _ in present):
         return ("fail", messages)
     if any(o == "pass" for o, _ in present):
-        return ("pass", messages)
+        return ("pass", _wasm_pass_total(present) or messages)
     # The join above flattens every reason to a plain `str`, which would drop
     # the `Absent` marker and quietly exempt the wasm tier from
     # REVL_REQUIRE_TIERS. Carry it: if any portion skipped because the runtime
@@ -1096,7 +1312,7 @@ def run_wasm(ir: dict) -> tuple[str, str]:
         # No lifecycle tests: preserve the original single-verdict behaviour
         # (including the "no tests emitted" pass for a tests-free document).
         return pure_verdict if pure_verdict is not None else (
-            "pass", "no tests emitted by the backend" + note)
+            "pass", _passed(0) + "; no tests emitted by the backend" + note)
 
     lifecycle_verdict = _run_wasm_lifecycle(ir, lifecycle)
     return _combine_wasm_verdicts(pure_verdict, lifecycle_verdict)

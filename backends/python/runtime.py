@@ -4775,7 +4775,8 @@ def reissue_deferred(module: Any, wal_path: str, descriptors: list, *,
     list), or `stranded` (an E-Stop is in force, nothing fires)."""
     services = dict(services or {})
     settled = {r.get("seq") for r in _wal_records(wal_path)
-               if r.get("record") in ("flushed", "flush-residue")}
+               if r.get("record") in ("flushed", "flush-residue")
+               and type(r.get("seq")) is int}
     outcome: dict = {}
     queue: list = []
     for descriptor in sorted(descriptors, key=lambda d: d.get("seq") or 0):

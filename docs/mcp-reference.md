@@ -399,6 +399,20 @@ holes rather than describing only the candidate's own problem. Its `next` is
 without being re-sent. Checking a supplied candidate with no draft held is
 unchanged.
 
+**A check says where the held source stands against disk (issue #2241).** While
+a composition is loaded, `revl_check` carries the same
+`"disk": {"inSync": bool, "stale": [path]}` block as the change loop (issue
+#2032). A committed change that has not reached disk leaves `inSync` false, so a
+green check no longer reads as done over an unchanged file. On a success
+with `inSync` false, `revl_check {}` and `revl_check {session: true}` also carry
+a `note` naming `revl_export`; with `inSync` true they carry none. A
+`revl_check {files}` that names a file the session holds, whose held text differs
+from disk, compiles the disk text and carries one `note` saying so and that
+`revl_export` writes the held source. A check of an unrelated file or a `source`
+candidate carries `disk` and no export note. With nothing loaded there is no
+held source to compare, so a cold check is unchanged: no `disk` block and no
+such note.
+
 **A usage error is not a composition verdict.** `ok: false` means the
 composition has a problem. A call that names no candidate and holds none comes
 back with `category: "usage"`, a `fix` naming the missing argument and a `next`
@@ -916,7 +930,8 @@ verification commits nothing, and the running composition is unchanged.
 **A change lives in the session, not on disk** (issue #2032). The held source
 is the truth and disk an export, so a committed change leaves the two
 disagreeing until `revl_export` runs. The verbs of the change loop
-(`revl_change`, `revl_edit`, `revl_source`, `revl_export`) carry
+(`revl_change`, `revl_edit`, `revl_source`, `revl_export`) and `revl_check`
+(when a composition is loaded; see its section) carry
 `"disk": {"inSync": bool, "stale": [path]}`, where `stale` names every loaded
 file whose held text differs from the bytes on disk. When `inSync` is false on
 a success, the answer also carries a `note` naming `revl_export`. It is a
