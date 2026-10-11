@@ -521,3 +521,40 @@ def test_an_unknown_component_is_fatal_and_disposes_what_booted(tmp_path):
     labels = [ln.split("|")[1].strip() for ln in disposed]
     assert labels == ["Second", "Impl"], (labels, out)
     assert not any("NOT confirmed" in ln for ln in disposed), out
+
+
+_HANG_DOC = """
+service Vault { fn show(user: Str) -> Str }
+
+extern pure fn stall(what: Str) -> Str = @ts {
+  return new Promise(() => {})
+}
+
+component Impl provides vault: Vault {
+  let slot = effect stall("applied") undo stall("never")
+
+  provide vault {
+    fn show(user) { return "shown " + user }
+  }
+}
+"""
+
+
+@needs_node
+def test_a_dispose_that_never_settles_still_reports_and_exits_1(tmp_path):
+    """A dispose that holds no handle must not let the event loop drain: node
+    would exit 13 with its own unredacted warning. The 5 s budget keeps the
+    process alive, then the line says the dispose was not confirmed."""
+    module = _emitted(tmp_path, _HANG_DOC)
+    spec = tmp_path / "hang.json"
+    spec.write_text(json.dumps({
+        "name": "vault", "module": str(module), "components": ["Impl", "Ghost"],
+        "config": {}, "provides": ["vault"], "proxies": {}, "probe": [],
+        "once": True,
+    }), encoding="utf-8")
+    code, out, err = _run(spec)
+    assert code == 1, (code, out, err)
+    assert len([ln for ln in err.splitlines()
+                if "FATAL unknown component Ghost" in ln]) == 1, err
+    assert "NOT confirmed: timed out" in out, out
+    assert "unsettled" not in err and "Warning" not in err, err

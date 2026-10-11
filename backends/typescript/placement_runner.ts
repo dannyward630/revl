@@ -311,14 +311,11 @@ for (const cname of spec.components as string[]) {
         `[${name}] ${'swap'.padEnd(6)}| ${redactText(subject).padEnd(16)}| ${redactText(detail)}`.trimEnd() + '\n',
       )
     }
-    let timedOut = false
-    const budget = setTimeout(() => { timedOut = true }, 5000)
+    // Left ref'd on purpose: an unref'd timer lets the loop drain on a dispose
+    // that never settles, and node then exits 13 with its own unredacted
+    // warning. `process.exit(1)` below ends the process anyway.
     const timeout = new Promise<'timeout'>((resolve) => {
-      const poll = setInterval(() => {
-        if (timedOut) { clearInterval(poll); resolve('timeout') }
-      }, 25)
-      budget.unref()
-      poll.unref()
+      setTimeout(() => resolve('timeout'), 5000)
     })
     for (const [label, booted] of [...fibers].reverse()) {
       let confirmed = false
