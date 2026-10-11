@@ -64,13 +64,11 @@ def package_root() -> Path:
 
 def build_id() -> str:
     """What to report when there is no commit to report: the package's own
-    version. A revision a client can still compare, never a blank."""
-    try:
-        from importlib.metadata import version  # noqa: PLC0415 - optional
+    version, `revl-<revl._version.version()>`. A revision a client can still
+    compare, never a blank (`revl-unknown` when no version can be read)."""
+    from .._version import version  # noqa: PLC0415
 
-        return f"revl-{version('revl')}"
-    except Exception:  # noqa: BLE001 — a package with no metadata still answers
-        return "revl-unknown"
+    return f"revl-{version()}"
 
 
 def revision(root: Path | None = None) -> str:

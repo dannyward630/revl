@@ -73,10 +73,10 @@ GATE_API_VERSION = "1.0.0"
 
 def _language_version() -> str:
     """The revl language/package version the gate admits (`gate_version()`
-    .language): `revl.attest.compiler_version`, the one definition."""
-    from .attest import compiler_version  # noqa: PLC0415
+    .language): `revl._version.version()`, the one definition."""
+    from ._version import version  # noqa: PLC0415
 
-    return compiler_version()
+    return version()
 
 
 # ---------------------------------------------------------------------------
