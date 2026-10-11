@@ -2229,6 +2229,7 @@ jobs:
           tests/test_cluster_c_emitter_hijack_553.py
           tests/test_crypto_stdlib.py
           tests/test_go_component_checked_arith_2259.py
+          tests/test_go_component_int32_trap_2262.py
           tests/test_insert_if_absent.py
           tests/test_json_cross_tier_bytes.py
           tests/test_model_evidence_517.py

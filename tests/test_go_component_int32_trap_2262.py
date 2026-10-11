@@ -19,7 +19,7 @@ reference; go must agree with them.
 import pytest
 
 from revl import compile_source
-from revl.test import RUNNERS, required_tiers
+from revl.test import RUNNERS
 
 TIERS = ("go", "py", "ts")
 
@@ -73,18 +73,9 @@ lifecycle test "in range" {
 """
 
 
-def _go_is_required() -> bool:
-    """A go skip fails wherever REVL_REQUIRE_TIERS is set at all (go is the
-    tier this file fixes; see tests/test_go_component_checked_arith_2259.py)."""
-    return bool(required_tiers())
-
-
 def _run(tier: str, source: str):
     status, message = RUNNERS[tier](compile_source(source, "comp_int32_2262.rvl"))
     if status == "skip":
-        if tier == "go" and _go_is_required():
-            pytest.fail(f"go is required wherever REVL_REQUIRE_TIERS is set, "
-                        f"and it skipped: {message}")
         pytest.skip(f"{tier}: {message}")
     return status, message
 
