@@ -35,7 +35,8 @@ from revl.__main__ import main  # noqa: E402
 from revl.grammar_summary import PROMPT_GRAMMAR, PROSE_GRAMMAR  # noqa: E402
 
 #: Program list field -> the keyword(s) that head that declaration. Every
-#: keyword here must appear quoted in the prompt grammar.
+#: entry must appear quoted in the prompt grammar; a two-word head is written
+#: `a' 'b` so the adjacent pair is checked, not each word on its own.
 DECL_LISTS = {
     "services": ("service",),
     "components": ("component",),
@@ -46,11 +47,11 @@ DECL_LISTS = {
     "externs": ("extern",),
     "secrets": ("secret",),
     "retentions": ("retention",),
-    "model_roles": ("model", "role"),
-    "model_councils": ("model", "council"),
+    "model_roles": ("model' 'role",),
+    "model_councils": ("model' 'council",),
     "tests": ("test",),
-    "fault_tests": ("fault", "test"),
-    "prop_tests": ("prop", "test"),
+    "fault_tests": ("fault' 'test",),
+    "prop_tests": ("prop' 'test",),
     "compositions": ("composition",),
     "layers": ("layer",),
     "capability_decls": ("capability",),
@@ -79,9 +80,13 @@ def _declaration_list_fields() -> set[str]:
 
 
 def _dispatch_keywords() -> set[str]:
-    """Every word `_parse_program` tests with `self.at("kw"|"ident", WORD)`."""
+    """Every word `_parse_program` tests with `self.at("kw"|"ident", WORD)` or
+    by comparing a looked-ahead token's `.value` to WORD (`site layer`,
+    `lifecycle test`, `boot component`). A head hidden behind a helper
+    predicate is still caught through the Program list it appends to."""
     source = inspect.getsource(parser.Parser._parse_program)
-    return set(re.findall(r'self\.at\("(?:kw|ident)",\s*"(\w+)"\)', source))
+    words = set(re.findall(r'self\.at\("(?:kw|ident)",\s*"(\w+)"\)', source))
+    return words | set(re.findall(r'\.value == "(\w+)"', source))
 
 
 def _quoted(word: str) -> str:
@@ -111,7 +116,7 @@ def test_prompt_grammar_names_every_declaration_kind_the_parser_builds(capsys):
 def test_prompt_grammar_names_every_keyword_the_top_level_dispatch_reads(capsys):
     text = _prompt_grammar_text(capsys)
     words = _dispatch_keywords()
-    assert {"secret", "event", "use", "service"} <= words, \
+    assert {"secret", "event", "use", "service", "site", "lifecycle"} <= words, \
         f"the dispatch scrape found too little: {sorted(words)}"
     missing = sorted(w for w in words
                      if w not in EXEMPT_KEYWORDS and _quoted(w) not in text)

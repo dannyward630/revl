@@ -85,7 +85,7 @@ meaning (effects, inverses, provisions, boundaries) -> distinct revl syntax.
 program   := use* decl*
 use       := 'use' STRING ( '{' IDENT (',' IDENT)* '}' | 'as' IDENT )
 decl      := ['pub'] (typedecl | fndecl | service | component | extern
-                       | test | 'fault' test | proptest) | composition | layer
+                       | test | 'fault' test) | composition | layer | proptest
                        | secret | capdecl | event | retention | model_role
                        | model_council           -- "other declarations", below
 
@@ -100,7 +100,7 @@ type      := 'Str'|'Int'|'Float'|'Bool'|'Bytes'|'Unit'
 -- no null/undefined: absence is Opt[T]. Float is IEEE754 (NaN != NaN).
 
 --- pure expressions & functions (stratum 1: TS subset, verbatim syntax) ---
-fndecl    := [endorse] ['verified'] 'fn' IDENT '(' (IDENT ':' type)* ')' ['->' type] block
+fndecl    := ['verified'] [endorse] 'fn' IDENT '(' (IDENT ':' type)* ')' ['->' type] block
 endorse   := 'endorse' '[' IDENT (',' IDENT)* ']'     -- taint classes the body may declassify
 block     := '{' stmt* '}'
 stmt      := let | var | assign(var-only) | 'if' '(' expr ')' block ['else' block]
@@ -206,12 +206,12 @@ secret    := 'secret' IDENT 'for' CAP            -- CAP: dotted capability token
 -- at plug and read as a local of the host body of each `extern emission[CAP]`.
 -- It reaches no other extern and no revl construct (G-SECRET); a secret with no
 -- emission extern serving CAP is refused. Example: secret api_key for net.send
-capdecl   := 'capability' CAP '(' IDENT ':' kind (',' IDENT ':' kind)* ')'
+capdecl   := 'capability' CAP '(' [IDENT ':' kind (',' IDENT ':' kind)*] ')'
              kind := 'path' | 'discrete' | 'ceiling'   -- resource dimensions CAP carries
 event     := 'event' IDENT '(' 'key' ':' IDENT [',' 'window' ':' INT] ')' record
 retention := 'retention' IDENT '{' (IDENT ':' (STRING | IDENT (',' IDENT)*))* '}'
 model_role := 'model' 'role' IDENT ('on_device' | 'off_device')
-             ['device' IDENT 'memory' INT 'quant' IDENT] ['reaches' '[' (CAP (',' CAP)* | '*') ']']
+             ['device' IDENT 'memory' INT 'quant' IDENT] ['reaches' '[' [CAP (',' CAP)* | '*'] ']']   -- [] = reaches nothing
 model_council := 'model' 'council' IDENT '{' ((IDENT '->' IDENT ('reads' IDENT)*)
              | 'aggregate' IDENT ['quorum' IDENT] ['on_tie' IDENT])* '}'
 
