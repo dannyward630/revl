@@ -137,15 +137,23 @@ def _stat_signature(files: list[Path]) -> tuple:
 
 
 def pin_package(package_dir: Path) -> None:
-    """Record `package_dir` as this process first saw it.
+    """Record `package_dir` as this process first saw it: the hash of its
+    content and the stat signature of its files, both at once.
 
-    Only the stat signature is taken here (cheap enough for every session);
-    the content is hashed at the first `cache_key`, and a package whose
-    signature moved by then counts as drifted."""
+    The content is hashed here, at session start, not at the first
+    `cache_key`: an edit in between that keeps size and mtime (`cp -p`,
+    `rsync -t`, `touch -r`) would otherwise be hashed as the new content while
+    the process runs the old code. The signature only detects later drift."""
     package_dir = Path(package_dir).resolve()
-    if package_dir not in _package_pin:
-        _package_pin[package_dir] = {
-            "signature": _stat_signature(_tree_files(package_dir))}
+    if package_dir in _package_pin:
+        return
+    files = _tree_files(package_dir)
+    signature = _stat_signature(files)
+    digest = hashlib.sha256()
+    for path in files:
+        _feed(digest, "revl", path)
+    _package_pin[package_dir] = {"signature": signature,
+                                 "digest": digest.hexdigest()}
 
 
 def package_drifted(package_dir: Path) -> bool:
@@ -157,16 +165,10 @@ def package_drifted(package_dir: Path) -> bool:
 
 
 def package_digest(package_dir: Path) -> str:
-    """The hash of `package_dir`'s files, taken once per process."""
+    """The hash of `package_dir`'s files when this process pinned it."""
     package_dir = Path(package_dir).resolve()
     pin_package(package_dir)
-    pin = _package_pin[package_dir]
-    if "digest" not in pin:
-        digest = hashlib.sha256()
-        for path in _tree_files(package_dir):
-            _feed(digest, "revl", path)
-        pin["digest"] = digest.hexdigest()
-    return pin["digest"]
+    return _package_pin[package_dir]["digest"]
 
 
 def _feed(digest, label: str, path: Path) -> None:

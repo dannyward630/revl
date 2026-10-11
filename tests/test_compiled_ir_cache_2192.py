@@ -242,6 +242,25 @@ def test_a_compiler_edit_mid_session_never_reaches_the_disk(tmp_path, fresh):
     assert len(calls) == 3
 
 
+def test_an_mtime_preserving_edit_after_the_pin_keeps_the_pinned_key(tmp_path, fresh):
+    """`cp -p`, `rsync -t` or `touch -r` change content but not size or
+    mtime. Between the session-start pin and the first key, such an edit must
+    not be hashed as the code this process runs."""
+    root, inputs = _tree(tmp_path)
+    compiler = inputs.package_dir / "compiler.py"
+    fresh.pin_package(inputs.package_dir)  # what conftest does at session start
+    before = compiler.stat()
+    compiler.write_text("X = 9\n")  # same size as "X = 1\n"
+    os.utime(compiler, ns=(before.st_atime_ns, before.st_mtime_ns))
+    pinned = cache_key(root, inputs)
+    fresh._package_pin.clear()  # a new process hashes the edited package
+    edited = cache_key(root, inputs)
+    compiler.write_text("X = 1\n")
+    os.utime(compiler, ns=(before.st_atime_ns, before.st_mtime_ns))
+    fresh._package_pin.clear()
+    assert cache_key(root, inputs) == pinned != edited
+
+
 def test_a_drifted_process_does_not_read_the_disk_either(tmp_path, fresh):
     root, inputs = _tree(tmp_path)
     cache = tmp_path / "cache"
