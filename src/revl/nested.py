@@ -263,13 +263,17 @@ def prove_replacement(text: str, new_text: str, name: str, kind: str,
             "member's new text")
 
 
-def node_of(text: str, name: str, kind: str, top_name: str):
-    program = _program(text, name)
+def top_of(program, name: str, kind: str, top_name: str):
+    """The declaration `top_name` of an already parsed program."""
     node = _top(program, kind, top_name) if program is not None else None
     if node is None:
         raise NestedError(f"`{top_name}` could not be read from {name}")
     return node
 
 
+def node_of(text: str, name: str, kind: str, top_name: str):
+    return top_of(_program(text, name), name, kind, top_name)
+
+
 __all__ = ["NestedError", "Member", "members", "member_nodes", "member_changes",
-           "find", "span", "prove", "prove_replacement", "node_of"]
+           "find", "span", "prove", "prove_replacement", "node_of", "top_of"]

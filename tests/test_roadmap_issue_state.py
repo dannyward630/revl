@@ -68,6 +68,21 @@ if str(GATE_DIR) not in sys.path:
     sys.path.insert(0, str(GATE_DIR))
 gate = load_by_path("gate_under_test", TOOL)
 
+# The live lookup spells its API path from the checkout's `origin`
+# (`repo_slug`). A tarball, a container copy or a mirror has no github.com
+# origin, and the tool then reports "no issue state was consulted" by design.
+# The tests that feed it a fake `gh` cannot see an answer there, so they skip
+# with that reason rather than fail for a reason unrelated to the change.
+needs_github_origin = pytest.mark.skipif(
+    # The root the tool itself resolves (`ROOT`, two levels above its file), so a
+    # gate pointed at another checkout via $RVL_ROADMAP_GATE_DIR is probed there.
+    # A gate without `repo_slug` does not skip: the tests then fail by name
+    # instead of a rename becoming a silent skip.
+    hasattr(gate, "repo_slug") and gate.repo_slug(TOOL.parent.parent) is None,
+    reason="the checkout's origin is not a github.com URL, so the live "
+           "issue-state lookup has no repo to ask",
+)
+
 
 def _roadmap_text() -> str:
     """The main file plus docs/roadmap-archive/, as the gate reads it. A gate
@@ -421,6 +436,7 @@ def test_the_gate_is_green_offline_because_it_has_no_evidence(tmp_path):
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
+@needs_github_origin
 def test_the_gate_fires_on_a_closed_issue_with_no_successor(tmp_path):
     roadmap = _write_roadmap(tmp_path, CITED_INFLIGHT)
     bindir = _gh_bin(tmp_path, {1197: "closed"})
@@ -432,6 +448,7 @@ def test_the_gate_fires_on_a_closed_issue_with_no_successor(tmp_path):
     assert "1 cite a CLOSED one" in proc.stdout
 
 
+@needs_github_origin
 def test_the_gate_passes_a_closed_issue_that_names_a_successor(tmp_path):
     roadmap = _write_roadmap(tmp_path, (
         "523. (issue #1197) **\U0001F6A7 PARTIAL. The last blocker is tracked "
@@ -458,6 +475,7 @@ def test_a_total_lookup_failure_exits_two_and_never_zero(tmp_path):
     assert "Nothing below is a verdict on any row" in proc.stderr
 
 
+@needs_github_origin
 def test_a_partial_lookup_failure_still_judges_what_it_read(tmp_path):
     """One issue answered, one 404'd: the gate fires on the one it READ and
     reports the other as UNKNOWN -- never as closed."""

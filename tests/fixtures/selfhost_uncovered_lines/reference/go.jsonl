@@ -162,7 +162,7 @@
 
 ["reason", "lifecycle-test-harness-acquires-loads-unloads-component-inst", "Lifecycle test harness acquires/loads/unloads component instances and checks tuple-return service results. The selfhost oracle emits pure modules and explicitly defers lifecycle/in-file harness generation. Item 458's structural `List.indexOf` adds two statements to the same deferred helper block: `revlListIndexOfEq` is emitted beside `revlEq` because it calls it, so a module that never demands `revlEq` never demands the walk either. No corpus document calls `indexOf`, and one that did would flip the byte-agreement oracle RED rather than close the gap, because selfhost/emit_go.rvl defers the whole stdlib scaffold; the reference half is executed on all six tiers by tests/test_458_captures_and_collections.py. Issue #2009 adds five: the generated harness arms the frame's journal before each bracketed host-Map write and closes it at the frame's disposer."]
 
-["function", "lifecycle-test-harness-acquires-loads-unloads-component-inst", "_emit_stc_lifecycle_tests", 135, 135]
+["function", "lifecycle-test-harness-acquires-loads-unloads-component-inst", "_emit_stc_lifecycle_tests", 138, 138]
 
 ["function", "lifecycle-test-harness-acquires-loads-unloads-component-inst", "_go_lifecycle_arg", 7, 7]
 
