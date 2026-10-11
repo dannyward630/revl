@@ -836,8 +836,8 @@ def _roll_forward(wal: dict, *, session=None, snapshot: Optional[dict] = None) -
     last_run_complete = next(
         (i for i in range(len(tail) - 1, -1, -1)
          if tail[i].get("record") == "run-complete"), -1)
-    settled = {r.get("seq") for r in records
-               if r.get("record") in ("emission-complete", "operator-resolved")}
+    from .wal import settled_seqs  # noqa: PLC0415 — tier-agnostic core, lazy
+    settled = settled_seqs(records)
     steady = [r for r in tail[last_run_complete + 1:]
               if r.get("record") == "effect"
               and not (r.get("kind") == "emission" and r.get("seq") in settled)]

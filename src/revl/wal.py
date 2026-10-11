@@ -272,11 +272,19 @@ def approval_spends(records: list) -> list:
     return out
 
 
+def settled_seqs(records: list) -> set:
+    """The seqs an ``emission-complete`` or ``operator-resolved`` record settles.
+
+    A record with no integer ``seq`` settles nothing: it must not put ``None``
+    in the set, or a seq-less ``effect`` would read as settled."""
+    return {r.get("seq") for r in records
+            if r.get("record") in ("emission-complete", "operator-resolved")
+            and isinstance(r.get("seq"), int)}
+
+
 def unresolved_crossings(records: list) -> list:
     """Conservative settlement check; a report alone never settles a crossing."""
-    settled = {r.get("seq") for r in records
-               if r.get("record") in ("emission-complete", "operator-resolved")
-               and isinstance(r.get("seq"), int)}
+    settled = settled_seqs(records)
     flushed = {r.get("seq") for r in records if r.get("record") == "flushed"}
     last_approved = max((i for i, r in enumerate(records)
                          if r.get("record") == "commit-approved"), default=-1)
