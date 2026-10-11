@@ -289,6 +289,50 @@ for (const [key, info] of Object.entries<any>(spec.proxies || {})) {
 // sweep skipped it.
 for (const cname of spec.components as string[]) {
   const config = (spec.config || {})[cname]
+  // issue #2252: a component the bundle does not export is a FATAL spec/build
+  // mismatch, as in the rust (#2200) and go runners. `plug` on `undefined`
+  // died on a TypeError that named nothing and left the components already
+  // booted undisposed. The FATAL line goes FIRST, so a dispose that never
+  // settles, or one that raises an unhandled rejection, cannot hide which
+  // component is missing. Then dispose what did boot, last first, bounded to
+  // 5 s in all; a dispose not seen to settle says so rather than claiming it
+  // ran. `process.exit`, not `teardown`, so no `DOWN` is claimed. The lines are
+  // written synchronously: a piped stdout is async and `exit` would drop them.
+  if (mod[cname] === undefined) {
+    fs.writeSync(
+      2,
+      `[${name}] FATAL ${redactText(
+        `unknown component ${cname}: the spec names a component this build does not have`,
+      )}\n`,
+    )
+    const syncLog = (subject: string, detail: string): void => {
+      fs.writeSync(
+        1,
+        `[${name}] ${'swap'.padEnd(6)}| ${redactText(subject).padEnd(16)}| ${redactText(detail)}`.trimEnd() + '\n',
+      )
+    }
+    // Left ref'd on purpose: an unref'd timer lets the loop drain on a dispose
+    // that never settles, and node then exits 13 with its own unredacted
+    // warning. `process.exit(1)` below ends the process anyway.
+    const timeout = new Promise<'timeout'>((resolve) => {
+      setTimeout(() => resolve('timeout'), 5000)
+    })
+    for (const [label, booted] of [...fibers].reverse()) {
+      let confirmed = false
+      try {
+        const outcome = await Promise.race([
+          Promise.resolve(booted.dispose()).then(() => 'done' as const),
+          timeout,
+        ])
+        confirmed = outcome === 'done'
+      } catch (error) {
+        syncLog(label, `dispose NOT confirmed: ${error instanceof Error ? error.message : String(error)}`)
+        continue
+      }
+      syncLog(label, confirmed ? 'dispose' : 'dispose NOT confirmed: timed out')
+    }
+    process.exit(1)
+  }
   // issue #1567: `plug` applies the component's `isolate` placements before
   // plugging. `ctx.plugin` dropped them, so an isolated provision landed in
   // the shared realm and two tenants of one key collided in one process.

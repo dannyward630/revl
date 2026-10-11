@@ -229,9 +229,9 @@ has a `frontend-cordis` job as well as `frontend`. `pytest tests/` on a plain
 `frontend` job runs the suite WITHOUT a runtime (it must stay green on a bare
 checkout) and `frontend-cordis` runs the same suite under
 `backends/python/.venv/bin/python` after `sh backends/python/setup.sh`, which is
-where the guarded tests actually execute. To run that half locally, set the venv
-up once and then run the root suite under it. Roadmap item 430 tracks what is
-excluded there and why.
+where the guarded tests actually execute. `make pre-merge` (and `--affected`)
+runs that half locally too, in its `frontend-cordis` step (issue #2207, below).
+Roadmap item 430 tracks what is excluded there and why.
 
 `make pre-merge` (script: [`tools/pre_merge.sh`](tools/pre_merge.sh)) closes that
 gap by mirroring the **fast half** of every per-backend CI job in one local
@@ -240,6 +240,7 @@ command, in order, reporting each step:
 | step | what it runs |
 |---|---|
 | frontend | `pytest tests/ -q` (includes `test_conformance_validate.py`) |
+| frontend-cordis | the files of every test that skipped naming cordis in the frontend step (tests/conftest.py logs them to `REVL_CORDIS_SKIP_LOG`), re-run by `tools/cordis_half.py` under the cordis-py venv: `$REVL_CORDIS_PYTHON`, else `backends/python/.venv/bin/python` of this tree, else of the primary checkout, whichever can import the suite's deps, `cordis` and `watchdog` and has its cordis-py checkout at `CORDIS_PY_PIN`. An empty log means nothing to re-run. With no such venv the step prints `MISSING, NOT OK` and the gate exits non-zero: a runtime half that did not run is never `ok` (issue #2207) |
 | backend-python | `cd backends/python && .venv/bin/pytest -q` — the suite item 247 left stale |
 | backend-go | `pytest backends/go/test_emit_go.py -q` |
 | backend-rust | `pytest backends/rust/test_emit_rust.py` (emit/golden tests) |
