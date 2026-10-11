@@ -3043,18 +3043,42 @@ def _empty_map_decl_type(node: dict, pins: dict | None) -> str:
     return "java.util.Map"
 
 
+def _empty_list_decl_type(value: dict) -> str:
+    """Declaration type for a local bound to an empty list literal (#2296).
+
+    A raw `java.util.List` iterates as `Object`, so `for (x of xs)` over an
+    annotated `var xs: List[Str] = []` bound `x` as `Object` and every use that
+    needs the element type (a call `f(x)` with a `Str` parameter, `x.slice`)
+    was rejected by javac. That is what made every program importing
+    stdlib/str.rvl uncompilable here: `dedent` accumulates into exactly such a
+    list and then loops over it. The annotation is on the literal as
+    `"expected"` (roadmap 76b), the same pin the empty-map case reads, so the
+    local declares as that precise type and the loop binding gets the element
+    type. An unannotated `var xs = []` names no type and keeps the raw list.
+    """
+    expected = value.get("expected")
+    if isinstance(expected, str):
+        expected = expected.strip()
+        if expected.startswith("List[") and expected.endswith("]"):
+            return _java_v3_type(expected)
+    return "java.util.List"
+
+
 def _let_keyword(node: dict, ctx: _V3Ctx | None = None,
                  pins: dict | None = None) -> str:
     """Declaration type for a v3 `let`/`var`.
 
     An empty list literal has no element type, and `var` would freeze it as
-    `List<Object>` — later pushes and the declared return type then fail to
-    unify. A raw `java.util.List` keeps javac's erasure in play (unchecked
-    warning, correct code); non-empty literals infer their element type.
+    `List<Object>`, so later pushes and the declared return type then fail to
+    unify. An annotated `var xs: List[Str] = []` carries its annotation on the
+    literal (`"expected"`), so it declares the precise `java.util.List<String>`
+    (`_empty_list_decl_type`, issue #2296). Without an annotation a raw
+    `java.util.List` keeps javac's erasure in play (unchecked warning, correct
+    code); non-empty literals infer their element type.
     """
     value = node.get("value")
     if isinstance(value, dict) and value.get("kind") == "list" and not value.get("items"):
-        return "java.util.List"
+        return _empty_list_decl_type(value)
     if isinstance(value, dict) and value.get("kind") == "maplit" and not value.get("entries"):
         return _empty_map_decl_type(node, pins)
     adt = _adt_binding_type(value, ctx)

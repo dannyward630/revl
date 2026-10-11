@@ -1,3 +1,10 @@
 fn first(xs: List[Int]) -> Int { return xs[0] }
 fn build() -> List[Int] { return [1, 2, 3] }
 fn nest() -> List[List[Int]] { return [[1], [2, 3]] }
+// issue #2296: an annotated empty list declares as its element type, so a
+// loop over it binds a String, not an Object.
+fn collect(xs: List[Str]) -> Str {
+  var out: List[Str] = []
+  for (x of xs) { out = out.push(x) }
+  return out.join(",")
+}

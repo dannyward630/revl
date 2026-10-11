@@ -1045,9 +1045,22 @@ fn render_expr(node: Any, ctx: Ctx, counter: Int) -> Rendered {
 }
 
 // -------------------------------------------------------------- statements
-// `_let_keyword`: an empty list literal declares as raw `java.util.List` (keeps
-// erasure in play); an empty `maplit` declares as the Map type its `expected`
-// pin names (issue #274 — `var` would freeze the local at `Map.of()`'s
+// `_empty_list_decl_type`: the precise List type an empty list literal's
+// `expected` pin names, else the raw `java.util.List`.
+fn empty_list_decl_type(value: Any) -> Str {
+  let pin = value_field(value, "expected")
+  if (!value_is_null(pin)) {
+    let t = trim(value_str(pin))
+    if (t.startsWith("List[") && t.endsWith("]")) { return java_v3_type(pin, false) }
+  }
+  return "java.util.List"
+}
+
+// `_let_keyword`: an empty list literal declares as the List type its
+// `expected` pin names (issue #2296: a raw `java.util.List` iterates as
+// `Object`, so a loop over an annotated list lost its element type), and as
+// raw `java.util.List` when unpinned (keeps erasure in play); an empty
+// `maplit` declares as the Map type its `expected` pin names (issue #274 — `var` would freeze the local at `Map.of()`'s
 // `Map<Object, Object>` and neither the writer static nor the `return` would
 // then apply); an ADT-construction binding declares as its sealed interface
 // (`final Owner o`, restoring the type the frontend gave the expression); else
@@ -1055,7 +1068,7 @@ fn render_expr(node: Any, ctx: Ctx, counter: Int) -> Rendered {
 fn let_keyword(node: Any, ctx: Ctx) -> Str {
   let value = value_field(node, "value")
   if (node_kind(value) == "list" && value_list(value_field(value, "items")).length() == 0) {
-    return "java.util.List"
+    return empty_list_decl_type(value)
   }
   if (node_kind(value) == "maplit" && value_list(value_field(value, "entries")).length() == 0) {
     let pin = value_field(value, "expected")
