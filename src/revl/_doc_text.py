@@ -1,6 +1,6 @@
 """Text helpers shared by the document importers and the type generator.
 
-`revl.import_openapi` owns these and re-exports them; they live here so
+`revl.import_openapi` uses and re-exports these; they live here so
 `revl.gen_types`, which every compile reaches through `revl.compiler`, does not
 import the whole OpenAPI importer to get them (issue #2196).
 """
@@ -18,8 +18,8 @@ def _comment_safe(text: object) -> str:
     """Collapse every line terminator in `text` to a single space.
 
     Item 416f (OpenAPI codegen injection). The generated `.rvl` carries
-    document-derived strings — `info.title`, `info.version`, `openapi`, the
-    source filename, resolved server URLs, schema-note text — verbatim inside
+    document-derived strings (`info.title`, `info.version`, `openapi`, the
+    source filename, resolved server URLs, schema-note text) verbatim inside
     `//` comments and inside `@<backend> { ... }` stub bodies. A `//` comment
     runs to the next newline (`lexer.py:351`), so a newline embedded in ANY of
     those strings ends the comment and drops whatever follows it onto its own
@@ -58,7 +58,7 @@ def _line_of(source: str, pointer: str) -> int:
 
     A greedy forward scan for each key in turn: good enough to put a reader's
     cursor in the right region of a hand-written document, and never trusted
-    for more than that — the pointer in the message is the precise location.
+    for more than that: the pointer in the message is the precise location.
     """
     if not source:
         return 0
