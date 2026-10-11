@@ -123,6 +123,10 @@ pub fn admit(source: Str) -> Str {
 //     gate refuses              verdict; the IR producer and emitter never run —
 //                               a rejected program cannot be compiled, the one
 //                               revl promise, enforced natively);
+//   * a `use` the native    -> "REFUSED|LINK|<message>" (`compile_to_at` only,
+//     link cannot reproduce     issue #2181: the producer has run, the emitter
+//                               never does, so no source that differs from the
+//                               reference is returned);
 //   * an admitted program   -> the emitted target source, built end to end in revl:
 //                               lower_to_ir(source) → json_parse → emit_<tier>_src.
 //                               NO reference is in this chain. Byte-exact with the
@@ -680,13 +684,56 @@ fn ul_declares_extern(source: Str) -> Bool {
   return false
 }
 
+// Whether `c` can begin a declaration keyword: an ASCII letter or `_`.
+fn ul_is_word_start(c: Str) -> Bool {
+  if (c == "") { return false }
+  let k = c.charCodeAt(0)
+  return ((k >= 65) && (k <= 90)) || ((k >= 97) && (k <= 122)) || (k == 95)
+}
+
+// Whether `line` begins with one of `prefixes`.
+fn ul_has_prefix(line: Str, prefixes: List[Str]) -> Bool {
+  var i = 0
+  while (i < prefixes.length()) {
+    let p = prefixes[i]
+    if (line.slice(0, p.length()) == p) { return true }
+    i += 1
+  }
+  return false
+}
+
+// The first top-level declaration of `source` that is not an extern, a `use`, a
+// service or a component, as the start of its line, or "". A declaration starts
+// at column 0 with a keyword; a body line, a closing brace, a comment or an
+// indented line does not. This reads the TEXT because the native producer writes
+// no IR key at all for a declaration it does not lower (a `prop test`, say),
+// which the reference would still merge.
+fn ul_foreign_decl(source: Str) -> Str {
+  let allowed = ["extern ", "pub extern ", "use ", "service ", "pub service ",
+                 "component ", "pub component "]
+  var i = 0
+  let n = source.length()
+  while (i < n) {
+    let eol = ul_line_end(source, i)
+    let line = source.slice(i, eol)
+    if (ul_is_word_start(line.slice(0, 1)) && !ul_has_prefix(line, allowed)) {
+      let shown = ul_trim(line)
+      if (shown.length() > 40) { return shown.slice(0, 40) }
+      return shown
+    }
+    i = eol + 1
+  }
+  return ""
+}
+
 // Why the pure dependency at `dep` (text `source`, native IR `ir`) cannot be
 // linked, as `LINK|<message>`, or "". The reference merges a pure dependency's
 // functions, types, secrets, tests and every other declaration list into the
 // document; this driver carries only its externs, so any top-level IR section
 // beyond `ir_version`, `services`, `components` (neither merged for a pure
 // dependency) and `externs` would be dropped, and is refused instead. So is a
-// module whose declared externs did not lower, which would drop them all.
+// top-level declaration the producer writes no key for (`ul_foreign_decl`), and
+// a module whose declared externs did not lower, which would drop them all.
 fn ul_dep_refusal(dep: Str, source: Str, ir: Str) -> Str {
   let keys = ul_top_keys(ir)
   var i = 0
@@ -697,6 +744,11 @@ fn ul_dep_refusal(dep: Str, source: Str, ir: Str) -> Str {
         .concat("`, which the native link does not carry (only a used module's externs travel)")
     }
     i += 1
+  }
+  let foreign = ul_foreign_decl(source)
+  if (foreign != "") {
+    return "LINK|`".concat(dep).concat("` declares `").concat(foreign)
+      .concat("`, which the native link does not carry (only a used module's externs travel)")
   }
   if (ul_declares_extern(source) && (ul_array_items(ir, "externs") == "")) {
     return "LINK|the externs of `".concat(dep).concat("` did not lower natively")
@@ -1220,6 +1272,11 @@ test "a used module's extern section is appended at the IR's top level (issue #2
   let bare = "{\"ir_version\": 3, \"services\": {}, \"components\": []}"
   assert ul_dep_refusal("/m.rvl", "pub extern pure fn e() -> Int = @py { return 1 }", bare).slice(0, 5) == "LINK|"
   assert ul_dep_refusal("/m.rvl", "service S {}", bare) == ""
+  // A declaration the producer writes no key for is read off the text.
+  let nl = str_newline()
+  assert ul_foreign_decl("// c".concat(nl).concat("pub extern pure fn e() -> Int = @py {").concat(nl).concat("    return 1").concat(nl).concat("}")) == ""
+  assert ul_foreign_decl("pub extern pure fn e() -> Int = @py { return 1 }".concat(nl).concat("prop test \"p\" {}")) == "prop test \"p\" {}"
+  assert ul_dep_refusal("/m.rvl", "prop test \"p\" {}", ext_only).slice(0, 5) == "LINK|"
   // An alias import resolves nothing without a path, and a `{ }` list is not one.
   assert ul_alias_target("use \"a.rvl\" as a", "") == ""
   assert ul_alias_target("use \"a.rvl\" { A }", "") == ""

@@ -960,6 +960,27 @@ _UNLINKABLE = {
             "pub extern pure fn g(x: Int) -> Int = @py { return x } = @ts { return x }\n\n"
             "extern pure fn h(x: Int) -> Int = @py { return x + 1 } = @ts { return x + 1n }\n"),
     }),
+    # Two dependencies with a private `h` each: renamed apart by the reference.
+    "dependency_extern_collision": ("collides", {
+        "doc.rvl": (
+            'use "a.rvl" { g }\n'
+            'use "b.rvl" { k }\n\n'
+            "fn f(x: Int) -> Int { return g(k(x)) }\n"),
+        "a.rvl": (
+            "pub extern pure fn g(x: Int) -> Int = @py { return x } = @ts { return x }\n\n"
+            "extern pure fn h(x: Int) -> Int = @py { return x } = @ts { return x }\n"),
+        "b.rvl": (
+            "pub extern pure fn k(x: Int) -> Int = @py { return x } = @ts { return x }\n\n"
+            "extern pure fn h(x: Int) -> Int = @py { return x + 1 } = @ts { return x + 1n }\n"),
+    }),
+    # The producer writes no IR key for a `prop test`, which the reference
+    # merges and the go, java, rust and wasm emitters print.
+    "prop_test": ("`prop test", {
+        "doc.rvl": 'use "a.rvl" { g }\n\nfn f(x: Int) -> Int { return g(x) }\n',
+        "a.rvl": (
+            "pub extern pure fn g(x: Int) -> Int = @py { return x } = @ts { return x }\n\n"
+            'prop test "g is total" (a: Int) {\n  assert a == a\n}\n'),
+    }),
     "pub_fn": ("`functions`", {
         "doc.rvl": 'use "a.rvl" { helper }\n\nfn f(x: Int) -> Int { return helper(x) }\n',
         "a.rvl": "pub fn helper(x: Int) -> Int { return x + 1 }\n",

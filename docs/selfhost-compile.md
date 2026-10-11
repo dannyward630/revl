@@ -50,6 +50,9 @@ gap 2). `compile_to(source, tier)` runs the whole chain in that one artifact:
 - the native gate refuses → `REFUSED|<TAG>|<message>` (the IR producer and emitter
   never run: a program the checker rejects cannot be compiled, the one revl
   promise, enforced natively)
+- `compile_to_at` only: a `use` the native link cannot reproduce →
+  `REFUSED|LINK|<message>` (issue #2181; the producer has run, the emitter never
+  does, so no source that differs from the reference is returned)
 - admitted → **the emitted target source**, `lower_to_ir(source)` → `json_parse`
   → `emit_<tier>_src`, byte-exact with the reference compile for the covered
   surface. A control verdict never collides with real output: py source begins
@@ -100,9 +103,11 @@ path, which is what the resolution needs:
   - an appended extern whose name the document already declares as an extern or
     function (the reference renames colliding private names apart, this driver
     does not);
-  - a pure dependency that carries anything but externs: functions, types,
-    secrets, tests or any other section, which the reference merges and this
-    driver does not;
+  - a pure dependency that carries anything but externs, which the reference
+    merges and this driver does not: any IR section beyond `ir_version`,
+    `services`, `components` and `externs` (functions, types, secrets, tests),
+    and any top-level declaration other than an extern, a `use`, a service or a
+    component (a `prop test`, say, for which the producer writes no key at all);
   - a `use "m" as alias` import, which makes the whole module a dependency;
   - a dependency that declares externs none of which lowered natively.
 
