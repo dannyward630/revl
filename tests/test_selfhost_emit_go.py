@@ -183,6 +183,8 @@ CORPUS = [
     "../../../bench/results/rerun-deepseek-v4-pro-20260826/17-billing-ledger/v2/attempt-1.rvl",
     # ... and `Any` and a Result parameter in a component signature (issue #1892)
     "comp_provide_any_result.rvl",
+    "to_char.rvl",  # Int.to_char, the primitive behind str_char (issue #2285)
+    "comp_to_char.rvl",  # Int.to_char in a provide body (issue #2285)
 ]
 
 # The combined-path documents, which import stc-go and are built against it.

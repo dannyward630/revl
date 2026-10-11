@@ -3360,6 +3360,15 @@ def _ts_builtin(method, target: str, args: list, arg_nodes: list, ctx: "_Ctx",
     # charCodeAt (JS `.charCodeAt` would answer a lone surrogate).
     if method == "codepoint_at":
         return f"revlCharCodeAt({target}, {args[0]})"
+    # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+    # §Int.to_char): a one-code-point Str for a Unicode scalar value, "" for
+    # anything else. `String.fromCodePoint` throws above U+10FFFF and hands
+    # back a lone surrogate for U+D800..U+DFFF, so the range is checked first.
+    # The receiver is bound once by the arrow's parameter.
+    if method == "to_char":
+        return ('((n: bigint): string => (n < 0n || n > 0x10FFFFn || '
+                '(n >= 0xD800n && n <= 0xDFFFn)) ? "" : '
+                f'String.fromCodePoint(Number(n)))({target})')
     # Integer division and modulo (docs/arithmetic.md). JS `/` is true division
     # and `%` takes the dividend's sign, so every one of these is built rather
     # than inherited — through helpers, so the divisor is evaluated once and a

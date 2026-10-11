@@ -608,6 +608,11 @@ fn render_builtin(method: Str, target: Str, args: List[Str], arg_nodes: List[Any
   // scalar at index i, via the same astral-aware helper as `charCodeAt` (JS
   // `.charCodeAt` would answer a lone surrogate).
   if (method == "codepoint_at") { return { text: `revlCharCodeAt(${target}, ${args[0]})`, counter: counter } }
+  // The reverse of `codepoint_at` (issue #2285): a one-code-point Str for a
+  // Unicode scalar value, "" otherwise; the arrow binds the receiver once.
+  if (method == "to_char") {
+    return { text: `((n: bigint): string => (n < 0n || n > 0x10FFFFn || (n >= 0xD800n && n <= 0xDFFFn)) ? "" : String.fromCodePoint(Number(n)))(${target})`, counter: counter }
+  }
   if (method == "div_trunc") { return { text: `revlDivTrunc(${target}, ${args[0]})`, counter: counter } }
   if (method == "div_floor") { return { text: `revlDivFloor(${target}, ${args[0]})`, counter: counter } }
   if (method == "div_euclid") { return { text: `revlDivEuclid(${target}, ${args[0]})`, counter: counter } }
