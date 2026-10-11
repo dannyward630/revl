@@ -226,7 +226,7 @@ def test_an_admission_round_trip_does_not_walk_the_filesystem(monkeypatch):
     al = load_by_path("admission_latency", ROOT / "bench" / "admission_latency.py")
     running = al.build_running()
     al.admit_once(running)
-    calls = {"lstat": 0, "scandir": 0}
+    calls = {"lstat": 0, "scandir": 0, "stat": 0}
     for name in calls:
         real = getattr(os, name)
 
@@ -236,4 +236,5 @@ def test_an_admission_round_trip_does_not_walk_the_filesystem(monkeypatch):
 
         monkeypatch.setattr(os, name, counted)
     al.admit_once(running)
-    assert calls == {"lstat": 0, "scandir": 0}
+    assert calls["lstat"] == 0 and calls["scandir"] == 0, calls
+    assert calls["stat"] <= 1, calls

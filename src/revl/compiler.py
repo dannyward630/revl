@@ -58,12 +58,13 @@ def _default_search_path() -> list[str]:
 
 
 #: issue #2195: the one live `_backend_python_module_names` entry, keyed by
-#: `(backends/python path, its st_mtime_ns)`.
-_BACKEND_NAMES_CACHE: dict[tuple[str, int | None], frozenset[str]] = {}
+#: the backends/python path and its `(st_mtime_ns, st_size, st_nlink)`.
+_BACKEND_NAMES_CACHE: dict[tuple, frozenset[str]] = {}
 
 
 def _backend_python_module_names() -> frozenset[str]:
-    """Return importable top-level names from the Python backend tree.
+    """Return importable top-level names from the Python backend tree, as a
+    frozenset (callers only test membership).
 
     Inline Python in user modules must not be able to turn the runtime's
     backend search path into an undeclared host dependency.  The compiler
@@ -73,10 +74,14 @@ def _backend_python_module_names() -> frozenset[str]:
     root = backends_root() / "python"
     # issue #2195: one glob per process, not one per module per compile. The
     # set only changes when an entry of the directory does, which moves its
-    # mtime, so the key is (directory, mtime): a test that points
+    # mtime, so the key is the directory and its stat: a test that points
     # `backends_root` at another tree, or adds a module to it, gets a fresh set.
+    # The size and link count back up a coarse mtime clock. A stale key needs
+    # an in-process edit of the installed backend tree within one clock tick,
+    # which no compile does.
     try:
-        stamp = root.stat().st_mtime_ns
+        st = root.stat()
+        stamp = (st.st_mtime_ns, st.st_size, st.st_nlink)
     except OSError:
         stamp = None
     key = (str(root), stamp)
