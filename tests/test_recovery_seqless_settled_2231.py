@@ -48,8 +48,8 @@ def test_bool_seq_does_not_settle_seq_one():
 
 def test_seqless_flushed_does_not_flush_a_seqless_deferred_emission():
     from revl.recovery import _deferral_crosscheck
-    records = [{"record": "deferred-emission", "receiver": "s", "method": "m",
-                "args": []},
+    records = [{"record": "deferred-emission",
+                "call": {"receiver": "s", "method": "m", "args": []}},
                {"record": "commit-approved"},
                {"record": "flushed"}]
     out = _deferral_crosscheck(records)

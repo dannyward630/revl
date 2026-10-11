@@ -1519,8 +1519,9 @@ for the key lifecycle and what the signature binds.
   - `--tier NAME` - declare a rung of the ladder ABOVE the entry tier.
     Repeatable. A rung no pool declares is a rung no member can be moved to,
     so `promote --tier NAME` refuses `unknown-tier` unless init declared it.
-    The rungs are `probation`, `replayable` and `durable`; `probation` is the
-    entry rung and is declared by `--entry-caps` instead.
+    A pool offers only the rungs its operator declares. The ladder knows three
+    names, in order: `probation` (the entry rung, declared by `--entry-caps`
+    instead), `replayable` and `durable`.
   - `--tier-evidence NAME=N` - how many attested execution receipts a member
     must have accumulated before `promote` will move it to rung NAME.
     REQUIRED for every `--tier`, and deliberately not defaulted: `0` would
