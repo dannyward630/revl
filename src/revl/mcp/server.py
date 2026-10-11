@@ -5724,6 +5724,21 @@ def _instructions() -> str:
 
 # ---------------------------------------------------------------- protocol
 
+# issue #2232: the short fields a client acts on go first in the text payload,
+# so a client with a result-size cap still receives them. Content is
+# unchanged; `structuredContent` keeps the payload's own order.
+_ACTIONABLE = ("ok", "note", "disk", "next", "hint")
+
+
+def _actionable_first(payload):
+    """`payload` with `_ACTIONABLE` keys first, in that order, then the rest in
+    their original order. A non-dict passes through."""
+    if not isinstance(payload, dict):
+        return payload
+    head = {k: payload[k] for k in _ACTIONABLE if k in payload}
+    return {**head, **{k: v for k, v in payload.items() if k not in head}}
+
+
 def handle(message: dict) -> dict | None:
     """One JSON-RPC request -> one response (or None for a notification)."""
     method = message.get("method")
@@ -5765,7 +5780,7 @@ def handle(message: dict) -> dict | None:
         payload = _repeat.observe(name, params.get("arguments") or {}, payload, state)
         payload = _ambient.stamp(payload, state)
         result = {
-            "content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
+            "content": [{"type": "text", "text": json.dumps(_actionable_first(payload), indent=2)}],
             "isError": not payload.get("ok", False),
             "structuredContent": payload,
         }
