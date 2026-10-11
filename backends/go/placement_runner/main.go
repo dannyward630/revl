@@ -327,13 +327,22 @@ func main() {
 			// loaded. Dispose what did boot, last first, print one scrubbed
 			// line on stderr and exit 1. `os.Exit`, not a panic or a return,
 			// so the teardown below never prints `DOWN` for a failed boot.
-			fmt.Fprintln(os.Stderr, "["+name+"] "+bridge.ScrubText(
-				"FATAL unknown component "+cname+": the spec names a component "+
-					"this build does not have"))
+			fatalLine(name, "unknown component "+cname+": the spec names a "+
+				"component this build does not have")
+			// `Dispose` only REQUESTS the teardown, so each one is awaited
+			// (bounded) or `os.Exit` would kill the process before any inverse
+			// replayed. A fiber that does not settle in time is reported as
+			// such, never as disposed.
+			bootCtx, bootCancel := stdctx.WithTimeout(stdctx.Background(), 5*time.Second)
 			for i := len(fibers) - 1; i >= 0; i-- {
 				fibers[i].fiber.Dispose()
-				log("swap", fibers[i].label, "dispose")
+				if err := fibers[i].fiber.Gone(bootCtx); err != nil {
+					log("swap", fibers[i].label, "dispose NOT confirmed: "+err.Error())
+					continue
+				}
+				log("swap", fibers[i].label, "dispose -> inverses replay (LIFO)")
 			}
+			bootCancel()
 			os.Exit(1)
 		}
 		if err := fiber.Ready(ready); err != nil {
