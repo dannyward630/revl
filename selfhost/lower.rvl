@@ -23302,7 +23302,7 @@ fn cir_method_stmts(ts: List[Token], lo: Int, hi: Int, cx: CCtx, sc: List[Bind],
     let ae = cir_expr(acq.e, sc, hostSc, cx_at(cx, tkc(ts, lo + 4).line))
     if (!ae.ok) { return mk_irres(false, "") }
     if (!atw(ts, acq.i, "undo")) { return mk_irres(false, "") }
-    let sc2 = sc.push({ name: name, ty: "" })
+    let sc2 = sc.push({ name: name, ty: value_ty(acq.e, cenv_ir(cx, sc)) })
     let hostSc2 = starts_with(ae.js, "{\"kind\": \"host\"") ? hostSc.push(name) : hostSc
     let und = expr_at(ts, acq.i + 1)
     if (is_bad(und.e)) { return mk_irres(false, "") }
@@ -23346,7 +23346,7 @@ fn cir_method_stmts(ts: List[Token], lo: Int, hi: Int, cx: CCtx, sc: List[Bind],
     // the mutable set without a second threaded parameter. A `let` that SHADOWS
     // a `var` writes the key back, and `tenv_get`'s last-wins scan makes the
     // shadow win.
-    let sc2 = env_mut_put(sc.push({ name: name, ty: value_ty(r.e, cenv(cx, sc)) }),
+    let sc2 = env_mut_put(sc.push({ name: name, ty: value_ty(r.e, cenv_ir(cx, sc)) }),
                           name, mutable)
     return cir_method_stmts(ts, r.i, hi, cx, sc2, hostSc, nacc, top)
   }
@@ -23593,7 +23593,7 @@ fn cir_setup_stmt(ts: List[Token], lo: Int, cx: CCtx, sc: List[Bind],
              js: "{\"step\": \"let\", \"name\": ".concat(jstr(name))
                    .concat(", \"value\": ").concat(ve.js).concat("}"),
              e: Bad(""), isExpr: false,
-             sc: sc.push({ name: name, ty: value_ty(r.e, cenv(cx, sc)) }),
+             sc: sc.push({ name: name, ty: value_ty(r.e, cenv_ir(cx, sc)) }),
              muts: mutable ? muts.push(name) : muts, i: r.i }
   }
   if (atw(ts, lo, "assert")) {
@@ -24203,7 +24203,7 @@ fn cir_body(ts: List[Token], i: Int, end: Int, cx: CCtx,
     let ae = cir_expr(acq.e, sc, hostSc, cx_at(cx, tkc(ts, aq0).line))
     if (!ae.ok) { return mk_irres(false, "") }
     if (!atw(ts, acq.i, "undo")) { return mk_irres(false, "") }
-    let sc2 = sc.push({ name: name, ty: "" })
+    let sc2 = sc.push({ name: name, ty: value_ty(acq.e, cenv_ir(cx, sc)) })
     // host provenance (the reference's `env.host_locals`): a bind whose
     // acquisition lowered to a host node keeps the host verb surface, so every
     // later `name.<verb>(…)` is a `call` and not a stdlib builtin.

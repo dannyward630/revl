@@ -1124,9 +1124,8 @@ def _annotated_un(node: dict, render) -> str | None:
     method quietly came back as 2^63 where rust, java and go trap — and the
     module renderer already had the fix. Negation is `0 - x`, so it goes
     through the bound like any other subtraction (docs/arithmetic.md).
+    Both callers have already matched `-`.
     """
-    if node.get("op") != "-":
-        return None
     operands = node.get("operands")
     if operands in ("Int", "Int32"):
         return f"_revl_i{'64' if operands == 'Int' else '32'}(-{render(node['operand'])})"
