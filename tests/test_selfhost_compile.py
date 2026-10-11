@@ -661,6 +661,15 @@ LOWER_GAP_DOCS: dict[str, tuple[str, ...]] = {
         "../../../backends/typescript/tests/fixtures/fr3_json_int.rvl",
     ),
     "ts": (
+        # issue #2297: `block_arm_records.rvl`. The emitter half is byte-exact
+        # on the REFERENCE IR (asserted above for every document). The native
+        # chain is not, because `selfhost/lower.rvl` has no block match arm in a
+        # MODULE `fn` (issue #1699 covers component bodies only): the smallest
+        # `return match r { Ok(v) => { var t = v\n t }, Err(e) => 0 }` already
+        # lowers to `<<UNSUPPORTED-EXPR:bad>>` with no `match_arm_N` helper.
+        # That is a producer gap that predates the document, not a change in
+        # the emitter, so it is recorded here and not fixed in this slice.
+        "block_arm_records.rvl",
         # (`services_composite.rvl` left this list when lower.rvl grew the
         # component dialect's list literal, and `component_exprs.rvl` with its
         # `format` template, bare-name `fn` call and tagged `adt` construction,
