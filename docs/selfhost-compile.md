@@ -86,6 +86,17 @@ path, which is what the resolution needs:
   table **after** the document's own rows. A name already present in the output is
   left alone, so a diamond import is not duplicated and an import that is not a
   service is a no-op.
+- Then the driver links externs (issue #2181). The reference `compile_files`
+  merges every module whose pure declarations the document imports (a `pub fn`,
+  `type` or `extern` named in a `use` list, transitively) and appends that
+  module's whole `extern` section, so `use "stdlib/json.rvl" { json_parse,
+  json_stringify }` also carries `json_try_parse`. `ul_link_externs` builds the
+  same closure (breadth first from the document, each module's dependencies
+  sorted by absolute path, each module once), lowers each module and appends its
+  externs after the document's own, creating the `externs` array when the
+  document declares none. A module imported only for a service adds no extern.
+  Not covered: a `use "m" as alias` import (no `{ }` list) and the reference's
+  renaming of a private extern whose name collides across modules.
 
 This is the honest multi-file native compile: the whole chain still runs in revl,
 and the only host crossing is the read the reference loader also performs. It
@@ -121,7 +132,7 @@ document the **fully-native** chain does not reproduce is therefore a
 they are named document by document in
 [`LOWER_GAP_DOCS`](../tests/test_selfhost_compile.py).
 
-Tiers whose whole corpus survives the fully-native chain: `go`, `java`, `wasm`.
+Tiers whose whole corpus survives the fully-native chain: `py`, `ts`, `go`, `java`, `wasm`.
 
 The per-tier counts are not stored here, because they move with every
 corpus document a pull request adds. Print them with
@@ -354,8 +365,8 @@ What Stage 4 still needs after this is no longer an emit gap:
 ## Files
 
 - `selfhost/compile.rvl`: the fully-native driver (`compile_to_at` /
-  `compile_to`, the `use`-resolution scan and the one `read_module` extern read,
-  `admit`, the `CompileStream`/`Compile` plugin wrapper, in-file `test` blocks).
+  `compile_to`, the `use`-resolution scan and its two extern reads,
+  `module_path` and `read_module_text`, `admit`, the `CompileStream`/`Compile` plugin wrapper, in-file `test` blocks).
 - `selfhost/emit_{py,ts,go,java,rust,wasm}.rvl`: entrypoints renamed to
   `emit_<tier>_src` (items 230, 146) so all six co-compile in one composition.
 - `tests/test_selfhost_compile.py`: the fully-native byte-exact proof on all six
