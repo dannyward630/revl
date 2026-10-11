@@ -1840,7 +1840,7 @@ def _change_working_set() -> dict:
 # disk *leads* the session: it still holds the change the session retracted.
 _DISK_RIDES = frozenset({"revl_change", "revl_edit", "revl_source",
                          "revl_export", "revl_undo", "revl_rollback",
-                         "revl_step_back"})
+                         "revl_step_back", "revl_check"})
 
 # issue #2037: the three verbs that revert the session. Their divergence is the
 # mirror of #2032's — the session has retracted a change disk still carries, so
@@ -1950,6 +1950,10 @@ def _ride_disk(name: str, payload) -> None:
     `note` — the revert note says the *reverted* source is the one not yet on
     disk, since that is the change the agent believes it has undone."""
     if name not in _DISK_RIDES or not isinstance(payload, dict):
+        return
+    if name == "revl_check" and not SESSION.loaded:
+        # issue #2241: a cold check holds nothing to be out of step with disk,
+        # so it keeps its base shape rather than gaining an empty `disk` block.
         return
     disk = _disk_state()
     payload["disk"] = disk
@@ -3042,7 +3046,33 @@ def _tool_check(arguments: dict) -> dict:
     if explicit or not _carries_candidate(arguments):
         return _check_held(arguments)
     sent, _stored, canon = _canonical.prepare(arguments)
-    return _canonical.attach(_check_as_sent(sent), canon)
+    return _note_held_file_differs(
+        arguments, _canonical.attach(_check_as_sent(sent), canon))
+
+
+_CHECK_FILE_DIFFERS_NOTE = ("the file on disk differs from the running "
+                            "composition's held source, and this check read "
+                            "disk; revl_export writes the held source")
+
+
+def _note_held_file_differs(arguments: dict, payload) -> dict:
+    """Say so when `revl_check {files}` compiled a disk file the session holds
+    a different text for (issue #2241).
+
+    That check reads disk, so after a commit that has not been exported it
+    answers for the stale file while the running composition has moved on.
+    One note, set here so `_ride_disk` (which adds its own only where none is
+    set) does not add a second."""
+    if not (SESSION.loaded and isinstance(payload, dict)) or payload.get("note"):
+        return payload
+    held = _edit.virtual_source(SESSION)
+    texts = held.get(_edit.ORIGIN_FILES_CONTENT) or {}
+    real = {os.path.realpath(p): p for p in texts}
+    named = [real.get(os.path.realpath(p), p)
+             for p in arguments.get("files") or []]
+    if diverged_paths(texts, [p for p in named if p in texts]):
+        payload["note"] = _CHECK_FILE_DIFFERS_NOTE
+    return payload
 
 
 def _carries_candidate(arguments: dict) -> bool:
