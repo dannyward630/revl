@@ -134,7 +134,8 @@ def _passed(count: int) -> str:
 
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-_VITEST_TESTS = re.compile(r"^\s*Tests\s+(?:.*\|\s*)?(\d+) passed", re.MULTILINE)
+_VITEST_TESTS = re.compile(r"^\s*Tests\s+(.*)$", re.MULTILINE)
+_VITEST_PASSED = re.compile(r"(\d+) passed")
 _CARGO_RESULT = re.compile(r"^test result: .*?(\d+) passed;", re.MULTILINE)
 _GO_PASS = re.compile(r"^--- PASS: ", re.MULTILINE)
 
@@ -143,8 +144,12 @@ def _vitest_passed(output: str) -> int | None:
     """Tests vitest reports passing in its ``Tests  N passed (M)`` summary, or
     None when the summary line is absent. Counted from what ran, never from the
     source's declared tests."""
-    match = _VITEST_TESTS.search(_ANSI.sub("", output))
-    return int(match.group(1)) if match else None
+    line = _VITEST_TESTS.search(_ANSI.sub("", output))
+    if line is None:
+        return None
+    passed = _VITEST_PASSED.search(line.group(1))
+    # a summary of only skipped/todo tests has no `passed` part: nothing passed
+    return int(passed.group(1)) if passed else 0
 
 
 def _cargo_passed(output: str) -> int | None:
@@ -1043,11 +1048,11 @@ def run_java(ir: dict) -> tuple[str, str]:
 
     if run.returncode != 0:
         return ("fail", run.stderr.strip() or f"JVM exited {run.returncode}")
-    done = re.search(r"^REVL_TESTS_OK (\d+)$", run_output, re.MULTILINE)
-    if done is None:
+    done = re.findall(r"REVL_TESTS_OK (\d+)", run_output)
+    if not done:
         return ("fail", "REVL_TESTS did not complete")
     lifecycle = _lifecycle_count(ir)
-    detail = f"JVM: {_passed(int(done.group(1)))}"
+    detail = f"JVM: {_passed(int(done[-1]))}"
     if lifecycle:
         detail += (f", including {lifecycle} lifecycle test(s) "
                    "(load -> call -> unload -> no-residue)")

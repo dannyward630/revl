@@ -52,6 +52,7 @@ def test_vitest_count_is_read_from_the_summary_not_the_file_list():
            "\x1b[2m      Tests \x1b[22m \x1b[1m\x1b[32m7 passed\x1b[39m (7)\n")
     assert T._vitest_passed(out) == 7
     assert T._vitest_passed("Tests  1 failed | 4 passed | 1 skipped (6)") == 4
+    assert T._vitest_passed("Tests  3 skipped (3)") == 0
     assert T._vitest_passed("no summary here") is None
 
 
