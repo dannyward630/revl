@@ -1957,6 +1957,11 @@ def _ride_disk(name: str, payload) -> None:
         return
     disk = _disk_state()
     payload["disk"] = disk
+    if name == "revl_check":
+        # issue #2241: a check's note is advice about what it checked, so
+        # `_tool_check` sets it where it knows the candidate; a scratch or
+        # unrelated-file check gets the block and no export note.
+        return
     if not disk["inSync"] and payload.get("ok") and not payload.get("note"):
         payload["note"] = (_DISK_NOTE_REVERT if name in _DISK_REVERTS
                            else _DISK_NOTE)
@@ -3044,15 +3049,25 @@ def _tool_check(arguments: dict) -> dict:
             next=_remedy.call("revl_check", {"session": True}),
             draft=True)
     if explicit or not _carries_candidate(arguments):
-        return _check_held(arguments)
+        return _note_session_check_disk(_check_held(arguments))
     sent, _stored, canon = _canonical.prepare(arguments)
     return _note_held_file_differs(
         arguments, _canonical.attach(_check_as_sent(sent), canon))
 
 
-_CHECK_FILE_DIFFERS_NOTE = ("the file on disk differs from the running "
-                            "composition's held source, and this check read "
-                            "disk; revl_export writes the held source")
+_CHECK_FILE_DIFFERS_NOTE = ("the file on disk differs from the session's "
+                            "held source, and this check read disk; "
+                            "revl_export writes the held source")
+
+
+def _note_session_check_disk(payload):
+    """The export note on a check of the held composition whose source has not
+    reached disk (issue #2241). Only a loaded session has a disk state to
+    report; `_ride_disk` carries the `disk` block."""
+    if (SESSION.loaded and isinstance(payload, dict) and payload.get("ok")
+            and not payload.get("note") and not _disk_state()["inSync"]):
+        payload["note"] = _DISK_NOTE
+    return payload
 
 
 def _note_held_file_differs(arguments: dict, payload) -> dict:
@@ -3061,8 +3076,8 @@ def _note_held_file_differs(arguments: dict, payload) -> dict:
 
     That check reads disk, so after a commit that has not been exported it
     answers for the stale file while the running composition has moved on.
-    One note, set here so `_ride_disk` (which adds its own only where none is
-    set) does not add a second."""
+    The note is set here, not by `_ride_disk`, so only a check that named a
+    held file carries it: a check of an unrelated file gets `disk` alone."""
     if not (SESSION.loaded and isinstance(payload, dict)) or payload.get("note"):
         return payload
     held = _edit.virtual_source(SESSION)

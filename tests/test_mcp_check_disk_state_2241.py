@@ -75,7 +75,7 @@ def test_files_check_after_commit_says_it_read_disk(tenants):
     """(b) the stale file compiles green, and the answer says disk differs."""
     _committed(tenants)
     out = _call("revl_check", {"files": [str(tenants)]})
-    assert "differs from the running composition's held source" in out["note"]
+    assert "differs from the session's held source" in out["note"]
     assert "revl_export" in out["note"]
     # one coherent note: the ride's own export note did not replace or join it
     assert out["note"].count("revl_export") == 1
@@ -99,3 +99,20 @@ def test_cold_files_check_is_unchanged(tenants):
     assert out["ok"] is True
     assert "disk" not in out
     assert "note" not in out
+
+
+def test_unrelated_file_and_scratch_checks_carry_disk_without_export_note(
+        tenants, clean_session):
+    """A check of something the session does not hold is advice about that
+    candidate, not about the held source: it gets `disk`, not the export note."""
+    _committed(tenants)
+    other = clean_session / "other.rvl"
+    other.write_text("service S { fn f() -> Int }\n"
+                     "component C provides s: S { provide s { fn f() = 1 } }\n",
+                     encoding="utf-8")
+    for args in ({"files": [str(other)]},
+                 {"source": other.read_text(encoding="utf-8")}):
+        out = _call("revl_check", args)
+        assert out["disk"]["inSync"] is False
+        assert out["disk"]["stale"] == [str(tenants)]
+        assert "revl_export" not in (out.get("note") or "")
