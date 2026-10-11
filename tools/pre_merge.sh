@@ -145,6 +145,25 @@ for arg in "$@"; do
     esac
 done
 
+# The python that reads ci.yml for step 8 (tools/ci_suites.py needs PyYAML).
+YAML_PY=""
+for cand in "$PYTHON" "$(command -v python3 2>/dev/null)"; do
+    if [ -n "$cand" ] && "$cand" -c 'import yaml' >/dev/null 2>&1; then YAML_PY=$cand; break; fi
+done
+
+# Check the --with names before any step runs: a typo must stop the gate at
+# once, not leave the suite quietly not opted in after the whole run.
+if [ -n "$WITH" ]; then
+    if [ -z "$YAML_PY" ]; then
+        echo "pre-merge: --with=$WITH needs a python with PyYAML to read ci.yml, and none was found."
+        exit 1
+    fi
+    if ! with_err=$("$YAML_PY" tools/ci_suites.py --root "$root" --check-with "$WITH" 2>&1); then
+        echo "pre-merge: --with refused: $with_err"
+        exit 1
+    fi
+fi
+
 # Selection defaults ARE the full gate, so with AFF=0 (plain `make pre-merge`)
 # every step runs exactly as before. `want` short-circuits to true whenever
 # RUN_ALL=1, which is the case for the full gate and for a FULL selection.
@@ -558,8 +577,13 @@ ci_run() {
     ran=$((ran + 1))
     count=$(printf '%s\n' "$out" | grep -E '[0-9]+ (passed|failed|errors?)|no tests ran|Tests +[0-9]+' \
         | tail -1 | sed 's/^[= ]*//; s/[= ]*$//')
-    if [ "$rc" -eq 0 ]; then
-        echo "ok (${count:-no test count in its output})"
+    if [ "$rc" -eq 0 ] && [ -n "$count" ]; then
+        echo "ok ($count)"
+    elif [ "$rc" -eq 0 ]; then
+        # Exit 0 with no count is a run that may have run nothing: never ok.
+        echo "FAILED (exit 0 but no test count in its output)"
+        printf '%s\n' "$out" | tail -30 | sed 's/^/      /'
+        fail=1
     else
         echo "FAILED (exit $rc${count:+, $count})"
         printf '%s\n' "$out" | tail -30 | sed 's/^/      /'
@@ -568,10 +592,7 @@ ci_run() {
 }
 
 ci_only_suites() {
-    yp=""
-    for cand in "$PYTHON" "$(command -v python3 2>/dev/null)"; do
-        if [ -n "$cand" ] && "$cand" -c 'import yaml' >/dev/null 2>&1; then yp=$cand; break; fi
-    done
+    yp=${YAML_PY:-}
     if [ -z "$yp" ]; then
         skip "ci-only suites (from ci.yml)" "no python with PyYAML to read ci.yml; the CI-only suites were not even listed"
         return

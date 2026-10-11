@@ -27,12 +27,17 @@ SKIPPED with what is missing. A job with no local recipe below is SKIPPED with
 that reason. Nothing is dropped silently.
 
     python3 tools/ci_suites.py --list [--with NAMES] [--pytest P] [--pytest-python PY]
+    python3 tools/ci_suites.py --check-with NAMES
     python3 tools/ci_suites.py --run ID [--pytest P]
 
 `--list` prints one tab-separated line per suite: `id state label detail`,
 where state is `run`, `skip` (opted in, toolchain missing), `optout` (not
-opted in) or `covered` (an earlier pre-merge step already runs it). `--run`
-executes one suite's CI command with its CI switches and exits with its code.
+opted in) or `covered` (an earlier pre-merge step already runs it). When
+ci.yml cannot be read and nothing is opted in, `--list` prints one `skip` line
+saying so and exits 0; with a suite opted in it exits 2. `--check-with` exits 2
+for a name that is no CI job with a CI-only suite. `--run` executes one
+suite's `run:` text as written (line by line, under `bash -eo pipefail` as CI
+does) with its CI switches and exits with its code.
 """
 
 from __future__ import annotations
@@ -45,6 +50,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -141,11 +147,11 @@ def pytest_targets(run: str) -> tuple[str, ...]:
     """
     out: list[str] = []
     cwd = "."
-    for part in re.split(r"&&|;|\n", run):
+    for part in re.split(r"&&|;|\n", re.sub(r"\\\n", " ", run)):
         try:
-            words = shlex.split(part)
+            words = shlex.split(part, comments=True)
         except ValueError:
-            words = part.split()
+            words = part.split("#", 1)[0].split()
         if words[:1] == ["cd"] and len(words) > 1:
             cwd = words[1]
             continue
@@ -179,18 +185,31 @@ def _env_value(v) -> str:
 
 
 def _str_env(env) -> dict[str, str]:
-    return {str(k): _env_value(v) for k, v in (env or {}).items()}
+    # An `env:` that is an expression string sets nothing this tool can read.
+    if not isinstance(env, dict):
+        return {}
+    return {str(k): _env_value(v) for k, v in env.items()}
+
+
+class CiShapeError(Exception):
+    """ci.yml is not the shape this tool reads (no `jobs:` mapping)."""
 
 
 def ci_suites(ci_yml: Path) -> list[Suite]:
     import yaml  # PyYAML is in the `[test]` extra, like the suite itself
 
     doc = yaml.safe_load(ci_yml.read_text(encoding="utf-8"))
+    jobs = doc.get("jobs") if isinstance(doc, dict) else None
+    if not isinstance(jobs, dict):
+        raise CiShapeError(f"{ci_yml} has no `jobs:` mapping")
     suites = []
-    for job, spec in (doc.get("jobs") or {}).items():
+    for job, spec in jobs.items():
+        if not isinstance(spec, dict):
+            continue  # a reusable-workflow call or similar: no steps to read
         job_env = _str_env(spec.get("env"))
-        for i, step in enumerate(spec.get("steps") or []):
-            run = step.get("run")
+        steps = spec.get("steps")
+        for i, step in enumerate(steps if isinstance(steps, list) else []):
+            run = step.get("run") if isinstance(step, dict) else None
             if not run:
                 continue
             step_env = _str_env(step.get("env"))
@@ -254,20 +273,34 @@ def switches(suite: Suite) -> dict[str, str]:
             if not _is_path(v) and k not in local}
 
 
-def run_env(suite: Suite) -> dict[str, str]:
-    """This machine's environment plus the suite's CI switches."""
-    return {**os.environ, **switches(suite)}
+def run_env(suite: Suite, gocache: str = "") -> dict[str, str]:
+    """This machine's environment plus the suite's CI switches. With no
+    GOCACHE exported, `gocache` (a private directory) replaces go's per-user
+    default, which concurrent runs on a shared box corrupt."""
+    env = {**os.environ, **switches(suite)}
+    if gocache and not os.environ.get("GOCACHE"):
+        env["GOCACHE"] = gocache
+    return env
 
 
 def command(suite: Suite, pytest: str) -> str:
-    """The CI command with a bare `pytest` pointed at the gate's pytest and no
-    `--junitxml` (CI's report path is a fixed /tmp file shared by every run)."""
-    cmd = _flat(suite.run)
-    cmd = re.sub(r"\s--junitxml(=|\s+)\S+", "", cmd)
-    if pytest:
-        cmd = re.sub(r"(^|&&\s*|;\s*)pytest(?=\s|$)",
-                     lambda m: m.group(1) + shlex.quote(pytest), cmd)
-    return cmd
+    """The CI `run:` text, line by line as CI runs it, with a bare `pytest`
+    pointed at the gate's pytest and no `--junitxml` (CI's report path is a
+    fixed /tmp file every run would share). Never flattened: a `#` comment
+    line or a `\\` continuation means what it means in the original."""
+    lines = []
+    for line in str(suite.run).splitlines():
+        line = re.sub(r"[ \t]--junitxml(=|[ \t]+)\S+", "", line)
+        if pytest:
+            line = re.sub(r"(^\s*|&&\s*|;\s*)pytest(?=\s|$)",
+                          lambda m: m.group(1) + shlex.quote(pytest), line)
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _one_line(cmd: str) -> str:
+    """`cmd` for a one-line listing: each newline shown as a literal \\n."""
+    return cmd.strip().replace("\n", "\\n")
 
 
 def _wanted(job: str, chosen: set[str]) -> bool:
@@ -286,7 +319,8 @@ def list_suites(suites, root, chosen, pytest, pytest_python):
         else:
             why = missing(s, root, pytest, pytest_python)
             shown = " ".join(f"{k}={v}" for k, v in sorted(switches(s).items()))
-            cmd = f"{shown} {command(s, pytest)}" if shown else command(s, pytest)
+            cmd = _one_line(command(s, pytest))
+            cmd = f"{shown} {cmd}" if shown else cmd
             state, detail = ("skip", why) if why else ("run", cmd)
         print("\t".join((s.id, state, s.label, detail.replace("\t", " "))))
 
@@ -297,6 +331,7 @@ def main(argv=None) -> int:
     ap.add_argument("--ci", default=None, help="workflow file (default: ci.yml)")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--run", metavar="ID")
+    ap.add_argument("--check-with", metavar="NAMES", default=None)
     ap.add_argument("--with", dest="chosen", default="",
                     help="comma-separated CI job names, or all")
     ap.add_argument("--pytest", default="")
@@ -305,18 +340,32 @@ def main(argv=None) -> int:
 
     root = Path(args.root).resolve()
     ci = Path(args.ci) if args.ci else root / ".github" / "workflows" / "ci.yml"
-    suites = ci_suites(ci)
+    names = args.chosen if args.check_with is None else args.check_with
+    chosen = {c.strip() for c in names.split(",") if c.strip()}
+    try:
+        suites = ci_suites(ci)
+    except Exception as exc:  # any unreadable ci.yml: say so, never crash
+        why = f"cannot read {ci}: {type(exc).__name__}: {exc}"
+        if args.list and not chosen:
+            # Nothing opted in: the default gate stays green but says loudly
+            # that the CI-only suites were not even listed.
+            print("\t".join(("ci.yml", "skip", "ci-only suites (from ci.yml)",
+                             _one_line(why))))
+            return 0
+        print(why, file=sys.stderr)
+        return 2
+    unknown = sorted(chosen - {s.job for s in suites} - {"all"})
+    if unknown:
+        jobs = ", ".join(sorted({s.job for s in suites}))
+        print(f"--with names no CI job with a CI-only suite: {', '.join(unknown)}. "
+              f"Known: all, {jobs}", file=sys.stderr)
+        return 2
+    if args.check_with is not None:
+        return 0
     pytest = args.pytest
     if pytest and "/" in pytest and not os.path.isabs(pytest):
         pytest = str(root / pytest)  # a step may `cd` before calling it
     if args.list:
-        chosen = {c.strip() for c in args.chosen.split(",") if c.strip()}
-        unknown = sorted(chosen - {s.job for s in suites} - {"all"})
-        if unknown:
-            jobs = ", ".join(sorted({s.job for s in suites}))
-            print(f"--with names no CI job with a CI-only suite: {', '.join(unknown)}. "
-                  f"Known: all, {jobs}", file=sys.stderr)
-            return 2
         list_suites(suites, root, chosen, pytest, args.pytest_python)
         return 0
     if args.run:
@@ -324,9 +373,13 @@ def main(argv=None) -> int:
         if suite is None:
             print(f"no CI-only suite {args.run} in {ci}", file=sys.stderr)
             return 2
-        return subprocess.run(["sh", "-c", command(suite, pytest)], cwd=root,
-                              env=run_env(suite), check=False).returncode
-    ap.error("pass --list or --run ID")
+        with tempfile.TemporaryDirectory(prefix="revl-premerge-gocache-") as gocache:
+            # GitHub runs a `run:` block as `bash -e {0}`, with pipefail.
+            return subprocess.run(
+                ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c",
+                 command(suite, pytest)],
+                cwd=root, env=run_env(suite, gocache), check=False).returncode
+    ap.error("pass --list, --check-with NAMES or --run ID")
     return 2
 
 
