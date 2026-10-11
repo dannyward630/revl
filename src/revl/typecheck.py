@@ -3256,6 +3256,12 @@ def infer_ir(node, tenv: dict, types: dict, services: dict,
                                    f"field access `.{name}`", target,
                                    targs[0] if targs else None,
                                    alt=f"?.{name}")
+        # `.length` on a sized value is Int, as `infer_ast` types it. Without
+        # this the provide-method stratum answered None, so `xs.length + 1`
+        # carried no `operands` and rendered the host operator, where the same
+        # sum in a `fn` traps (and where selfhost/lower.rvl annotates it).
+        if name == "length" and thead in _SIZED_HEADS:
+            return "Int"
         # item 392: the provide-method twin of the item 380(2) refusal in
         # `infer_ast`. A field read off a value whose static type is
         # `Any`/`Value` (the erased-dynamic types — a `json_parse` result) is
