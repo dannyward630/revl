@@ -78,8 +78,11 @@ step() {
 # trusted. No summary line means no count, which the callers treat as nothing
 # verified: UNVERIFIED for an affected selection, a refusal for the core subset.
 # "1 xpassed" is not a pass: the outcome word must follow the count directly.
+# Colour codes (FORCE_COLOR, PY_COLORS) are stripped first: they sit between
+# the count and " in 0.02s" and after it, so the summary would not match.
 pytest_count() {
-    printf '%s\n' "$2" \
+    _esc=$(printf '\033')
+    printf '%s\n' "$2" | sed "s/${_esc}\[[0-9;]*m//g" \
         | grep -E ' in [0-9]+(\.[0-9]+)?s( \([0-9:]+\))?( =+)?$' | tail -1 \
         | grep -Eo "(^|[^0-9])[0-9]+ $1" | grep -Eo '[0-9]+' | tail -1
 }

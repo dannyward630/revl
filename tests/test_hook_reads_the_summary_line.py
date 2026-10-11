@@ -65,6 +65,15 @@ def test_the_last_summary_line_wins_and_its_decoration_is_allowed():
     assert _count("passed", out) == "5"
 
 
+def test_a_coloured_summary_is_read():
+    # FORCE_COLOR=1 / PY_COLORS=1: escape codes around the counts and after
+    # " in 0.02s".
+    out = ("\x1b[32m.\x1b[0m\n\x1b[32m\x1b[1m2 passed\x1b[0m\x1b[32m, "
+           "\x1b[33m1 skipped\x1b[0m\x1b[32m in 0.02s\x1b[0m\n")
+    assert _count("passed", out) == "2"
+    assert _count("skipped", out) == "1"
+
+
 def test_no_summary_line_is_no_count():
     assert _count("passed", "collecting ...\n1 passed handle warning\n") == ""
 

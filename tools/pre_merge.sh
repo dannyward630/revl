@@ -189,7 +189,7 @@ step() {
         rc=$?
     fi
     if [ "$rc" -eq "$SKIP_RC" ]; then
-        echo "SKIPPED (nothing checked; a tool is missing)"
+        echo "SKIPPED (a tool is missing; see the SKIP lines)"
         printf '%s\n' "$out" | grep '^SKIP' | tail -5 | sed 's/^/      /'
         skipped=$((skipped + 1))
         return

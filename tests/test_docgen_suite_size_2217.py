@@ -38,7 +38,7 @@ def test_the_block_is_rendered_from_the_tree(tmp_path):
     root = _tree(tmp_path, 2345, 1900.0)
     assert docgen.suite_size(root) == (2345, 1900.0)
     body = docgen.block_suite_size("", root)
-    assert "more than 2,000 test functions" in body
+    assert "at least 2,000 test functions" in body
     assert "about\n30 minutes of test time in CI" in body
 
 
