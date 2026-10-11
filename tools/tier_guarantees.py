@@ -579,7 +579,9 @@ def host_tiers() -> tuple[str, ...]:
 
 
 def _short(tier: str) -> str:
-    return {"python": "py", "typescript": "ts"}.get(tier, tier)
+    from revl.tiers import short_tier  # noqa: PLC0415 — needs sys.path
+
+    return short_tier(tier)
 
 
 def matrix() -> dict:

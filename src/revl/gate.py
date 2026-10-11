@@ -48,6 +48,7 @@ from typing import Any, Callable, Mapping
 # mid-session can replay inverses to a clean tree at next boot WITHOUT reaching
 # into `revl.recovery` (the embedding-contract "mechanized fallback").
 from .recovery import recover  # noqa: F401 — re-exported on the public surface
+from .tiers import SPELLING_DIRS, TIERS
 
 __all__ = [
     "Verdict",
@@ -349,12 +350,8 @@ def compile_to(source: str, tier: str) -> "Emit":
 # The tiers `compile_to` can emit on py (reference-backed): the CLI short name
 # (`revl run --backend`) mapped to its `backends/<dir>` directory. Both the short
 # name and the directory name are accepted.
-_TIER_DIRS = {
-    "py": "python", "python": "python",
-    "ts": "typescript", "typescript": "typescript",
-    "rust": "rust", "java": "java", "wasm": "wasm", "go": "go",
-}
-_KNOWN_TIERS = ("py", "ts", "rust", "java", "wasm", "go")
+_TIER_DIRS = SPELLING_DIRS
+_KNOWN_TIERS = tuple(TIERS)
 
 
 def _tier_dir(tier: str) -> str | None:
