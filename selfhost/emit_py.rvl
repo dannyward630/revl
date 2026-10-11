@@ -1045,7 +1045,7 @@ fn async_arrow(shape: Str, lam: Str) -> Str {
 // renderers reach it: `render_bin`/`render_un` are the module-fn spine and
 // `cbin`/`cun` the component path. The component pair used to spell every
 // operator with the raw host form, and that is the whole reason a `provide`
-// method disagreed with a module `fn` on the same source — python's `%` FLOORS
+// method disagreed with a module `fn` on the same source: python's `%` FLOORS
 // (`-7 % 2` is `1`) where docs/arithmetic.md specifies the truncated `-1`, and
 // its `/` on two Ints had to be true division through `_revl_div`. The caller
 // renders its own operands (`expr` or `cexpr`), so recursion and the component

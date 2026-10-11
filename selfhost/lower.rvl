@@ -22933,7 +22933,7 @@ fn cir_field(f: FieldN, sc: List[Bind], hostSc: List[Str], cx: CCtx) -> IrRes {
 }
 
 // The `operands` annotation the reference stamps on typed arithmetic (item
-// #2198). The component path once carried NONE — it ported only the `Str`
+// #2198). The component path once carried NONE: it ported only the `Str`
 // relational mark item 458 added, so `/`, `%`, `+`, `-` and `*` inside a
 // `provide` method, an activation `let` or an `effect` argument reached every
 // tier unannotated and each fell back to its host's operator. The same
@@ -22944,7 +22944,7 @@ fn cir_field(f: FieldN, sc: List[Bind], hostSc: List[Str], cx: CCtx) -> IrRes {
 // The type env is `cenv_ir`, the same one `cir_field` and the return-widening
 // mark read: `config` fields, the required services' operation returns, the
 // cases and the lexical scope. An operand it cannot type infers to `""`, which
-// stamps nothing — an absent annotation, never a guess.
+// stamps nothing: an absent annotation, never a guess.
 fn cir_bin(b: BinN, sc: List[Bind], hostSc: List[Str], cx: CCtx) -> IrRes {
   let l = cir_expr(b.l, sc, hostSc, cx)
   let r = cir_expr(b.r, sc, hostSc, cx)
@@ -22960,7 +22960,7 @@ fn cir_bin(b: BinN, sc: List[Bind], hostSc: List[Str], cx: CCtx) -> IrRes {
 fn cir_un(u: UnN, sc: List[Bind], hostSc: List[Str], cx: CCtx) -> IrRes {
   let o = cir_expr(u.e, sc, hostSc, cx)
   if (!o.ok) { return mk_irres(false, "") }
-  // Unary minus is arithmetic too — `-Int.MIN` overflows — and only
+  // Unary minus is arithmetic too (`-Int.MIN` overflows), and only
   // `Int`/`Int32` are marked; no tier treats Float negation specially. Read
   // exactly as `lir_un` reads it for the module-fn spine.
   let ot = u.op == "-" ? infer(u.e, cenv_ir(cx, sc)) : ""
@@ -23256,7 +23256,12 @@ fn cir_method_stmts(ts: List[Token], lo: Int, hi: Int, cx: CCtx, sc: List[Bind],
     if (bend == 0 - 1) { return mk_irres(false, "") }
     let ie = cir_expr(it.e, sc, hostSc, cx_at(cx, tkc(ts, lo + 4).line))
     if (!ie.ok) { return mk_irres(false, "") }
-    let fb = cir_method_stmts(ts, it.i + 2, bend - 1, cx, sc.push({ name: bind, ty: "" }), hostSc, "", false)
+    // the bind is typed by the iterable's `List` element, read through the
+    // service-aware env, as the reference's `_sweep` + `_type_arg` type it, so
+    // `t = t + x` over a `List[Int]` carries its `operands` (issue #2198)
+    let itT = infer(it.e, cenv_ir(cx, sc))
+    let elemT = starts_with(itT, "List[") ? type_arg1(itT) : ""
+    let fb = cir_method_stmts(ts, it.i + 2, bend - 1, cx, sc.push({ name: bind, ty: elemT }), hostSc, "", false)
     if (!fb.ok) { return mk_irres(false, "") }
     let step = "{\"step\": \"for\", \"bind\": ".concat(jstr(bind))
       .concat(", \"iterable\": ").concat(ie.js)
@@ -24172,7 +24177,9 @@ fn cir_body(ts: List[Token], i: Int, end: Int, cx: CCtx,
       if (bend == 0 - 1) { return mk_irres(false, "") }
       let blk = cir_effect_block(ts, i + 5, bend - 1, cx, sc, hostSc)
       if (!blk.ok) { return mk_irres(false, "") }
-      let bsc = sc.push({ name: name, ty: "" })
+      // typed by the tail acquisition over the OUTER scope: the reference
+      // infers it after dropping the block's setup-let types (issue #2198)
+      let bsc = sc.push({ name: name, ty: value_ty(blk.acqE, cenv_ir(cx, sc)) })
       var bstep = "{\"step\": \"let-effect\", \"acquire\": ".concat(blk.acq)
       var bnext = bend
       // issue #1859: an absent `undo` records NO key, exactly as the reference
@@ -24439,7 +24446,10 @@ fn cir_body(ts: List[Token], i: Int, end: Int, cx: CCtx,
     let evc = ev_contract(ts, evn, cx.al)
     if (!evc.ok) { return mk_irres(false, "") }
     let isafe = safe_name(item, sc2, hostSc2)
-    let isc = sc2.push({ name: item, ty: "" })
+    // under `on <Event> as <x>` the item has the event's record type for the
+    // body, as the reference binds it; a plain `every` item stays untyped
+    // there and here (issue #2198)
+    let isc = sc2.push({ name: item, ty: evn })
       .push({ name: "rename ".concat(item), ty: isafe })
     let bodyR = cir_emit_steps(ts, j + 1, bend - 1, cx, isc, hostSc2, "")
     if (!bodyR.ok) { return mk_irres(false, "") }

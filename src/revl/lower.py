@@ -7046,7 +7046,7 @@ def _operand_annotation(op: str, left_type: str | None,
     relational annotation that item 458 added and never learned the arithmetic
     one, so `/`, `%`, `+`, `-` and `*` written inside a `provide` method
     reached every backend unannotated and each fell back to its host's
-    operator. The same program then answered per tier — `-7 % 2` was python's
+    operator. The same program then answered per tier: `-7 % 2` was python's
     FLOORED `1` against the truncated `-1` docs/arithmetic.md specifies and
     java computed, `/` skipped `_revl_div` so `-7 / 2` was `-3.0` on java, and
     go and rust did not build (issue #2198). Two call sites, one function: the
@@ -7056,14 +7056,14 @@ def _operand_annotation(op: str, left_type: str | None,
     than unknown: a `bin` whose RIGHT operand cannot be typed must stay
     unannotated (the old `fn`-stratum arm required BOTH types), and without the
     flag `Int - <untypable>` would read as a negation. Unary minus is
-    arithmetic too — negating `Int.MIN` overflows — and only `Int`/`Int32` are
+    arithmetic too (negating `Int.MIN` overflows), and only `Int`/`Int32` are
     annotated: it is the bound a backend must re-impose, and no tier treats
     Float negation specially.
 
     A caller passes the operand types it can determine and `None` for one it
     cannot; an undetermined operand is an absent annotation, never a guess and
-    never an error (the two strata read their types from different oracles —
-    `infer_ast` for the parser AST, `infer_ir` for the lowered component body —
+    never an error (the two strata read their types from different oracles:
+    `infer_ast` for the parser AST, `infer_ir` for the lowered component body;
     and both answer `None` rather than raising).
     """
     if unary:
@@ -10169,11 +10169,11 @@ def _lower_component_pure_expr(expr, env: Env, scope: dict[str, str], callables:
                                                     pure_only)}
         # A provide-method body is a second renderer on every tier, so an
         # operator written there must mean what the same operator means in a
-        # module `fn` — the lesson item 458's `&&`/`||` fix already paid for.
+        # module `fn`: the lesson item 458's `&&`/`||` fix already paid for.
         # `_operand_annotation` is the SAME decision the `fn` stratum makes;
         # only the type oracle differs, because this stratum holds lowered IR
         # nodes rather than parser AST: `infer_ir` recovers the operand types
-        # `env.type_env` knows (method parameters, service signature — A6 —
+        # `env.type_env` knows (method parameters, service signature (A6),
         # config fields, locals) and answers `None` for one it cannot, which is
         # an absent annotation, never a guess. Reading the annotation off the
         # fn stratum's own function is what keeps the two from drifting apart

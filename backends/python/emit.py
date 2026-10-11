@@ -1065,8 +1065,8 @@ def _annotated_bin(node: dict, render) -> str | None:
     `None` when the annotation asks for nothing special.
 
     THE one place the `operands` annotation is turned into python. This module
-    has two expression renderers — the module-level `_expr` for a `fn` body and
-    `_ComponentEmitter._expr` for a component body — and the component one used
+    has two expression renderers (the module-level `_expr` for a `fn` body and
+    `_ComponentEmitter._expr` for a component body), and the component one used
     to ignore the annotation and spell every operator with the raw host form
     (issue #2198). That is the whole reason a `provide` method disagreed with a
     module `fn` on the same source: python's `%` FLOORS (`-7 % 2` is `1`) where
@@ -1078,7 +1078,7 @@ def _annotated_bin(node: dict, render) -> str | None:
 
     `+ - *` on `Int`/`Int32` go through `_bounded`: python is arbitrary
     precision, so it is the tier that has to *impose* the bound rather than
-    detect it — without it a program that overflows on every other tier quietly
+    detect it; without it a program that overflows on every other tier quietly
     succeeds here, the reference tier disagreeing with all five others.
     """
     op = node.get("op")
@@ -1092,19 +1092,19 @@ def _annotated_bin(node: dict, render) -> str | None:
         return _bounded(f"{render(node['left'])} {op} "
                         f"{render(node['right'])}", width)
     if op == "/":
-        # true division, IEEE at zero (docs/arithmetic.md) — regardless of the
+        # true division, IEEE at zero (docs/arithmetic.md), regardless of the
         # operand type, since `Int / Int` is Float.
         return f"_revl_div({render(node['left'])}, {render(node['right'])})"
     if op == "%" and operands == "Float":
         # The Float remainder is IEEE `fmod`, and IEEE gives it a VALUE at a
-        # zero divisor — `x % 0.0` is NaN, not a fault. python's own `%` raises
+        # zero divisor: `x % 0.0` is NaN, not a fault. python's own `%` raises
         # `ZeroDivisionError` there, exactly as its `/` does, so it is the one
         # tier that has to build the IEEE answer (issue #721). `_revl_rem` is
         # the Int form and must keep faulting at zero.
         return f"_revl_frem({render(node['left'])}, {render(node['right'])})"
     if op == "%" and operands == "Int":
-        # `%` is the TRUNCATED remainder — it takes the sign of the dividend,
-        # as in TypeScript (§0) — and pairs with `div_trunc` so that
+        # `%` is the TRUNCATED remainder (it takes the sign of the dividend,
+        # as in TypeScript, §0), and pairs with `div_trunc` so that
         # (a.div_trunc(b)) * b + a % b == a. Python's `%` floors and takes the
         # sign of the *divisor*, so it is the one tier that has to build this.
         # The Euclidean remainder is `mod`, a different operation with a
@@ -1121,7 +1121,7 @@ def _annotated_un(node: dict, render) -> str | None:
 
     The same split, the same drift (issue #2198): the component renderer
     spelled `-x` as the host's `-x`, so negating `Int.MIN` inside a `provide`
-    method quietly came back as 2^63 where rust, java and go trap — and the
+    method quietly came back as 2^63 where rust, java and go trap, and the
     module renderer already had the fix. Negation is `0 - x`, so it goes
     through the bound like any other subtraction (docs/arithmetic.md).
     Both callers have already matched `-`.
@@ -1972,7 +1972,7 @@ class _ComponentEmitter:
                 return f"({reader} if {binder} is not None else {rhs})"
             # A component body is a second renderer on this tier, so an
             # annotated `+ - * / %` here has to reach the SAME rendering a
-            # module `fn` gets — `_annotated_bin` is that one rendering
+            # module `fn` gets: `_annotated_bin` is that one rendering
             # (issue #2198). Spelling these with the host operator is what
             # made `config.a % config.b` come back as python's floored `1`
             # in a `provide` method and the truncated `-1` in a `fn`.
@@ -4088,7 +4088,7 @@ def _expr(node: dict) -> str:
         if node["op"] == "-":
             # Negation is `0 - x`, and `0 - Int.MIN` overflows: it goes through
             # the bound like any other subtraction (docs/arithmetic.md).
-            # Without this, `-Int.MIN` — which traps on rust and wasm —
+            # Without this, `-Int.MIN`, which traps on rust and wasm,
             # quietly came back as 2^63 here, out of the range python itself
             # imposes on every other operation. Shared with the component
             # renderer, which had the same gap (issue #2198).

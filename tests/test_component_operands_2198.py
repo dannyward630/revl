@@ -4,7 +4,7 @@ Issue #2198 (emitter/quality audit QUAL-01). `_lower_pure_expr`'s `ExprBin` arm
 records `node["operands"]` for the typed arithmetic operators, and every tier's
 renderer keys on it: it is what makes `Int / Int` true division and `%` a
 TRUNCATED remainder (docs/arithmetic.md) instead of each host language's own
-operator. `_lower_component_pure_expr` — the second, drifted copy of that arm —
+operator. `_lower_component_pure_expr` (the second, drifted copy of that arm)
 kept only the `Str` relational annotation from item 458 and dropped the
 arithmetic one, so the same `/`, `%`, `+`, `-`, `*` written inside a `provide`
 method, an activation `let`-effect argument or an `effect` argument reached
@@ -13,7 +13,7 @@ was `1` on python and `-1` on java, go failed to build and rust failed to
 type-check, for one program.
 
 Both strata now annotate through ONE helper (`_operand_annotation` in
-`src/revl/lower.py`), so the annotation cannot drift again — this file pins
+`src/revl/lower.py`), so the annotation cannot drift again; this file pins
 that by asserting the two strata's IR side by side rather than each in
 isolation.
 
@@ -75,7 +75,7 @@ pub fn rem(a: Int, b: Int) -> Int { return a % b }
 pub fn quo(a: Int, b: Int) -> Float { return a / b }
 """
 
-#: The same arithmetic as ACTIVATION `effect` arguments — the second component
+#: The same arithmetic as ACTIVATION `effect` arguments: the second component
 #: position the item names (an activation body has no plain `let`: G6 records
 #: effects, so the value expression reaches the component stratum through the
 #: effect's argument).
@@ -232,9 +232,123 @@ def test_py_effect_argument_plus_goes_through_the_annotated_path():
     raw = "open_slot((_revl_config['a'] + _revl_config['b']))"
     # the pre-fix rendering, verbatim: the argument handed straight to the host
     assert raw not in code
-    # and the expression is still there — inside the bounded (overflow-trapping)
+    # and the expression is still there, inside the bounded (overflow-trapping)
     # form the annotation selects
     assert "_revl_config['a'] + _revl_config['b']" in code
     assert "_revl_i64" in code
     assert "open_slot(_revl_rem(_revl_config['a'], _revl_config['b']))" in code
     assert "open_ratio(_revl_div(_revl_config['a'], _revl_config['b']))" in code
+
+
+# -- (d) the self-hosted producer types every component bind the same way ----
+#
+# `selfhost/lower.rvl` must stamp the same `operands` the reference stamps, or
+# the native chain renders different arithmetic from the same source. Each
+# probe reads an operand through a component bind whose type the reference
+# knows: a provide-method `for` item (the `List` element), an `on E as e` item
+# (the event record, with and without `in <sub>`), and an effect-block bind
+# (its tail acquisition). A plain `every x in sub` item is untyped on both
+# sides, so it pins the absence too.
+
+BIND_PROBES = {
+    "for_item": """
+service Sum { fn total(xs: List[Int]) -> Int }
+component C provides s: Sum {
+  provide s {
+    fn total(xs) {
+      var t = 0
+      for (x of xs) { t = t + x }
+      return t
+    }
+  }
+}
+""",
+    "on_event_item": """
+event OrderPlaced(key: order_id) { order_id: Str, quantity: Int }
+service Sink { emission fn write(v: Int) }
+component Coeffect requires sink: Sink, feed: Stream[OrderPlaced] {
+  on OrderPlaced as e {
+    emit sink.write(e.quantity + 1)
+  }
+}
+""",
+    "on_event_item_in_sub": """
+event OrderPlaced(key: order_id) { order_id: Str, quantity: Int }
+service Sink { emission fn write(v: Int) }
+component Handler requires sink: Sink {
+  let src = effect Stream.source() undo src.close()
+  let sub = subscribe src undo sub.close()
+  on OrderPlaced as e in sub {
+    emit sink.write(e.quantity + 1)
+  }
+}
+""",
+    "effect_block_bind": """
+service Store {
+  fn grab(k: Int) -> Int
+  fn release(k: Int) -> Int
+}
+service Front { fn total() -> Int }
+component Reader requires store: Store provides front: Front {
+  let r = effect {
+    let k = 2
+    store.grab(k)
+  } undo store.release(2)
+  provide front {
+    fn total() = r + 1
+  }
+}
+""",
+    "every_item_untyped": """
+event OrderPlaced(key: order_id) { order_id: Str, quantity: Int }
+service Sink { emission fn write(v: Int) }
+component Chain requires sink: Sink, feed: Stream[OrderPlaced] {
+  let sub = subscribe feed undo sub.close()
+  every o in sub {
+    emit sink.write(o.quantity + 1)
+  }
+}
+""",
+}
+
+BIND_EXPECTED = {
+    "for_item": [("+", "Int")],
+    "on_event_item": [("+", "Int")],
+    "on_event_item_in_sub": [("+", "Int")],
+    "effect_block_bind": [("+", "Int")],
+    "every_item_untyped": [("+", None)],
+}
+
+
+def _ir_operands(ir) -> list[tuple[str, object]]:
+    found: list[tuple[str, object]] = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("kind") == "bin" and node.get("op") in ARITHMETIC_OPS:
+                found.append((node["op"], node.get("operands")))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(ir)
+    return found
+
+
+@pytest.fixture(scope="module")
+def native_lower_to_ir():
+    from test_selfhost_compile import _exec_selfhost  # noqa: PLC0415
+    return _exec_selfhost("selfhost/compile.rvl")["lower_to_ir"]
+
+
+@pytest.mark.parametrize("name", sorted(BIND_PROBES))
+def test_native_producer_types_component_binds_like_the_reference(
+        native_lower_to_ir, name):
+    import json  # noqa: PLC0415
+    source = BIND_PROBES[name]
+    reference = _ir_operands(compile_source(source, "t.rvl"))
+    native = _ir_operands(json.loads(native_lower_to_ir(source)))
+    assert reference == BIND_EXPECTED[name]
+    assert native == reference

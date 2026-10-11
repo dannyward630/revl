@@ -26733,7 +26733,9 @@ fn cir_method_stmts(ts: Vec<Token>, lo: i64, hi: i64, cx: CCtx, sc: Vec<Bind>, h
         if (!ie.ok) {
             return mk_irres(false, String::from(""));
         }
-        let fb = cir_method_stmts(ts.clone(), (it.i).checked_add(2i64).expect("revl: Int overflow"), (bend).checked_sub(1i64).expect("revl: Int overflow"), cx.clone(), sc.revl_push(Bind { name: bind.clone(), ty: String::from("") }), hostSc.clone(), String::from(""), false);
+        let itT = infer(it.e.clone(), cenv_ir(cx.clone(), sc.clone()));
+        let elemT = if starts_with__m2(&itT, "List[") { type_arg1(&itT) } else { String::from("") };
+        let fb = cir_method_stmts(ts.clone(), (it.i).checked_add(2i64).expect("revl: Int overflow"), (bend).checked_sub(1i64).expect("revl: Int overflow"), cx.clone(), sc.revl_push(Bind { name: bind.clone(), ty: elemT }), hostSc.clone(), String::from(""), false);
         if (!fb.ok) {
             return mk_irres(false, String::from(""));
         }
@@ -27595,7 +27597,7 @@ fn cir_body(ts: Vec<Token>, i: i64, end: i64, cx: CCtx, provs: Vec<Bind>, sc: Ve
             if (!blk.ok) {
                 return mk_irres(false, String::from(""));
             }
-            let bsc = sc.revl_push(Bind { name: name.clone(), ty: String::from("") });
+            let bsc = sc.revl_push(Bind { name: name.clone(), ty: value_ty(blk.acqE.clone(), cenv_ir(cx.clone(), sc.clone())) });
             let mut bstep = String::from("{\"step\": \"let-effect\", \"acquire\": ").revl_concat(&blk.acq);
             let mut bnext = bend;
             let mut binv = String::from("");
@@ -27870,7 +27872,7 @@ fn cir_body(ts: Vec<Token>, i: i64, end: i64, cx: CCtx, provs: Vec<Bind>, sc: Ve
             return mk_irres(false, String::from(""));
         }
         let isafe = safe_name(item.clone(), &sc2, &hostSc2);
-        let isc = (sc2.revl_push(Bind { name: item.clone(), ty: String::from("") })).revl_push(Bind { name: String::from("rename ").revl_concat(&item), ty: isafe.clone() });
+        let isc = (sc2.revl_push(Bind { name: item.clone(), ty: evn.clone() })).revl_push(Bind { name: String::from("rename ").revl_concat(&item), ty: isafe.clone() });
         let bodyR = cir_emit_steps(ts.clone(), (j).checked_add(1i64).expect("revl: Int overflow"), (bend).checked_sub(1i64).expect("revl: Int overflow"), cx.clone(), isc.clone(), hostSc2.clone(), String::from(""));
         if (!bodyR.ok) {
             return mk_irres(false, String::from(""));
