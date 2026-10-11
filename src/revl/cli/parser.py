@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import argparse
 
-from ..run import KNOWN_BACKENDS, RUNNABLE_BACKENDS
+from .._run_backends import KNOWN_BACKENDS, RUNNABLE_BACKENDS
 
 # The backends `revl bundle` can emit (the emitter package names under
 # backends/). Kept as a literal here so parser assembly stays import-light —

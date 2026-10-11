@@ -26,28 +26,64 @@ from ._safepath import drop_cwd_entry
 
 drop_cwd_entry()
 
+import importlib
+
 from .compiler import compile_files
 from .diagnostics import obligations, report
-from .distribute import distributability
 from .errors import RevlError
 from .holes import render as render_holes
-from .run import run_command
-from .test import test_command
 
 from .cli.document import (  # noqa: F401 — _wiring_documents re-exported
     _RESOLVES_A_COMPOSITION, _composition_document, _wiring_documents)
 from .cli.parser import build_parser
-from .cli.change import (
-    _run_apply, _run_branch, _run_canary, _run_compare, _run_estop, _run_plan,
-    _run_quarantine, _run_recover, _run_repair, _run_replay, _run_undo)
-from .cli.interop import (
-    _run_contract, _run_export, _run_fmt, _run_gen_types, _run_import, _run_mcp,
-    _run_serve, _run_sourcemap)
-from .cli.observe import (
-    _run_attest, _run_changelog, _run_dash, _run_diff, _run_explain,
-    _run_history_query, _run_metrics, _run_profile, _run_trace, _run_why)
-from .cli.promote import _run_promote
-from .cli.slo import _run_slo
+
+
+def _deferred(module: str, name: str):
+    """A handler that imports `module` (relative to this package) on its first
+    call, then hands `args` to `module.name`.
+
+    Issue #2196: importing every subcommand's handler module here made each
+    `revl compile` spawn pay for subsystems it never runs (`revl.run` pulls
+    asyncio and ssl). The name keeps its place in this module, so dispatch,
+    `from revl.__main__ import _run_plan` and a test that monkeypatches it all
+    work as before."""
+    def handler(args):
+        return getattr(importlib.import_module(module, __package__), name)(args)
+    handler.__name__ = handler.__qualname__ = name
+    return handler
+
+
+_run_apply = _deferred(".cli.change", "_run_apply")
+_run_branch = _deferred(".cli.change", "_run_branch")
+_run_canary = _deferred(".cli.change", "_run_canary")
+_run_compare = _deferred(".cli.change", "_run_compare")
+_run_estop = _deferred(".cli.change", "_run_estop")
+_run_plan = _deferred(".cli.change", "_run_plan")
+_run_quarantine = _deferred(".cli.change", "_run_quarantine")
+_run_recover = _deferred(".cli.change", "_run_recover")
+_run_repair = _deferred(".cli.change", "_run_repair")
+_run_replay = _deferred(".cli.change", "_run_replay")
+_run_undo = _deferred(".cli.change", "_run_undo")
+_run_contract = _deferred(".cli.interop", "_run_contract")
+_run_export = _deferred(".cli.interop", "_run_export")
+_run_fmt = _deferred(".cli.interop", "_run_fmt")
+_run_gen_types = _deferred(".cli.interop", "_run_gen_types")
+_run_import = _deferred(".cli.interop", "_run_import")
+_run_mcp = _deferred(".cli.interop", "_run_mcp")
+_run_serve = _deferred(".cli.interop", "_run_serve")
+_run_sourcemap = _deferred(".cli.interop", "_run_sourcemap")
+_run_attest = _deferred(".cli.observe", "_run_attest")
+_run_changelog = _deferred(".cli.observe", "_run_changelog")
+_run_dash = _deferred(".cli.observe", "_run_dash")
+_run_diff = _deferred(".cli.observe", "_run_diff")
+_run_explain = _deferred(".cli.observe", "_run_explain")
+_run_history_query = _deferred(".cli.observe", "_run_history_query")
+_run_metrics = _deferred(".cli.observe", "_run_metrics")
+_run_profile = _deferred(".cli.observe", "_run_profile")
+_run_trace = _deferred(".cli.observe", "_run_trace")
+_run_why = _deferred(".cli.observe", "_run_why")
+_run_promote = _deferred(".cli.promote", "_run_promote")
+_run_slo = _deferred(".cli.slo", "_run_slo")
 
 
 # The G8 boundary walk lives in `revl.boundary` (a CLI-free module) so the
@@ -81,6 +117,7 @@ def _run_query(args, ir: dict) -> int:
 
 def _run_test(args, ir: dict) -> int:
     """`revl test` — compile and run the composition's `test` blocks."""
+    from .test import test_command  # noqa: PLC0415 - lazy, issue #2196
     return test_command(ir, args.backend, sweep=getattr(args, "sweep", False),
                         mock_requires=getattr(args, "mock_requires", False),
                         schedule_seed=getattr(args, "schedule_seed", None),
@@ -475,6 +512,7 @@ def _run_audit(args, ir: dict) -> int:
             print(render(result, args.diff))
         return 1 if result["widened"] else 0
     boundary = _boundary(ir)
+    from .distribute import distributability  # noqa: PLC0415 - lazy, issue #2196
     distribution = distributability(ir)
     from .cardinality import cardinality  # noqa: PLC0415
     card = cardinality(ir)
@@ -1356,6 +1394,7 @@ def main(argv: list[str] | None = None) -> int:
             # boots on the operator's machine on the way to dispatching it.
             from .pool_dispatch import run_pool_command  # noqa: PLC0415 — lazy
             return run_pool_command(args)
+        from .run import run_command  # noqa: PLC0415 - lazy: asyncio, ssl (#2196)
         return run_command(args)
     if args.command == "dev":
         from .dev import dev_command  # noqa: PLC0415 — process orchestration is optional
