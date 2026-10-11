@@ -50,8 +50,7 @@ from . import lifecycle
 from . import diagnostics
 from . import taint
 from . import why_runtime
-
-KNOWN_BACKENDS = ("py", "ts", "rust", "java", "wasm", "go")
+from ._run_backends import KNOWN_BACKENDS, RUNNABLE_BACKENDS  # noqa: F401 - re-exported
 
 # item 1046 (#1046): driver identity for the `sys.modules` key `_emit_module`
 # registers each emitted generation under. `sys.modules` is process-global, so
@@ -141,15 +140,6 @@ class ActivationError(RuntimeError):
 # rest, so it is worth one causal-trace record. UNLOADING/LOADING are
 # in-flight and never recorded on their own.
 _SETTLED_DOWN = ("DISPOSED", "PENDING", "FAILED")
-# py boots cordis-py in-process (the _Driver below); ts/rust/java/wasm/go each
-# boot the composition as a *separate process* over the same bridge seam
-# (run_ts.py, run_rust.py, run_java.py, run_wasm.py, run_go.py): ts a node
-# process on cordis v4, rust a cordis-rs binary, java a JVM on cordis4j, wasm
-# the cordis-wasm runtime on wasmtime, go the stc-go placement runner. On every
-# non-py tier --once (boot -> LIFO teardown -> no-residue proof -> exit) is
-# wired, each behind its own runtime-availability gate (skip-with-reason, never
-# a green run that booted nothing).
-RUNNABLE_BACKENDS = ("py", "ts", "rust", "java", "wasm", "go")
 
 
 # --------------------------------------------------------------------------
