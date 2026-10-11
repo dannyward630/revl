@@ -541,6 +541,15 @@ jobs:
     strategy:
       matrix:
         python: ["3.11", "3.12", "3.13"]
+    # Issue #2264: this job installs go (setup-go below), so a go test that
+    # finds no go toolchain HERE is a broken setup step, not an environment
+    # fact. REVL_REQUIRE_TIERS naming go turns that skip into a failure, for
+    # revl.test runners and, through the repository-root conftest.py, for the
+    # tests that probe for go by hand. Every pytest step of a job that runs
+    # setup-go must require go; tests/test_env_gated_skips_run_somewhere.py
+    # ::test_every_pytest_step_in_a_job_that_installs_go_requires_go checks it.
+    env:
+      REVL_REQUIRE_TIERS: "go"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
@@ -752,6 +761,10 @@ jobs:
     # Heavy job, same rule as `frontend`: never on a pull request, always on
     # merge_group, push, schedule, dispatch and workflow_call (issue #1678).
     if: ${{ github.event_name != 'pull_request' }}
+    # Issue #2264: this job installs go, so go is required on every pytest
+    # step (see the `frontend` job for why).
+    env:
+      REVL_REQUIRE_TIERS: "go"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
@@ -872,6 +885,10 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
+    # Issue #2264: this job installs go, so go is required on every pytest
+    # step (see the `frontend` job for why).
+    env:
+      REVL_REQUIRE_TIERS: "go"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
@@ -1926,6 +1943,10 @@ jobs:
     # `lint` still stops it, as `needs: [lint]` alone did.
     needs: [lint, changes]
     if: ${{ !cancelled() && needs.lint.result == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.backends != 'false') }}
+    # Issue #2264: this job installs go, so go is required on every pytest
+    # step (see the `frontend` job for why).
+    env:
+      REVL_REQUIRE_TIERS: "go"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
@@ -2018,6 +2039,10 @@ jobs:
     # `if:` states what the `needs:` would already imply.
     needs: [lint, frontend]
     if: ${{ github.event_name != 'pull_request' }}
+    # Issue #2264: this job installs go, so go is required on every pytest
+    # step (see the `frontend` job for why).
+    env:
+      REVL_REQUIRE_TIERS: "go"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
@@ -2175,9 +2200,11 @@ jobs:
           # fact — and a skip is green, so it would say nothing. This turns
           # that one class of skip into a failure. Only that class: a tier's
           # by-design refusal of a document still skips (revl.test.Absent).
-          # rust/java/wasm/go are not required yet; the reasons are enumerated
-          # in tests/test_env_gated_skips_run_somewhere.py.
-          REVL_REQUIRE_TIERS: "py,ts"
+          # go is required job-wide (issue #2264), and a step env replaces the
+          # job's value, so it is named again here. rust/java/wasm are not
+          # required yet; the reasons are enumerated in
+          # tests/test_env_gated_skips_run_somewhere.py.
+          REVL_REQUIRE_TIERS: "py,ts,go"
       # The rest of the tier-execution suites, run where BOTH tiers exist.
       #
       # Issue #266: every one of these files calls `RUNNERS[tier]` and turns an
@@ -2212,7 +2239,7 @@ jobs:
           tests/test_value_stdlib.py
           -q
         env:
-          REVL_REQUIRE_TIERS: "py,ts"
+          REVL_REQUIRE_TIERS: "py,ts,go"
       # ci/placement_smoke.sh boots examples/user_cache.rvl split py<->node,
       # py<->rust, py<->go and py<->java (`--once`: boot, cross the seam via a
       # probe, tear down, exit). It fails the build on a seam that will not come

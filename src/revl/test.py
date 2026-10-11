@@ -812,10 +812,9 @@ def run_go(ir: dict) -> tuple[str, str]:
             reason = _stc_go_reason()
             if reason is not None:
                 # a resolution failure stays a FAILURE rather than the rust
-                # tier's `Absent` skip: `go` is exempt from REVL_REQUIRE_TIERS
-                # (tests/test_env_gated_skips_run_somewhere.py), so no job would
-                # catch the skip, and a pinned module that cannot be obtained is
-                # a provisioning break rather than an absent toolchain.
+                # tier's `Absent` skip, even where go is not required: a pinned
+                # module that cannot be obtained is a provisioning break rather
+                # than an absent toolchain.
                 return ("fail", f"stc-go could not be resolved: {reason}")
             # the module is in the cache now; an offline resolve is the gate
             env["GOPROXY"] = "off"

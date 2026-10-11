@@ -252,9 +252,20 @@ from its `package.json`.
 
 - `--json` - machine-readable report (for an agent) instead of the table; carries
   the same `resolution` map as a top-level field, so an automation diffs one
-  field rather than scraping the per-row detail strings.
+  field rather than scraping the per-row detail strings. It also carries a
+  `checkout` field, `null` for an installed revl.
 - `--no-smoke` - skip the per-tier compile+boot smoke test (report only).
 - `--smoke-timeout SECONDS` - per-tier smoke-test timeout (default: 90).
+
+Run from a **source checkout** (not an installed wheel), `doctor` also prints
+the one `export PYTHONPATH=...` line that checkout needs to boot a composition:
+`<revl>/src`, cordis-py's `src` (the clone `backends/python/setup.sh` makes, the
+`CORDIS_PY` override, or wherever `cordis` already imports from) and
+`<revl>/backends/python`. When cordis is not found the line carries a comment
+with the path it is expected at and `sh backends/python/setup.sh` to fetch it.
+`--json` has the same facts as `checkout.pythonpath`, `checkout.export` and
+`checkout.cordis`. The recipe that puts this into an MCP client config is in
+[guide-ai-agents.md](guide-ai-agents.md#wiring-revl-mcp-serve-into-a-working-session).
 
 ```text
 $ revl doctor --no-smoke
@@ -1519,8 +1530,9 @@ for the key lifecycle and what the signature binds.
   - `--tier NAME` - declare a rung of the ladder ABOVE the entry tier.
     Repeatable. A rung no pool declares is a rung no member can be moved to,
     so `promote --tier NAME` refuses `unknown-tier` unless init declared it.
-    The rungs are `probation`, `replayable` and `durable`; `probation` is the
-    entry rung and is declared by `--entry-caps` instead.
+    A pool offers only the rungs its operator declares. The ladder knows three
+    names, in order: `probation` (the entry rung, declared by `--entry-caps`
+    instead), `replayable` and `durable`.
   - `--tier-evidence NAME=N` - how many attested execution receipts a member
     must have accumulated before `promote` will move it to rung NAME.
     REQUIRED for every `--tier`, and deliberately not defaulted: `0` would

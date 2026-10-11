@@ -7,15 +7,15 @@ loaded box, pinning cores and starving other lanes (one measured run drove
 problem.
 
 The hook now gives that step a wall-clock ceiling (`REVL_HOOK_FULL_BUDGET`,
-default 60s) and, when it is exceeded, kills the run and SKIPS with the
-selector's `FULL <reason>` and the `--no-verify` instruction instead of blocking
-the commit. A partial run is not a gate, and `make pre-merge`/CI still runs
-everything.
+default 60s) and, when it is exceeded, kills the run. Since issue #2208 the
+step runs a defined core subset rather than `tests/`, and a run that exceeds
+the ceiling refuses the commit with the selector's `FULL <reason>` and the
+`--no-verify` instruction. It used to SKIP and exit 0, which made the hook
+print "ok" for every checker change after running no test.
 
 This builds a throwaway repository whose selector answers `FULL` (or nothing at
 all, the crash fallback) and whose pytest never returns, and times the commit:
-it must finish inside the budget, report SKIPPED with the reason, and leave the
-commit clean.
+it must finish inside the budget, kill the run, and refuse with the reason.
 """
 
 from __future__ import annotations
@@ -131,7 +131,7 @@ def checkout(tmp_path):
     # and the same ceiling.
     ("", "selector: unavailable"),
 ])
-def test_a_full_selection_is_bounded_and_skipped_with_the_reason(checkout, selector,
+def test_a_full_selection_is_bounded_and_refused_with_the_reason(checkout, selector,
                                                                  expected):
     c = checkout
     (c["repo"] / "tools" / "affected_tests.py").write_text(selector, encoding="utf-8")
@@ -147,11 +147,12 @@ def test_a_full_selection_is_bounded_and_skipped_with_the_reason(checkout, selec
     elapsed = time.monotonic() - start
     out = proc.stdout + proc.stderr
 
-    assert proc.returncode == 0, out
+    assert proc.returncode != 0, out
+    assert "pre-commit: ok" not in out, out
     assert elapsed < SLEEP / 2, (
         f"the FULL step was not bounded: the commit took {elapsed:.1f}s, so the "
         f"hook waited out the {SLEEP}s stub instead of its {BUDGET}s budget")
-    assert "SKIPPED (FULL selection exceeded the %ds budget)" % BUDGET in out, out
+    assert "FAILED (the core subset exceeded the %ds budget)" % BUDGET in out, out
     assert expected in out, out
     assert "--no-verify" in out, out
 

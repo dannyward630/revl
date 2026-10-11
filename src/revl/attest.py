@@ -507,10 +507,9 @@ NOT_A_RULE = {
                      "`placement`'s conductor at run time and read by "
                      "`revl recover`. It records crossings; it refuses no "
                      "program.",
-    "import_openapi": "`revl import openapi`, a generator. `gen_types` "
-                      "borrows its pointer, line and comment helpers for "
-                      "`revl gen-types`; the compile-time header check "
-                      "(`check_generated_header`) calls none of them.",
+    "_doc_text": "the pointer, line and comment text helpers `gen_types` "
+                 "shares with the OpenAPI importer (issue #2196); the "
+                 "compile-time header check calls none of them.",
     "refusal": "tells a backend emitter's EmitError apart from its fault "
                "after the frontend has admitted the document; `placement` "
                "reads it only on the emit path. Measured: making "

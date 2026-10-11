@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -121,6 +123,9 @@ class Report:
     revl_version: str
     checks: list[Check] = field(default_factory=list)
     smoke: list[Smoke] = field(default_factory=list)
+    # The PYTHONPATH a source checkout needs (see `checkout_pythonpath`); None
+    # when revl runs from an installed wheel, where nothing needs exporting.
+    checkout: dict | None = None
 
 
 # -------------------------------------------------------------------- prober
@@ -242,26 +247,10 @@ def _major_minor(version: str | None) -> tuple[int, int] | None:
 
 
 def revl_version() -> str:
-    """The installed revl version, or a best-effort read from the source tree
-    when running uninstalled (no metadata)."""
-    try:
-        from importlib.metadata import version  # noqa: PLC0415
-        return version("revl")
-    except Exception:  # noqa: BLE001 — any metadata failure falls back
-        pass
-    # uninstalled src checkout: read the version out of pyproject.toml if we can
-    root = Path(__file__).resolve().parents[2]
-    pyproject = root / "pyproject.toml"
-    try:
-        for line in pyproject.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if stripped.startswith("version"):
-                match = re.search(r'"([^"]+)"', stripped)
-                if match:
-                    return match.group(1)
-    except OSError:
-        pass
-    return "unknown"
+    """The revl version, `revl._version.version()`: the one definition shared
+    with the attestation, the gate and the MCP build id (issue #2203)."""
+    from revl._version import version  # noqa: PLC0415
+    return version()
 
 
 # ------------------------------------------------------------------- checks
@@ -636,6 +625,74 @@ def check_approval_wal(prober: Prober) -> Check:
                  OK if resolution.durable else WARN, None, resolution.summary())
 
 
+# ------------------------------------------------------ checkout PYTHONPATH
+#
+# A source checkout is not installed: `src/revl`, the cordis-py clone and the
+# python backend directory (`emit`, `runtime`) each have to be on the path of
+# whatever interpreter boots a composition. Doctor prints that path as one
+# copy-pasteable line instead of leaving it to be rediscovered from an import
+# error.
+
+#: `backends/python/setup.sh` clones cordis-py here (relative to that directory)
+#: unless `CORDIS_PY` names another clone. Mirrored, not imported: the script is
+#: the source of truth, doctor only has to land on the same directory.
+CORDIS_CLONE_ENV = "CORDIS_PY"
+CORDIS_CLONE_DEFAULT = ".cordis-py"
+
+
+def _cordis_src(prober: Prober, backends_dir: Path,
+                env: dict[str, str]) -> tuple[Path, bool]:
+    """``(cordis-py's ``src`` directory, whether cordis was found there)``.
+
+    Order: the clone `setup.sh` makes (honouring its ``CORDIS_PY`` override, a
+    relative one resolved against ``backends/python`` as the script does), then
+    wherever the running interpreter already imports ``cordis`` from. Absent
+    both, the first is returned as the *expected* location."""
+    python_dir = backends_dir / "python"
+    clone = Path(env.get(CORDIS_CLONE_ENV) or CORDIS_CLONE_DEFAULT)
+    if not clone.is_absolute():
+        clone = python_dir / clone
+    expected = clone / "src"
+    if prober.is_dir(expected / "cordis"):
+        return expected, True
+    origin = prober.module_origin("cordis")
+    if origin is not None:
+        # `<src>/cordis/__init__.py` (or the package directory itself): the
+        # `src` that holds the package is two levels up from the file, one up
+        # from the directory.
+        path = Path(origin)
+        return (path.parent.parent if path.name.endswith(".py")
+                else path.parent), True
+    return expected, False
+
+
+def checkout_pythonpath(prober: Prober, backends_dir: Path,
+                        env: dict[str, str] | None = None) -> dict | None:
+    """The PYTHONPATH a source checkout needs to boot a composition, or None
+    when this revl is an installed wheel (``backends/`` packaged inside the
+    module, no ``src/revl`` beside it).
+
+    Entries, in order: ``<revl>/src``, cordis-py's ``src`` (the clone
+    ``backends/python/setup.sh`` makes, or wherever ``cordis`` already imports
+    from), and ``<revl>/backends/python``. When cordis is not there the line is
+    still complete (the path is where setup.sh will put it) and carries a
+    comment saying so and how to fetch it."""
+    env = os.environ if env is None else env
+    repo = backends_dir.parent
+    if not (prober.is_dir(repo / "src" / "revl")
+            and prober.is_dir(backends_dir / "python")):
+        return None
+    cordis, found = _cordis_src(prober, backends_dir, env)
+    entries = [str(repo / "src"), str(cordis), str(backends_dir / "python")]
+    line = "export PYTHONPATH=" + shlex.quote(os.pathsep.join(entries))
+    fetch = f"sh {backends_dir / 'python' / 'setup.sh'}"
+    if not found:
+        line += f"  # cordis-py not found, expected at {cordis}; fetch it: {fetch}"
+    return {"pythonpath": entries, "export": line,
+            "cordis": {"found": found, "path": str(cordis),
+                       "fetch": None if found else fetch}}
+
+
 # --------------------------------------------------------------- diagnose
 
 
@@ -666,7 +723,8 @@ def diagnose(prober: Prober | None = None,
         check_stdlib_version(prober),
         check_approval_wal(prober),
     ]
-    return Report(version, checks)
+    return Report(version, checks,
+                  checkout=checkout_pythonpath(prober, backends_dir))
 
 
 # ----------------------------------------------------------------- smoke
@@ -780,6 +838,12 @@ def render_text(report: Report) -> str:
             detail = f"  {smoke.detail}" if smoke.detail else ""
             lines.append(f"  [{label:<7}] {smoke.tier:<{twidth}}{detail}")
 
+    if report.checkout:
+        lines.append("")
+        lines.append("source checkout: to boot a composition from it with "
+                     "another interpreter, run")
+        lines.append(f"  {report.checkout['export']}")
+
     counts = _counts(report)
     lines.append("")
     lines.append(f"  {counts['ok']} OK, {counts['warn']} WARN, "
@@ -853,6 +917,7 @@ def to_json(report: Report) -> dict:
             for s in report.smoke
         ],
         "resolution": resolution(report),
+        "checkout": report.checkout,
         "summary": _counts(report),
     }
 

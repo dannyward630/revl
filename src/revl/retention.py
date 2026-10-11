@@ -114,10 +114,6 @@ def policy_of_origin(origin) -> Optional[str]:
     return None
 
 
-def is_retention_origin(origin) -> bool:
-    return policy_of_origin(origin) is not None
-
-
 # ----------------------------------------------------------- persistence sinks
 
 #: The capability scope heads that mean DURABLE STORAGE — the persistence sinks,

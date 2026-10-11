@@ -98,6 +98,9 @@ BENCH_DEPENDENT_TESTS = (
     # Issue #1702: checks the blast-radius task set, its expected states, its
     # TypeScript renderings and its scorer, all under bench/blast_radius/.
     "tests/test_blast_radius_bench.py",
+    # Issues #2195 / #2197: loads `bench/admission_latency.py` by path and runs
+    # its scenario against the compile hot path.
+    "tests/test_compile_hot_path_2195_2197.py",
     # Issue #1462: runs `bench/structured_output_bench.py` against a fake
     # server.
     "tests/test_constrained_decoding_1462.py",

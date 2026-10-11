@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -142,6 +143,19 @@ def _classpath(work: Path, runner_source: str, components_source: str,
     return out
 
 
+_JVM_BANNER = re.compile(
+    r"^(?:NOTE: )?Picked up (?:JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS):.*\n?",
+    re.MULTILINE)
+
+
+def _jvm_stderr(text: str) -> str:
+    """The child's stderr minus the JVM's own `Picked up JAVA_TOOL_OPTIONS: ...`
+    banner. A host that exports that variable (a container gate, a CI image)
+    prepends the banner before `main` runs, so an exact comparison of the
+    process's stderr would depend on the environment rather than on the funnel."""
+    return _JVM_BANNER.sub("", text)
+
+
 def _boot_that_fails(classpath: Path) -> tuple[int, str, str]:
     """Boot one runner on a spec whose SECOND component cannot resolve, and
     return (exit code, stdout, stderr).
@@ -162,7 +176,7 @@ def _boot_that_fails(classpath: Path) -> tuple[int, str, str]:
     result = subprocess.run(
         [javac_gate.JAVA, "-cp", str(classpath), "PlacementRunner", str(spec)],
         capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
-    return result.returncode, result.stdout, result.stderr
+    return result.returncode, result.stdout, _jvm_stderr(result.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +401,7 @@ def _run_harness(classpath: Path) -> tuple[int, str, str]:
     result = subprocess.run(
         [javac_gate.JAVA, "-cp", str(classpath), "ThreadFunnelHarness"],
         capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
-    return result.returncode, result.stdout, result.stderr
+    return result.returncode, result.stdout, _jvm_stderr(result.stderr)
 
 
 @needs_jdk

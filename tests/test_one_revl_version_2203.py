@@ -189,6 +189,33 @@ def test_tree_pyproject_beats_stale_installed_metadata(monkeypatch, tmp_path):
     assert identity.build_id() == f"revl-{BUMPED}"
 
 
+def test_doctor_follows_the_tree_when_installed_metadata_is_stale(
+        monkeypatch, tmp_path):
+    """`revl doctor` printed the editable install's recorded version while
+    every other surface reported the tree's, so the doctor header and the
+    attestation disagreed after a bump. It must answer through
+    `_version.version()` like the rest."""
+    from revl import _version, doctor
+
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        f'[project]\nname = "revl"\nversion = "{BUMPED}"\n', encoding="utf-8")
+    _stale_metadata(monkeypatch, "0.0.1")
+    monkeypatch.setattr(_version, "_PYPROJECT", pyproject)
+
+    assert doctor.revl_version() == _version.version() == BUMPED
+    assert doctor.diagnose().revl_version == BUMPED
+
+
+def test_doctor_agrees_with_the_single_version_in_a_wheel_layout(
+        monkeypatch, tmp_path):
+    from revl import _version, doctor
+
+    _stale_metadata(monkeypatch, "3.1.4")
+    monkeypatch.setattr(_version, "_PYPROJECT", tmp_path / "pyproject.toml")
+    assert doctor.revl_version() == _version.version() == "3.1.4"
+
+
 def test_wheel_layout_falls_back_to_installed_metadata(monkeypatch, tmp_path):
     """A wheel install has no revl pyproject.toml two levels above the
     package (site-packages/revl/_version.py), so metadata answers there. A
