@@ -37,6 +37,18 @@ from revl.mcp.server import handle  # noqa: E402
 
 ENTRIES = idioms.table()
 
+#: Idioms whose construct only exists beside host code, so an untrusted author
+#: (who may not declare an extern) cannot be admitted with them. `secret NAME
+#: for CAP` is refused unless an `extern emission[CAP]` body serves CAP (the key
+#: is injected into that body and nowhere else), and an extern needs a host
+#: body. The idiom is for an operator-trusted author; the admission test still
+#: pins that the refusal is the host-block one and nothing else.
+HOST_CODE_IDIOMS = frozenset({"secret"})
+
+
+def test_the_host_code_idioms_exist():
+    assert HOST_CODE_IDIOMS <= set(ENTRIES)
+
 
 def _compile(source, name, profile=None):
     with warnings.catch_warnings():
@@ -78,11 +90,16 @@ def test_every_idiom_compiles_with_no_hole(name):
 @pytest.mark.parametrize("name", sorted(ENTRIES))
 def test_every_idiom_admits_for_an_untrusted_author(name):
     """The profile the MCP server compiles agent text under, granted exactly
-    the services the idiom declares. No idiom needs host code."""
+    the services the idiom declares. No idiom needs host code except the ones
+    in `HOST_CODE_IDIOMS`, which are checked to be refused for exactly that."""
     ir = _compile(ENTRIES[name]["example"], name)
     granted = set(ir.get("services") or {})
-    _compile(ENTRIES[name]["example"], name,
-             profile=AdmissionProfile.untrusted_author(granted))
+    profile = AdmissionProfile.untrusted_author(granted)
+    if name in HOST_CODE_IDIOMS:
+        with pytest.raises(Exception, match="forbids new `extern`/host-block"):
+            _compile(ENTRIES[name]["example"], name, profile=profile)
+        return
+    _compile(ENTRIES[name]["example"], name, profile=profile)
 
 
 # ---- 3. a fillSpec carries the idiom for its hole ------------------------------
