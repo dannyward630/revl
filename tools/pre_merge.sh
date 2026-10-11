@@ -253,6 +253,44 @@ emit_step() {
     step "$label_full" env PATH="$EMIT_PATH" "$PYTEST" "$@" -q -rs -p no:cacheprovider
 }
 
+# >>> cordis-step (sliced and executed by tests/test_pre_merge_cordis_half_2207.py)
+# cordis_step : run tools/cordis_half.py and map its STATUS line. `ok` only when
+# pytest really ran the runtime half and passed; a missing runtime is NOT OK.
+CORDIS_LOG=${CORDIS_LOG:-}
+cordis_missing=0
+cordis_step() {
+    label="frontend-cordis (cordis-py venv)"
+    printf '  %-42s' "$label"
+    set -- --root "$root" --select "$SEL_PYTEST" \
+        --python "${REVL_CORDIS_PYTHON:-}" \
+        --python "$root/backends/python/.venv/bin/python" \
+        --python "$main_root/backends/python/.venv/bin/python"
+    # The frontend step ran iff it created the log; an EMPTY log is its answer
+    # "nothing skipped for cordis", never a reason to fall back to every file
+    # that mentions cordis. The fallback is for a gate with no frontend pytest.
+    [ -n "$CORDIS_LOG" ] && [ -f "$CORDIS_LOG" ] && set -- "$@" --log "$CORDIS_LOG"
+    out=$("$PYTHON" tools/cordis_half.py "$@" 2>&1)
+    rc=$?
+    status=$(printf '%s\n' "$out" | sed -n 's/^STATUS //p' | tail -1)
+    case "$rc:$status" in
+        0:none)
+            echo "nothing to run (no selected test needs cordis)" ;;
+        0:ran*)
+            ran=$((ran + 1))
+            echo "ok (${status#ran } file(s))" ;;
+        10:missing*)
+            cordis_missing=1
+            echo "MISSING, NOT OK (${status#missing })"
+            echo "$out" | grep -v '^STATUS ' | tail -10 | sed 's/^/      /' ;;
+        *)
+            ran=$((ran + 1))
+            fail=1
+            echo "FAILED"
+            echo "$out" | tail -30 | sed 's/^/      /' ;;
+    esac
+}
+# <<< cordis-step
+
 if [ "$RUN_ALL" -eq 1 ]; then
     echo "pre-merge:"
 else
@@ -266,9 +304,23 @@ if ! want frontend; then
 elif [ -n "$PYTEST" ]; then
     if [ "$RUN_ALL" -eq 1 ]; then flabel="frontend  (pytest tests/)";
     else flabel="frontend  (pytest, $(printf '%s' "$SEL_PYTEST" | wc -w | tr -d ' ') node(s))"; fi
-    step "$flabel" "$PYTEST" $SEL_PYTEST -q -p no:cacheprovider
+    CORDIS_LOG=$(mktemp "${TMPDIR:-/tmp}/revl-premerge-cordis.XXXXXX") || CORDIS_LOG=""
+    step "$flabel" env REVL_CORDIS_SKIP_LOG="$CORDIS_LOG" "$PYTEST" $SEL_PYTEST -q -p no:cacheprovider
 else
     skip "frontend  (pytest tests/)" "no pytest that can import the suite's deps"
+fi
+
+# 1b. The cordis-runtime half of tests/ (issue #2207). The frontend venv has no
+#     cordis-py, so every test that needs it skipped in step 1; the frontend
+#     step logged those (tests/conftest.py, REVL_CORDIS_SKIP_LOG) and this step
+#     re-runs their files under the cordis-py venv backends/python/setup.sh
+#     builds (pinned fork, watchdog extra). Without such a venv the step is
+#     MISSING and the gate is NOT OK: a skipped runtime half is exactly how a G7
+#     (LIFO teardown) regression passed every local gate.
+if ! want frontend; then
+    note "frontend-cordis (cordis-py venv)"
+else
+    cordis_step
 fi
 
 # 2. The python backend semantics + golden suite — the suite item 247's respec
@@ -429,13 +481,19 @@ else
     step "formal     (lake build + axioms gate)" sh formal/scripts/run_gate.sh
 fi
 
-# Clean up the emit shim.
+# Clean up the emit shim and the cordis skip log.
 [ -n "$EMIT_PATH" ] && rm -rf "$EMIT_PATH"
+[ -n "$CORDIS_LOG" ] && rm -f "$CORDIS_LOG"
 
 echo
 echo "pre-merge: $ran ran, $skipped skipped"
 if [ "$fail" -ne 0 ]; then
     echo "pre-merge: FAILED — a step that ran did not pass (see above). Fix it before merging to main."
+    exit 1
+fi
+if [ "$cordis_missing" -ne 0 ]; then
+    echo "pre-merge: NOT OK: the cordis-runtime half of tests/ did not run (no cordis-py venv)."
+    echo "           Run \`sh backends/python/setup.sh\` or set REVL_CORDIS_PYTHON, then re-run."
     exit 1
 fi
 if [ "$skipped" -ne 0 ]; then
