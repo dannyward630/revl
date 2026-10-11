@@ -320,8 +320,21 @@ func main() {
 	for _, cname := range s.Components {
 		fiber, ok := emitted.RevlLoad(root, cname, s.Config)
 		if !ok {
-			log("load", cname, "UNKNOWN component")
-			continue
+			// issue #2223: a component the generated registry does not have
+			// is a FATAL spec/build mismatch, as in the rust runner (#2200).
+			// Logging past it left the placement short of the composition it
+			// claims: UP, NO-RESIDUE and exit 0 with that component never
+			// loaded. Dispose what did boot, last first, print one scrubbed
+			// line on stderr and exit 1. `os.Exit`, not a panic or a return,
+			// so the teardown below never prints `DOWN` for a failed boot.
+			fmt.Fprintln(os.Stderr, "["+name+"] "+bridge.ScrubText(
+				"FATAL unknown component "+cname+": the spec names a component "+
+					"this build does not have"))
+			for i := len(fibers) - 1; i >= 0; i-- {
+				fibers[i].fiber.Dispose()
+				log("swap", fibers[i].label, "dispose")
+			}
+			os.Exit(1)
 		}
 		if err := fiber.Ready(ready); err != nil {
 			log("load", cname, "load error: "+err.Error())

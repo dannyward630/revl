@@ -475,3 +475,26 @@ def test_without_the_crossing_guard_the_runtime_prints_the_value(tmp_path):
     assert CANARY in err, err
     assert "goroutine " in err, err
     assert "FATAL" not in err, err
+
+
+# ---------------------------------------------------------------------------
+# an unknown component is fatal (issue #2223, the go half of #2200)
+# ---------------------------------------------------------------------------
+
+def test_an_unknown_component_is_fatal_and_disposes_what_booted(tmp_path):
+    """The spec names `Ghost`, which the binary lacks, after `Impl`, which it
+    has. The run must exit non-zero with a message naming `Ghost`, claim neither
+    `UP` nor `NO-RESIDUE` nor `DOWN`, and have disposed `Impl` before exiting."""
+    binary = _build(tmp_path)
+    spec = tmp_path / "ghost.json"
+    spec.write_text(json.dumps({**_SPEC, "components": ["Impl", "Ghost"], "probe": []}))
+    done = subprocess.run([binary, str(spec)], capture_output=True, text=True,
+                          timeout=300, stdin=subprocess.DEVNULL)
+    assert done.returncode != 0, (done.stdout, done.stderr)
+    assert "Ghost" in done.stderr and "FATAL" in done.stderr, done.stderr
+    for claim in ("UP", "NO-RESIDUE", "DOWN"):
+        assert f"] {claim}" not in done.stdout, done.stdout
+    lines = done.stdout.splitlines()
+    loaded = [i for i, ln in enumerate(lines) if "load" in ln and "Impl" in ln]
+    disposed = [i for i, ln in enumerate(lines) if "swap" in ln and "Impl" in ln and "dispose" in ln]
+    assert loaded and disposed and loaded[0] < disposed[0], done.stdout
