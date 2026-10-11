@@ -30,6 +30,7 @@ WAL end to end.
 """
 
 import copy
+import dataclasses
 import hashlib
 import sys
 from pathlib import Path
@@ -389,6 +390,38 @@ def test_an_override_of_a_single_party_ticket_is_refused(tmp_path, monkeypatch):
     assert session._ledger == []
 
 
+@pytest.mark.parametrize("verb", ["escalate", "override", "revoke"])
+@pytest.mark.parametrize("lapse", ["revoked", "expired"])
+def test_a_session_bound_to_a_lapsed_operator_cannot_act_on_a_question(
+        tmp_path, lapse, verb):
+    """Issue #2212. The session's own bound operator is a credential like any
+    other: once the profile marks it revoked, or its window has closed, the
+    session cannot escalate, override or withdraw a question on that identity's
+    authority. The override matters most, because it admits without the count.
+    The question opens while the operator is still in force and the lapse lands
+    afterwards, which is the order a real revocation takes."""
+    clock = {"now": 5_000}
+    session = _harness(tmp_path, clock=clock)
+    ticket = _ticket(session)
+    session.approve_ticket(ticket["hash"], as_token="bob", as_secret=_SECRETS["bob"])
+    lapsed = {"revoked": {"revoked": True}, "expired": {"not_after": 1_000}}[lapse]
+    session.operator = dataclasses.replace(session.operator, **lapsed)
+    act = {"escalate": session.escalate_ticket,
+           "override": session.override_ticket,
+           "revoke": session.revoke_ticket}[verb]
+
+    message = {"revoked": "REVOKED", "expired": "lapsed at 1000"}[lapse]
+    with pytest.raises(SessionError, match=message):
+        act(ticket["hash"], reason="the bound operator acts alone")
+
+    refusals = [r for r in _records(session) if r["record"] == "quorum-refused"]
+    assert [(r["action"], r["reason"], r["voter"], r["proven"])
+            for r in refusals] == [(verb, f"{lapse}-credential", "alice", False)]
+    assert session.quorum_state(ticket["hash"])["outcome"] is None
+    assert session._ledger == []
+    assert _cross(session) is not None
+
+
 @pytest.mark.parametrize("tool", ["_tool_escalate", "_tool_override",
                                   "_tool_quorum"], ids=["escalate", "override",
                                                         "quorum"])
@@ -682,6 +715,24 @@ def test_a_receipt_re_pointed_at_another_candidate_is_refused(quorum):
     assert verdict["ok"] is False
     assert not any(r.startswith("digest") for r in verdict["reasons"])
     assert any(r.startswith("binding") for r in verdict["reasons"])
+
+
+def test_a_receipt_whose_spend_is_re_pointed_is_refused(quorum):
+    """Issue #2212. The spend is the one part of the receipt the graph
+    re-derivation does not rebuild, so it has its own check. Point the spend at
+    another real authority, recompute the digest, and the receipt is internally
+    consistent and agrees with the graph on binding, rule and decision. It is
+    refused all the same, and on that ground alone."""
+    ticket = _admit(quorum)
+    other = _admit(quorum, args=("sink.log", "b"))
+    assert other["hash"] != ticket["hash"]
+    forged = copy.deepcopy(quorum.quorum_receipt(ticket["hash"]))
+    forged["spend"]["requestId"] = other["hash"]
+    forged.pop("digest")
+    forged["digest"] = _sha(_canon(forged))
+
+    assert quorum.verify_quorum_receipt(forged) == {
+        "ok": False, "reasons": ["binding: the spend names another authority"]}
 
 
 def test_a_receipt_with_padded_votes_is_refused(quorum):

@@ -43,6 +43,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from revl import compile_source  # noqa: E402
+from revl.errors import RevlError  # noqa: E402
 from revl.run import _Router  # noqa: E402
 
 # The same availability gate test_run.py / test_router_runtime.py use.
@@ -155,11 +156,20 @@ def test_distinct_key_wrapper_compiles_and_pays_the_rekey_cost():
     assert not comps["Inner"].get("routes")
 
 
+def test_same_key_routed_provide_body_is_refused_by_g2():
+    """The refusal that both xfail markers below rest on, asserted directly.
+    The same-key wrapper's provide body is refused at compile time by name, so
+    the two xfailed tests stop at the compile step. If this refusal regressed,
+    this test goes red here, and the strict xfails go red too (XPASS)."""
+    with pytest.raises(RevlError, match="silently discarded"):
+        compile_source(SAME_KEY_ROUTED, "samekey.rvl")
+
+
 @pytest.mark.xfail(
     reason="same-key interposition via a routes-carrying provide body is refused "
     "by G2 (#449); it awaits the B3 through-set rule (#110). The day the body "
     "stops being discarded, drop this marker.",
-    strict=False,
+    strict=True,
 )
 def test_same_key_routed_wrapper_carries_a_routes_entry():
     """The no-re-key shape compiles and admits, and the seam carries a `routes`
@@ -211,7 +221,7 @@ def test_distinct_key_wrapper_observes_every_call():
     "load-time discard this pinned; it awaits the B3 through-set rule (#110). "
     "Mirrors the xfail on test_same_key_routed_wrapper_carries_a_routes_entry "
     "added in #684. The day the body stops being discarded, drop this marker.",
-    strict=False,
+    strict=True,
 )
 def test_routed_wrapper_provide_body_is_never_executed():
     """The trap, pinned as an executed fact. The same-key seam carries a

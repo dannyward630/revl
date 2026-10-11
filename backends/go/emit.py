@@ -4595,15 +4595,25 @@ def _emit_stc_lifecycle_tests(ir, out) -> None:
                 component = step["component"]
                 cname = _camel(component)
                 cfg = step.get("config") or {}
-                fields = ", ".join(
-                    "%s: %s" % (_camel(fname), _expr(cfg[fname], env, ftype))
-                    for fname, ftype in _component_config_fields(component, components)
-                    if fname in cfg)
+                out.append("\t{")
                 if _component_has_config(component, components):
-                    sig = "Load%s(root, %sConfig{%s})" % (cname, cname, fields)
+                    # issue #2263: a field the step does not name keeps its
+                    # declared default, as on py/ts and in RevlLoad. A bare
+                    # `CConfig{...}` left it at Go's zero value. One
+                    # expression, no new Go local, so a named field's value
+                    # still sees every test binding (a `_cfg` local would
+                    # shadow a revl binding of that name).
+                    default = "Default%sConfig()" % cname
+                    if cfg:
+                        fields = ", ".join(
+                            "%s: %s" % (_camel(fname),
+                                        _expr(cfg[fname], env, ftype) if fname in cfg
+                                        else "%s.%s" % (default, _camel(fname)))
+                            for fname, ftype in _component_config_fields(component, components))
+                        default = "%sConfig{%s}" % (cname, fields)
+                    sig = "Load%s(root, %s)" % (cname, default)
                 else:
                     sig = "Load%s(root)" % cname
-                out.append("\t{")
                 out.append("\t\t_f := %s" % sig)
                 out.append("\t\tif err := _f.Ready(stdctx.Background()); err != nil {")
                 out.append('\t\t\trevlT.Fatalf("%%s: %%v", %s, err)'

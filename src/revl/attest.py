@@ -602,23 +602,18 @@ def discharged_guarantees() -> list[str]:
 
 
 def compiler_version() -> str:
-    """The revl toolchain version recorded as `checker.compiler`: the installed
-    distribution's version, falling back to the in-repo package version when
-    running from a checkout with no install. `revl.gate` reports the same value
-    as `gate_version().language`.
+    """The revl toolchain version recorded as `checker.compiler`:
+    `revl._version.version()`, the one definition (the source tree's
+    `pyproject.toml`, else installed metadata, else "unknown"). `revl.gate`
+    reports the same value as `gate_version().language`.
 
     Defined here, not in `revl.gate`: the compiler's import chain reaches this
     module, and importing `revl.gate` from it put the gate, and through the
-    gate `revl.mcp`, on that chain (issue #1780)."""
-    try:
-        from importlib.metadata import PackageNotFoundError, version  # noqa: PLC0415
-        try:
-            return version("revl")
-        except PackageNotFoundError:
-            pass
-    except Exception:  # noqa: BLE001 — metadata is a convenience, never fatal
-        pass
-    return "2.0.0"
+    gate `revl.mcp`, on that chain (issue #1780). `revl._version` imports
+    nothing from revl, so it adds nothing to that chain."""
+    from ._version import version  # noqa: PLC0415
+
+    return version()
 
 
 def checker_identity() -> dict:
