@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from _load_by_path import load_by_path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,11 +37,27 @@ def _tree(tmp: Path, functions: int, seconds: float) -> Path:
 
 
 def test_the_block_is_rendered_from_the_tree(tmp_path):
-    root = _tree(tmp_path, 2345, 1900.0)
-    assert docgen.suite_size(root) == (2345, 1900.0)
+    root = _tree(tmp_path / "a", 12_345, 1900.0)
+    assert docgen.suite_size(root) == (12_345, 1900.0)
     body = docgen.block_suite_size("", root)
-    assert "at least 2,000 test functions" in body
-    assert "about\n30 minutes of test time in CI" in body
+    assert "more than 10,000 test" in body
+    assert "tens of CI minutes" in body
+
+
+def test_the_text_does_not_move_with_normal_growth(tmp_path):
+    small = docgen.block_suite_size("", _tree(tmp_path / "a", 10_001, 1300.0))
+    large = docgen.block_suite_size("", _tree(tmp_path / "b", 14_999, 6000.0))
+    assert small == large
+
+
+@pytest.mark.parametrize("functions, seconds", [
+    (9_999, 2400.0),    # under the floor
+    (12_000, 1100.0),   # under 20 CI minutes
+    (12_000, 7300.0),   # over 120 CI minutes
+])
+def test_a_false_claim_fails_the_check(tmp_path, functions, seconds):
+    with pytest.raises(SystemExit):
+        docgen.block_suite_size("", _tree(tmp_path, functions, seconds))
 
 
 def test_contributing_carries_the_generated_block():

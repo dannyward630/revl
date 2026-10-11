@@ -138,4 +138,5 @@ def test_verdict_names_the_skipped_steps():
                          timeout=60, check=False)
     assert out.returncode == 0  # a skip reports, it does not block
     assert out.stdout.strip().splitlines()[-1] == (
-        "pre-merge: ok, but 1 step(s) SKIPPED checked nothing (see above)")
+        "pre-merge: ok, but 1 step(s) SKIPPED: what needs a missing tool was "
+        "not checked (see above)")

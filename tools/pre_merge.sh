@@ -536,7 +536,7 @@ if [ "$RUN_ALL" -eq 0 ]; then
     echo "pre-merge (affected): ok for the selected targets — NOT the full gate."
     echo "           Run \`make pre-merge\` (full) before release / on CI."
 elif [ "$skipped" -ne 0 ]; then
-    echo "pre-merge: ok, but $skipped step(s) SKIPPED checked nothing (see above)"
+    echo "pre-merge: ok, but $skipped step(s) SKIPPED: what needs a missing tool was not checked (see above)"
 else
     echo "pre-merge: ok"
 fi
