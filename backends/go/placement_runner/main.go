@@ -330,13 +330,11 @@ func main() {
 	for key, info := range s.Proxies {
 		client, err := bridge.NewClient(info.Socket)
 		if err != nil {
-			// issue #2254: outside `--once` a proxy that cannot be reached
-			// leaves the composition short, as the rust runner's unwrap does.
-			if !s.Once {
-				fatalBoot(name, "proxy dial failed for key "+key+": "+err.Error(), fibers, log)
-			}
-			log("proxy", key, "dial failed: "+err.Error())
-			continue
+			// issue #2254: a proxy that cannot be reached leaves the
+			// composition short, in both modes, as the rust runner's proxy
+			// unwrap does. The fault sweep never targets a proxy, so `--once`
+			// gets no exception: a dead provider must not read as NO-RESIDUE.
+			fatalBoot(name, "proxy dial failed for key "+key+": "+err.Error(), fibers, log)
 		}
 		clients = append(clients, client)
 		comp, ok := emitted.RevlProxyComponent(key, info.Service, client)
@@ -348,12 +346,8 @@ func main() {
 		}
 		fiber := root.Load(comp)
 		if err := fiber.Ready(ready); err != nil {
-			// issue #2254: the same `--once` exception as a component's
-			// failed activation below.
-			if !s.Once {
-				fatalBoot(name, "boot failed loading proxy for key "+key+": "+err.Error(), fibers, log)
-			}
-			log("proxy", key, "load error: "+err.Error())
+			// issue #2254: fatal in both modes, as for a failed dial above.
+			fatalBoot(name, "boot failed loading proxy for key "+key+": "+err.Error(), fibers, log)
 		}
 		fibers = append(fibers, labeledFiber{key + "-proxy", fiber})
 		log("proxy", key, "-> "+info.Socket+" ["+info.Service+"]")

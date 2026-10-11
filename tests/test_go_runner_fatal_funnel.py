@@ -586,17 +586,20 @@ def test_a_component_load_error_is_fatal_and_disposes_what_booted(tmp_path):
     assert out.index("MARK applied") < out.index("MARK INVERSE-RAN"), out
 
 
-def test_a_failed_proxy_dial_is_fatal_outside_once(tmp_path):
-    """The spec's proxy socket has no listener. Outside `--once` the proxy can
-    never answer, so, as in the rust runner, the boot stops: exit non-zero
-    naming the key, and `Impl` never loads. Before this it logged `dial
-    failed`, booted `Impl`, said `UP` and exited 0 on stdin EOF."""
+@pytest.mark.parametrize("once", [False, True], ids=["held", "once"])
+def test_a_failed_proxy_dial_is_fatal(tmp_path, once):
+    """The spec's proxy socket has no listener, so the proxy can never answer.
+    In both modes, as with the rust runner's proxy unwrap, the boot stops:
+    exit non-zero naming the key, and `Impl` never loads. `--once` gets no
+    exception here: the fault sweep never targets a proxy, and a dead provider
+    must not read as `UP` / `NO-RESIDUE` / exit 0. Before #2254 it logged
+    `dial failed`, booted `Impl` and exited 0."""
     binary = _build(tmp_path, doc=_UNDO_DOC)
     sockdir = tempfile.mkdtemp(prefix="rvlgo_2254_", dir="/tmp")
     try:
         spec = tmp_path / "dead-proxy.json"
         spec.write_text(json.dumps({
-            **_SPEC, "probe": [], "once": False,
+            **_SPEC, "probe": [], "once": once,
             "proxies": {"ghost": {"socket": str(Path(sockdir) / "none.sock"),
                                   "service": "GhostSvc"}}}))
         done = subprocess.run([binary, str(spec)], capture_output=True,
