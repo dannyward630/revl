@@ -217,7 +217,7 @@ def test_inner_vitest_bound_is_a_third_of_the_same_variable():
 
 # ------------------------------------------------- invalid values are refused
 
-_INVALID = ["", "0", "-5", "abc", "1.5"]
+_INVALID = ["", "0", "-5", "abc", "1.5", "86401", "100000000000"]
 
 
 @pytest.mark.parametrize("raw", _INVALID)
@@ -244,9 +244,9 @@ def test_invalid_timeout_is_refused_by_vitest_config(raw):
     text = CONFIG.read_text(encoding="utf-8")
     fn = re.search(r"function tsTimeoutSeconds\(\)[^{]*\{.*?\n\}\n", text, re.S)
     assert fn, "vitest.config.ts must validate REVL_TS_TIMEOUT"
-    node = _node22()
+    node = _node_for_config()
     if node is None:
-        pytest.skip("no node able to run the extracted validator")
+        pytest.skip("no node >= 18 on PATH to run the extracted validator")
     js = re.sub(r": number", "", fn.group(0))
     out = subprocess.run([node, "-e", js + "\ntsTimeoutSeconds()"], env=env,
                          capture_output=True, text=True)
@@ -254,20 +254,57 @@ def test_invalid_timeout_is_refused_by_vitest_config(raw):
     assert "REVL_TS_TIMEOUT must be a positive integer" in out.stderr
 
 
-def _node22():
+def _node_for_config():
     import shutil
-    return shutil.which("node", path="/opt/homebrew/bin:" + os.environ["PATH"])
+    node = shutil.which("node")
+    if node is None:
+        return None
+    out = subprocess.run([node, "--version"], capture_output=True, text=True)
+    match = re.match(r"v(\d+)\.", out.stdout.strip())
+    return node if match and int(match.group(1)) >= 18 else None
 
 
-def test_keyboard_interrupt_kills_the_process_group(monkeypatch):
-    """Ctrl-C during the wait must not leave the child group alive."""
-    killed = []
-    monkeypatch.setattr(os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+def test_cap_value_is_accepted_by_both_validators(monkeypatch):
+    monkeypatch.setenv("REVL_TS_TIMEOUT", "86400")
+    assert T._ts_timeout_seconds() == 86400
+    node = _node_for_config()
+    if node is None:
+        pytest.skip("no node >= 18 on PATH to run the extracted validator")
+    text = CONFIG.read_text(encoding="utf-8")
+    fn = re.search(r"function tsTimeoutSeconds\(\)[^{]*\{.*?\n\}\n", text, re.S)
+    js = re.sub(r": number", "", fn.group(0))
+    out = subprocess.run([node, "-p", js + "\ntsTimeoutSeconds()"],
+                         env={**os.environ, "REVL_TS_TIMEOUT": "86400"},
+                         capture_output=True, text=True)
+    assert out.stdout.strip() == "86400", out.stderr
 
-    def interrupted(self, timeout=None):
+
+def test_keyboard_interrupt_leaves_no_child_alive(monkeypatch, tmp_path):
+    """Ctrl-C during the wait: a REAL child group (a shell and its `sleep 60`
+    grandchild) is gone after the interrupt."""
+    import signal
+    import time
+    monkeypatch.undo()  # drop the fake process world: this test is real
+    pidfile = tmp_path / "grandchild.pid"
+    script = f"sleep 60 & echo $! > {pidfile}; wait"
+
+    def interrupt(signum, frame):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(_FakeProc, "communicate", interrupted)
-    with pytest.raises(KeyboardInterrupt):
-        T._ts_foreground(["vitest"], ROOT, 5)
-    assert killed == [(4242, 9)], killed
+    old = signal.signal(signal.SIGALRM, interrupt)
+    signal.setitimer(signal.ITIMER_REAL, 1.5)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            T._ts_foreground(["sh", "-c", script], ROOT, 30)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old)
+    grandchild = int(pidfile.read_text().strip())
+    for _ in range(50):
+        try:
+            os.kill(grandchild, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.1)
+    os.kill(grandchild, 9)
+    pytest.fail("the grandchild survived the interrupt")

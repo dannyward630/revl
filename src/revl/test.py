@@ -462,6 +462,9 @@ def _node_version() -> "tuple[int, int] | None":
 # first, with the named test that ran out of time, instead of the outer bound's
 # blunt kill of the whole run.
 _TS_TIMEOUT_DEFAULT = 180
+# One day. Beyond ~6.4M s the inner vitest value overflows Node's 2^31-1 ms
+# timer limit (clamped to 1 ms) and a huge outer value overflows communicate().
+_TS_TIMEOUT_MAX = 86400
 
 
 class _TsTimeoutInvalid(ValueError):
@@ -478,11 +481,11 @@ def _ts_timeout_seconds() -> int:
     raw = os.environ.get("REVL_TS_TIMEOUT")
     if raw is None:
         return _TS_TIMEOUT_DEFAULT
-    if re.fullmatch(r"[0-9]+", raw.strip()) and int(raw) > 0:
+    if re.fullmatch(r"[0-9]+", raw.strip()) and 0 < int(raw) <= _TS_TIMEOUT_MAX:
         return int(raw)
     raise _TsTimeoutInvalid(
         f"REVL_TS_TIMEOUT must be a positive integer number of seconds, "
-        f"got {raw!r}")
+        f"at most {_TS_TIMEOUT_MAX}, got {raw!r}")
 
 
 def _composition_name(ir: dict) -> str:

@@ -20,9 +20,10 @@ emitFixtures()
 function tsTimeoutSeconds(): number {
   const raw = process.env.REVL_TS_TIMEOUT
   if (raw === undefined) return 180
-  if (/^[0-9]+$/.test(raw.trim()) && Number(raw) > 0) return Number(raw)
+  if (/^[0-9]+$/.test(raw.trim()) && Number(raw) > 0 &&
+      Number(raw) <= 86400) return Number(raw)
   throw new Error(
-    `REVL_TS_TIMEOUT must be a positive integer number of seconds, got '${raw}'`)
+    `REVL_TS_TIMEOUT must be a positive integer number of seconds, at most 86400, got '${raw}'`)
 }
 const TS_TIMEOUT_S = tsTimeoutSeconds()
 const TS_TIMEOUT_MS = (TS_TIMEOUT_S * 1000) / 3

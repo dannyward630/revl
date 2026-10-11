@@ -191,7 +191,10 @@ still working is killed and reported as a failure (issue #2229). The bound is
 bound is the backstop. When the outer bound fires, the verdict names the
 composition, the bound and the variable to raise, instead of a raw
 `subprocess.TimeoutExpired`; the timed-out child's whole process group is killed,
-so no vitest fork worker outlives the run.
+so no vitest fork worker outlives the run. `REVL_TS_TIMEOUT` must be a
+positive integer of at most 86400 seconds; any other value (empty, zero,
+negative, non-numeric, fractional, larger) fails the tier with a message naming
+the variable and that rule.
 
 Two gates in CI, one per shape.
 
