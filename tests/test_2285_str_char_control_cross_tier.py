@@ -88,6 +88,20 @@ test "a value that is not a Unicode scalar is the empty string" {
 }
 """
 
+#: The issue's own reproducer, importing only names that existed before the
+#: fix, so on the base revision it compiles and fails on the CR itself rather
+#: than on a missing import.
+CR_ONLY = """\
+use "stdlib/str.rvl" { str_char, str_newline }
+
+test "str_char(13) is a carriage return" {
+  let cr = str_char(13)
+  assert cr.length() == 1
+  assert cr.charCodeAt(0) == 13
+  assert cr.concat(str_newline()).length() == 2
+}
+"""
+
 #: The primitive itself, with no stdlib in the way.
 TO_CHAR = """\
 fn code(n: Int) -> Int { return n.to_char().charCodeAt(0) }
@@ -108,8 +122,7 @@ TIERS = ("py", "ts", "go", "wasm")
 SLOW_TIERS = ("rust", "java")
 
 
-@pytest.fixture(scope="module")
-def ir(tmp_path_factory):
+def _with_stdlib(tmp_path_factory, source: str) -> dict:
     # `use` resolves relative to the importing file, so the stdlib file sits
     # beside the program.
     d = tmp_path_factory.mktemp("str_char_2285")
@@ -117,8 +130,18 @@ def ir(tmp_path_factory):
     (d / "stdlib" / "str.rvl").write_text(
         STDLIB.read_text(encoding="utf-8"), encoding="utf-8")
     main = d / "main.rvl"
-    main.write_text(PROGRAM, encoding="utf-8")
+    main.write_text(source, encoding="utf-8")
     return compile_files([str(main)])
+
+
+@pytest.fixture(scope="module")
+def ir(tmp_path_factory):
+    return _with_stdlib(tmp_path_factory, PROGRAM)
+
+
+@pytest.fixture(scope="module")
+def cr_only_ir(tmp_path_factory):
+    return _with_stdlib(tmp_path_factory, CR_ONLY)
 
 
 @pytest.fixture(scope="module")
@@ -141,6 +164,11 @@ def _check(tier: str, ir: dict) -> None:
 @pytest.mark.parametrize("tier", TIERS)
 def test_str_char_round_trips_on_every_tier(tier: str, ir: dict):
     _check(tier, ir)
+
+
+@pytest.mark.parametrize("tier", TIERS)
+def test_issue_reproducer_on_every_tier(tier: str, cr_only_ir: dict):
+    _check(tier, cr_only_ir)
 
 
 @pytest.mark.parametrize("tier", TIERS)
