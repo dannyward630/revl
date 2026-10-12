@@ -13218,7 +13218,7 @@ fn ct_args(root_: &str, meth: &str, decl: MSig, args: Vec<Expr>, env: Vec<Bind>,
     if (((inf.v == "") && tk_is_struct(&inf.ty)) && tk_generic_record(&raw, &env)) {
         return tagged("TYPE", &((((((((String::from("`").revl_concat(&root_)).revl_concat(".")).revl_concat(&meth)).revl_concat("` argument `")).revl_concat(&(decl.ps)[(i) as usize].name)).revl_concat("`: a record literal for the generic record `")).revl_concat(&raw)).revl_concat("` is not typed by the native gate (issue #2362)")));
     }
-    if ((((((inf.v == "") && (pt != "")) && tk_is_struct(&inf.ty)) && tk_nominal_name(pt.clone())) && (tk_brace_depth(&inf.ty) > 5i64)) && (tk_nominal_shape(&pt, &env) != "")) {
+    if (((inf.v == "") && (pt != "")) && ct_too_deep(pt.clone(), &inf.ty, &env)) {
         return tagged("TYPE", &(((((((String::from("`").revl_concat(&root_)).revl_concat(".")).revl_concat(&meth)).revl_concat("` argument `")).revl_concat(&(decl.ps)[(i) as usize].name)).revl_concat("`: a record literal nested deeper than 5 levels is not typed by ")).revl_concat("the native gate (issue #2362)")));
     }
     if ((((inf.v == "") && (pt != "")) && (inf.ty != "")) && (ct_struct_to_variant(pt.clone(), &inf.ty, &env) || (!tk_compatible(ct_record_shape(pt.clone(), &inf.ty, &env), inf.ty.clone())))) {
@@ -13298,11 +13298,24 @@ fn tk_generic_record(pt: &str, env: &[Bind]) -> bool {
 }
 
 fn ct_record_shape(pt: String, actual: &str, env: &[Bind]) -> String {
-    if ((!tk_is_struct(actual)) || (!tk_nominal_name(pt.clone()))) {
+    if (actual.revl_index_of("{") == (0i64).checked_sub(1i64).expect("revl: Int overflow")) {
+        return pt;
+    }
+    if (!tk_nominal_name(pt.clone())) {
+        return tk_nominal_field(pt.clone(), env, 0i64);
+    }
+    if (!tk_is_struct(actual)) {
         return pt;
     }
     let shape = tk_nominal_shape(&pt, env);
     return if (shape == "") { pt.clone() } else { shape.clone() };
+}
+
+fn ct_too_deep(pt: String, actual: &str, env: &[Bind]) -> bool {
+    if tk_nominal_name(pt.clone()) {
+        return ((tk_is_struct(actual) && (tk_brace_depth(actual) > 5i64)) && (tk_nominal_shape(&pt, env) != ""));
+    }
+    return (((actual.revl_index_of("{") != (0i64).checked_sub(1i64).expect("revl: Int overflow")) && (tk_brace_depth(actual) > 4i64)) && (tk_nominal_field(pt.clone(), env, 0i64) != pt));
 }
 
 fn tk_nominal_shape(t: &str, env: &[Bind]) -> String {

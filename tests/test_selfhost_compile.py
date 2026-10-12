@@ -1378,6 +1378,12 @@ _CALL_SITE_RULES = {
     "record_opt_field": ("pub type In = { a: Int }\npub type Row = { i: Opt[In] }\n"
                          "pub service Store { fn put(r: Row) -> Str }\n",
                          '= store.put({ i: { a: "x" } })', "T1"),
+    "record_opt_param": ("pub type Row = { id: Int }\n"
+                         "pub service Store { fn put(r: Opt[Row]) -> Str }\n",
+                         '= store.put({ id: "x" })', "T1"),
+    "record_list_param": ("pub type Row = { id: Int }\n"
+                          "pub service Store { fn put(r: List[Row]) -> Str }\n",
+                          '= store.put([{ id: "x" }])', "T1"),
     "record_deep_field": ("pub type R0 = { a: R1 }\npub type R1 = { a: R2 }\npub type R2 = { a: R3 }\npub type R3 = { a: R4 }\npub type R4 = { a: R5 }\npub type R5 = { a: Int }\npub service Store { fn put(r: R0) -> Str }\n",
                           '= store.put({ a: { a: { a: { a: { a: { a: "x" } } } } } })', "T1"),
     # a requirement call inside a larger expression is typed at its return
@@ -1400,6 +1406,12 @@ _CALL_SITE_RULES = {
                                  "pub type Row = { i: Opt[In], j: List[In] }\n"
                                  "pub service Store { fn put(r: Row) -> Str }\n",
                                  "= store.put({ i: { a: 1 }, j: [{ a: 2 }] })", "emit"),
+    "record_opt_param_matches": ("pub type Row = { id: Int }\n"
+                                 "pub service Store { fn put(r: Opt[Row]) -> Str }\n",
+                                 "= store.put({ id: 1 })", "emit"),
+    "record_list_param_matches": ("pub type Row = { id: Int }\n"
+                                  "pub service Store { fn put(r: List[Row]) -> Str }\n",
+                                  "= store.put([{ id: 1 }])", "emit"),
     "nested_call_int_return": ("pub service Store { fn put(id: Int) -> Int }\n",
                                "= (store.put(1) + 1).to_str()", "emit"),
     "nested_call_matches": ("pub service Store { fn put(id: Int) -> Str }\n",

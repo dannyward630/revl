@@ -176,7 +176,9 @@ path, which is what the resolution needs:
     record's fields (the same field set, each compatible) through the `field
     <Type>.<name>` rows. A record named inside a field type, whole or as a type
     argument (`In`, `Opt[In]`, `List[In]`), is expanded the same way, four
-    levels deep.
+    levels deep. So is a record named in a container parameter (`put(r:
+    Opt[Row])`, `put(r: List[Row])`), so `store.put([{ id: "x" }])` gets the
+    reference's argument message.
   - A record literal passed for a variant parameter is refused with the
     reference's argument message.
   - A requirement call is typed at its operation's declared return wherever
@@ -193,15 +195,18 @@ path, which is what the resolution needs:
   - In a single document, a record literal for a generic record parameter
     (`Cell[Int]`) is refused by name (`TYPE|... is not typed by the native
     gate`), not typed.
-  - A record literal nested deeper than five levels, past the shape
-    expansion, is refused by name (`TYPE|... nested deeper than 5 levels`).
+  - A record literal nested past the shape expansion (more than five levels
+    for a record parameter, four inside a container one) is refused by name
+    (`TYPE|... nested deeper than 5 levels`), valid or not.
   - Through an import, an operator whose operand type only the imported
     declaration gives (`store.put(1) + 1` with `put -> Int`) is refused by
     name (`LINK|an operator on an imported service call's result ...`): the
     document is lowered without the declaration, so its IR would lack the
     `operands` the reference writes (the py tier's overflow guard). The
     check lowers the import admission text too and compares the typed
-    operators.
+    operators. It refuses valid programs of that shape too (`= store.put(1) +
+    1`, `+ n`, `let x = store.put(1)` then `x + 1`), because their native
+    bytes would differ; typing the imported call in the IR would admit them.
   - A wrong argument count to an unmarked `emission` operation refuses with
     the wiring's G4 where the reference reports the count first.
   - Through an import, a record literal for a carried generic record

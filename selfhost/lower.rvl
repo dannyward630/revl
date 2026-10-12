@@ -7028,8 +7028,7 @@ fn ct_args(root: Str, meth: Str, decl: MSig, args: List[Expr],
       .concat("`: a record literal for the generic record `").concat(raw)
       .concat("` is not typed by the native gate (issue #2362)"))
   }
-  if (inf.v == "" && pt != "" && tk_is_struct(inf.ty) && tk_nominal_name(pt)
-      && tk_brace_depth(inf.ty) > 5 && tk_nominal_shape(pt, env) != "") {
+  if (inf.v == "" && pt != "" && ct_too_deep(pt, inf.ty, env)) {
     return tagged("TYPE", "`".concat(root).concat(".").concat(meth)
       .concat("` argument `").concat(decl.ps[i].name)
       .concat("`: a record literal nested deeper than 5 levels is not typed by ")
@@ -7125,9 +7124,24 @@ fn tk_generic_record(pt: Str, env: List[Bind]) -> Bool {
 }
 
 fn ct_record_shape(pt: Str, actual: Str, env: List[Bind]) -> Str {
-  if (!tk_is_struct(actual) || !tk_nominal_name(pt)) { return pt }
+  if (actual.indexOf("{") == 0 - 1) { return pt }
+  // a container parameter (`Opt[Row]`, `List[Row]`): every record named in it
+  // is expanded, one level down
+  if (!tk_nominal_name(pt)) { return tk_nominal_field(pt, env, 0) }
+  if (!tk_is_struct(actual)) { return pt }
   let shape = tk_nominal_shape(pt, env)
   return shape == "" ? pt : shape
+}
+
+// Issue #2362: a literal nested past the shape expansion: five brace levels
+// for a record parameter, four inside a container one.
+fn ct_too_deep(pt: Str, actual: Str, env: List[Bind]) -> Bool {
+  if (tk_nominal_name(pt)) {
+    return tk_is_struct(actual) && tk_brace_depth(actual) > 5
+      && tk_nominal_shape(pt, env) != ""
+  }
+  return actual.indexOf("{") != 0 - 1 && tk_brace_depth(actual) > 4
+    && tk_nominal_field(pt, env, 0) != pt
 }
 
 // The structural shape `{a: A, b: B}` the `field <Type>.<name>` rows of `env`
