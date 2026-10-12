@@ -55,6 +55,9 @@ def test_a_service_named_box_does_not_shadow_std_box():
     assert "let box_box: Box<dyn Box_> = Box::new(BoxKitBox {" in src
     assert "impl Box_ for BoxKitBox {" in src
     assert "store: Arc<Box<dyn Box_>>," in src
+    # a service named `Arc_` moves one rung up the ladder, off the `Arc_`
+    # a service named `Arc` would take
+    assert "pub trait Arc__: Send + Sync {" in src
     assert "pub trait Box:" not in src and "dyn Box>" not in src
     # the service's NAME is the surface spelling in every string
     assert '"box" => Some("Box"),' in src

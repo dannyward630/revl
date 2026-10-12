@@ -94,7 +94,7 @@
 
 ["function", "host-object-blocks-no-corpus-document-acquires-the", "is_map_cas_verb", 1, 1]
 
-["reason", "issue-1920-call-acquired-binds-and-service-trait-names", "Issue #1920, the port of the same two changes. `held_bind_type` mirrors `_held_bind_type` (issue #1931 generalised it from calls to every value acquisition) and records the same unreachable arms: an acquisition whose type cannot be named or is `Unit`, and the loop-exhausted return. `svc_ident`'s loop-exhausted `return mangle(name)` is reached only by a name of nothing but underscores, which is not a valid service name; emit_rust_corpus/prelude_names.rvl reaches the reserved rung and the `Box_` -> `Box__` ladder step."]
+["reason", "issue-1920-call-acquired-binds-and-service-trait-names", "Issue #1920, the port of the same two changes. `held_bind_type` mirrors `_held_bind_type` (issue #1931 generalised it from calls to every value acquisition) and records the same unreachable arms: an acquisition whose type cannot be named or is `Unit`, and the loop-exhausted return. `svc_ident`'s loop-exhausted `return mangle(name)` is reached only by a name of nothing but underscores, which is not a valid service name; emit_rust_corpus/prelude_names.rvl reaches the reserved rung and the `Arc_` -> `Arc__` ladder step."]
 
 ["function", "issue-1920-call-acquired-binds-and-service-trait-names", "held_bind_type", 2, 2]
 
