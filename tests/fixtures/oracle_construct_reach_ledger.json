@@ -223,6 +223,7 @@
     "method=set",
     "method=size",
     "method=split",
+    "method=to_char",
     "op=!==",
     "op=/",
     "op====",

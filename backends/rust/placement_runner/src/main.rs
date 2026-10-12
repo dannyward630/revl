@@ -391,7 +391,16 @@ fn main() {
                         spawn_monitor(socket.clone(), key.clone(), tx.clone());
                     }
                 }
-                None => log("proxy", key, &format!("UNSUPPORTED service {service}")),
+                // issue #2335: a proxy whose service this build has no proxy
+                // component for is a FATAL spec/build mismatch, like an unknown
+                // component below. Logging past it left the composition short of
+                // a service it claims to reach, yet the run still said `UP`.
+                // Dispose the proxies that booted, LIFO, then exit nonzero.
+                None => {
+                    fatal_boot(format!(
+                        "FATAL unsupported proxy service {service} for key {key}: \
+                         this build has no proxy component for it"), &fibers);
+                }
             }
         }
     }

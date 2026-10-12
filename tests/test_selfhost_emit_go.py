@@ -187,6 +187,8 @@ CORPUS = [
     # division, a Float `%` and Int-to-Float widening (issues #2259, #2198),
     # and the checked Int32 `+ - *` and unary minus (issue #2262)
     "comp_provide_arith.rvl",
+    "to_char.rvl",  # Int.to_char, the primitive behind str_char (issue #2285)
+    "comp_to_char.rvl",  # Int.to_char in a provide body (issue #2285)
 ]
 
 # The combined-path documents, which import stc-go and are built against it.

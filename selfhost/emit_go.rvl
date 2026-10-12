@@ -690,7 +690,7 @@ fn builtin_ret_type(method: Str, recv: Str) -> Str {
   if (method == "div_trunc" || method == "div_floor" || method == "div_euclid" || method == "mod") { return "Int" }
   // `to_int` is BOTH the Int32 widen and the Str parse (FR-9).
   if (method == "to_int") { return recv == "Str" ? "Opt[Int]" : "Int" }
-  if (method == "to_str") { return "Str" }
+  if (method == "to_str" || method == "to_char") { return "Str" }
   if (method == "to_int32") { return "Int32" }
   if (method == "startsWith" || method == "endsWith") { return "Bool" }
   if (is_checked_div(method)) { return "Result[Int, Str]" }
@@ -1554,6 +1554,9 @@ fn builtin_text(method: Str, rt: Str, target: Str, args: List[Str], alias: Str) 
   if (method == "repeat") { return `revlStrRepeat(${target}, ${args[0]})` }
   if (method == "charAt") { return `revlStrCharAt(${target}, ${args[0]})` }
   if (method == "charCodeAt" || method == "codepoint_at") { return `revlStrCharCodeAt(${target}, ${args[0]})` }
+  // The reverse of `codepoint_at` (issue #2285): the reference's `_GO_TO_CHAR`
+  // closure applied to the receiver, so it is evaluated once.
+  if (method == "to_char") { return `func(n int64) string { if n < 0 || n > 0x10FFFF || (n >= 0xD800 && n <= 0xDFFF) { return "" }; return string(rune(n)) }(${target})` }
   return builtin_text_tail(method, rt, target, args, alias)
 }
 
@@ -3823,7 +3826,8 @@ fn comp_expr_ok(n: Any, env: CEnv) -> Bool {
 // (the Opt-returning parse) and the division forms are outside it.
 fn comp_builtin_ok(method: Str, recv: Str) -> Bool {
   let ported = ["length", "push", "concat", "slice", "indexOf", "split", "join", "repeat", "charAt",
-                "charCodeAt", "codepoint_at", "startsWith", "endsWith", "to_int", "to_int32", "to_str"]
+                "charCodeAt", "codepoint_at", "startsWith", "endsWith", "to_int", "to_int32", "to_str",
+                "to_char"]
   return list_contains(ported, method) && !(method == "to_int" && recv == "Str")
 }
 
@@ -3854,6 +3858,7 @@ fn comp_builtin(method: Str, recv: Str, target: Str, args: List[Str]) -> Str {
   if (method == "endsWith") { text = `strings.HasSuffix(${target}, ${a0})` }
   if (method == "to_int") { text = `int64(${target})` }
   if (method == "to_int32") { text = `revlToI32(${target})` }
+  if (method == "to_char") { text = `func(n int64) string { if n < 0 || n > 0x10FFFF || (n >= 0xD800 && n <= 0xDFFF) { return "" }; return string(rune(n)) }(${target})` }
   // an Int32 receiver is the reference's own guard; the checker admits
   // `to_str` on Int and Float only
   if (method == "to_str") {

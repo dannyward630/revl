@@ -45,7 +45,6 @@ exits nonzero, exactly as the py tier does for a missing cordis-py.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import shutil
@@ -118,16 +117,42 @@ def wal_activation_complete() -> dict:
     return {"record": "activation-complete", "generation": 1, "components": []}
 
 
-def write_wal_record(handle, record: dict) -> None:
-    """Append one JSONL record and fsync it — the write-ahead discipline the go
+class WALDurabilityError(RuntimeError):
+    """A WAL record could not be made durable (its fsync failed) and the run
+    did not opt out. Raised instead of passing silently (issue #2345)."""
+
+
+#: The explicit, visible opt-out for a WAL target that cannot fsync (a pipe,
+#: a character device). The same variable the go, rust and java sinks read; the
+#: log records it in its header and in a ``durability-opt-out`` record.
+ALLOW_UNSYNCED_ENV = "REVL_WAL_ALLOW_UNSYNCED"
+
+
+def wal_allows_unsynced() -> bool:
+    return os.environ.get(ALLOW_UNSYNCED_ENV) == "1"
+
+
+def write_wal_record(handle, record: dict, *,
+                     allow_unsynced: bool | None = None) -> None:
+    """Append one JSONL record and fsync it: the write-ahead discipline the go
     tier uses, so a descriptor a run saw drained is on disk before the effect it
-    describes is allowed to matter."""
-    handle.write(json.dumps(record) + "\n")
-    handle.flush()
+    describes is allowed to matter. A failed write or flush always raises
+    :class:`WALDurabilityError`; a failed fsync raises it unless the run opted
+    out (``allow_unsynced``, defaulting to ``REVL_WAL_ALLOW_UNSYNCED=1``)."""
+    if allow_unsynced is None:
+        allow_unsynced = wal_allows_unsynced()
+    try:
+        handle.write(json.dumps(record) + "\n")
+        handle.flush()
+    except OSError as error:
+        raise WALDurabilityError(
+            f"write-ahead log write failed: {error}") from error
     try:
         os.fsync(handle.fileno())
-    except (OSError, ValueError):  # pragma: no cover — e.g. a pipe target
-        pass
+    except (OSError, ValueError) as error:
+        if not allow_unsynced:
+            raise WALDurabilityError(
+                f"write-ahead log fsync failed: {error}") from error
 
 
 def drain_wal_frame(handle, line: str,
@@ -203,15 +228,18 @@ def _load_order(ir: dict) -> list[str]:
 
 
 def _wasm_emitter():
-    """Load backends/wasm/emit.py and hand the CALLER the module object.
+    """The wasm emitter module, from the one cached loader
+    (`placement.backend_emit_module`, issue #2204).
 
-    The caller keeps it because `EmitError` is a class on the module OBJECT: a
-    second `exec_module` produces a different class, and an `except` against it
-    would not catch the instance the first module raised (issue #1406)."""
-    spec = importlib.util.spec_from_file_location("revl_wasm_emit", _WASM_DIR / "emit.py")
-    emit_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(emit_module)
-    return emit_module
+    The caller keeps the module it is handed because `EmitError` is a class on
+    the module OBJECT: a second `exec_module` produces a different class, and
+    an `except` against it would not catch the instance the first module raised
+    (issue #1406). Sharing one module per process makes that hold across
+    loaders too, not only within one call. Unlike the java and go emitters this
+    one holds no `global` render state, so nothing here needs a fresh copy."""
+    from .placement import backend_emit_module  # noqa: PLC0415 - off the compile graph
+
+    return backend_emit_module("wasm", root=_BACKENDS_DIR)
 
 
 def _emit_modules(ir: dict, record: bool = False, emit_module=None) -> dict[str, str]:
@@ -302,9 +330,26 @@ def run_wasm(ir: dict, config: dict, files, once: bool = False,
 
         if record:
             # open the durable WAL and stamp the header BEFORE the harness boots,
-            # so a descriptor the drain sees is appended to a well-formed log.
+            # so a descriptor the drain sees is appended to a well-formed log. A
+            # header that cannot be made durable stops the run here, before the
+            # harness (and so any host body) starts (issue #2345).
             wal_handle = open(wal_path, "w", encoding="utf-8")
-            write_wal_record(wal_handle, wal_header())
+            header = wal_header()
+            unsynced = wal_allows_unsynced()
+            if unsynced:
+                print(f"warning: {ALLOW_UNSYNCED_ENV}=1 disables the WAL fsync "
+                      f"guarantee", file=sys.stderr)
+                header["durability"] = "unsynced-opt-out"
+            try:
+                write_wal_record(wal_handle, header)
+                if unsynced:
+                    write_wal_record(wal_handle, {"record": "durability-opt-out",
+                                                  "fromSeq": 0})
+            except WALDurabilityError as error:
+                print(f"error: {error}; the wasm composition was not started "
+                      f"(set {ALLOW_UNSYNCED_ENV}=1 to opt out for a target "
+                      f"that cannot fsync)", file=sys.stderr)
+                return 1
 
         env = dict(os.environ)
         env["CORDIS_WASM"] = str(_cordis_wasm_dir())
@@ -323,7 +368,16 @@ def run_wasm(ir: dict, config: dict, files, once: bool = False,
             # drain a `[wal] {…}` frame into the durable WAL (item 322 Slice 2);
             # every other line is the harness's own `[run] …`/`_log` output.
             if wal_handle is not None:
-                seq = drain_wal_frame(wal_handle, line, proof.tag("wal"))
+                try:
+                    seq = drain_wal_frame(wal_handle, line, proof.tag("wal"))
+                except WALDurabilityError as error:
+                    # a descriptor that is not durable stops the composition
+                    # before it can run on past it (issue #2345)
+                    proc.kill()
+                    proc.wait()
+                    print(f"error: {error}; the wasm composition was stopped",
+                          file=sys.stderr)
+                    return 1
                 if seq is not None:
                     drained_seqs.append(seq)
                     continue
@@ -338,8 +392,13 @@ def run_wasm(ir: dict, config: dict, files, once: bool = False,
         # marker (its presence rolls forward). A nonzero exit / residue leaves
         # the descriptors on disk with no marker — the roll-back state.
         if wal_handle is not None and rc == 0 and proof.down and proof.no_residue:
-            write_wal_record(wal_handle, wal_discharge(drained_seqs))
-            write_wal_record(wal_handle, wal_activation_complete())
+            try:
+                write_wal_record(wal_handle, wal_discharge(drained_seqs))
+                write_wal_record(wal_handle, wal_activation_complete())
+            except WALDurabilityError as error:
+                print(f"error: {error}; the commit markers are not durable, so "
+                      f"recover treats this run as not complete", file=sys.stderr)
+                return 1
     finally:
         if wal_handle is not None:
             wal_handle.close()

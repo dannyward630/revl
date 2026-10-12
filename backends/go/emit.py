@@ -1654,6 +1654,12 @@ def _comp_builtin(method, recv_surface, target, args):
     # helper as charCodeAt.
     if method == "codepoint_at":
         return "revlStrCharCodeAt(%s, %s)" % (target, args[0])
+    # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+    # §Int.to_char): a one-code-point Str for a Unicode scalar value, "" for
+    # anything else. `string(rune(n))` would hand back U+FFFD for a surrogate
+    # or an out-of-range value, so the range is checked first.
+    if method == "to_char":
+        return "%s(%s)" % (_GO_TO_CHAR, target)
     # The prefix/suffix probes (FR-6, docs/stdlib-2.0.md §Str.startsWith).
     if method == "startsWith":
         return "strings.HasPrefix(%s, %s)" % (target, args[0])
@@ -6422,6 +6428,14 @@ _GO_CHECKED_DIV = ("checked_div_trunc", "checked_div_floor",
 _GO_DIV_ZERO_MSG = "revl: division by zero"
 
 
+# Int.to_char (issue #2285, docs/stdlib-2.0.md §Int.to_char) as a closure
+# applied to the receiver, so the receiver is evaluated once and no helper has
+# to be gated on use.
+_GO_TO_CHAR = ('func(n int64) string { if n < 0 || n > 0x10FFFF || '
+               '(n >= 0xD800 && n <= 0xDFFF) { return "" }; '
+               'return string(rune(n)) }')
+
+
 def _v3_builtin_ret_type(method, recv_type):
     if method in ("length", "indexOf", "charCodeAt", "codepoint_at",
                   "div_trunc", "div_floor", "div_euclid", "mod"):
@@ -6430,8 +6444,9 @@ def _v3_builtin_ret_type(method, recv_type):
     # type follows the receiver, exactly as the checker dispatches it.
     if method == "to_int":
         return "Opt[Int]" if recv_type == "Str" else "Int"
-    # The rendering builtin (docs/stdlib-2.0.md §Int.to_str).
-    if method == "to_str":
+    # The rendering builtin (docs/stdlib-2.0.md §Int.to_str), and its
+    # one-code-point sibling (issue #2285, §Int.to_char).
+    if method in ("to_str", "to_char"):
         return "Str"
     if method == "to_int32":
         return "Int32"
@@ -7263,6 +7278,10 @@ def _go_v3_builtin(ctx, method, target_node, target, args):
     # helper as charCodeAt.
     if method == "codepoint_at":
         return f"revlStrCharCodeAt({target}, {args[0]})"
+    # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+    # §Int.to_char), the same closure as the component tier.
+    if method == "to_char":
+        return f"{_GO_TO_CHAR}({target})"
     # The prefix/suffix probes (FR-6, docs/stdlib-2.0.md §Str.startsWith):
     # HasPrefix/HasSuffix compare bytes, and a code-point prefix of a UTF-8
     # string is exactly a byte prefix.
@@ -8951,12 +8970,16 @@ const revlWALGuarantee = "the WAL records each committed effect's step identity,
 // revlWAL is the process's durable append-only log. One line per record, JSON,
 // flushed + fsync'd before the call that wrote it returns — the write-ahead
 // discipline the py tier uses, so a record a caller saw acknowledged is on disk
-// before the effect it describes is allowed to matter.
+// before the effect it describes is allowed to matter. A failed write or fsync
+// is fatal (issue #2345): the process stops instead of running on with a record
+// that never became durable. REVL_WAL_ALLOW_UNSYNCED=1 is the explicit opt-out
+// for a target that cannot fsync; it is stamped into the log itself.
 type revlWAL struct {
-	mu   sync.Mutex
-	f    *os.File
-	seq  int
-	seqs []int
+	mu       sync.Mutex
+	f        *os.File
+	seq      int
+	seqs     []int
+	unsynced bool
 }
 
 var revlWALSink *revlWAL
@@ -8970,24 +8993,41 @@ func revlWALOpen() {
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return
+		panic("revl: cannot open the write-ahead log REVL_WAL: " + err.Error())
 	}
-	revlWALSink = &revlWAL{f: f}
-	revlWALSink.write(map[string]any{
+	unsynced := os.Getenv("REVL_WAL_ALLOW_UNSYNCED") == "1"
+	revlWALSink = &revlWAL{f: f, unsynced: unsynced}
+	header := map[string]any{
 		"record": "header", "walVersion": 1, "generation": 1,
 		"guarantee": revlWALGuarantee,
-	})
+	}
+	if unsynced {
+		os.Stderr.WriteString("warning: REVL_WAL_ALLOW_UNSYNCED=1 disables the WAL fsync guarantee\\n")
+		header["durability"] = "unsynced-opt-out"
+	}
+	revlWALSink.write(header)
+	if unsynced {
+		revlWALSink.write(map[string]any{"record": "durability-opt-out", "fromSeq": 0})
+	}
 }
 
 func init() { revlWALOpen() }
 
+// write appends one record and fsyncs it. Any failure panics: a record the
+// caller cannot be sure is on disk must stop the run before the next effect,
+// never pass silently. Only the visible REVL_WAL_ALLOW_UNSYNCED opt-out lets a
+// failed fsync through.
 func (w *revlWAL) write(rec map[string]any) {
 	line, err := json.Marshal(rec)
 	if err != nil {
-		return
+		panic("revl: write-ahead log record could not be encoded: " + err.Error())
 	}
-	_, _ = w.f.Write(append(line, '\\n'))
-	_ = w.f.Sync()
+	if _, err := w.f.Write(append(line, '\\n')); err != nil {
+		panic("revl: write-ahead log write failed: " + err.Error())
+	}
+	if err := w.f.Sync(); err != nil && !w.unsynced {
+		panic("revl: write-ahead log fsync failed: " + err.Error())
+	}
 }
 
 // revlRecordTransactional appends the discharge-descriptor for one witnessed

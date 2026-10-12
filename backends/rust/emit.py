@@ -4596,7 +4596,8 @@ def _map_value_expr_type(node: dict, var_types: dict, env: _Env) -> str | None:
         if method in ("length", "charCodeAt", "codepoint_at", "indexOf",
                       "to_int"):
             return "Int"
-        if method in ("charAt", "join", "repeat", "to_str", "slice"):
+        if method in ("charAt", "join", "repeat", "to_str", "to_char",
+                      "slice"):
             return "Str"
         if method == "split":
             return "List[Str]"
@@ -6862,7 +6863,7 @@ _BUILTIN_RESULT = {
     "indexOf": "Int", "div_trunc": "Int", "div_floor": "Int",
     "div_euclid": "Int", "mod": "Int", "size": "Int",
     "charAt": "Str", "join": "Str", "repeat": "Str", "str": "Str",
-    "to_str": "Str",
+    "to_str": "Str", "to_char": "Str",
     "startsWith": "Bool", "endsWith": "Bool", "has": "Bool",
     "is_alnum": "Bool", "is_digit": "Bool", "is_alpha": "Bool",
     "is_space": "Bool",
@@ -8201,6 +8202,15 @@ def _v3_builtin(method: str, target: str, args: list[str],
         if recv == "Float":
             return f"revl_ftoa({target})"
         return f"({target}).to_string()"
+    # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+    # §Int.to_char): a one-code-point Str for a Unicode scalar value, "" for
+    # anything else. The receiver is bound once; `char::from_u32` refuses a
+    # surrogate and anything above U+10FFFF, and the i64 range check keeps a
+    # negative from wrapping into a valid u32.
+    if method == "to_char":
+        return (f"{{ let _cp: i64 = {target}; if _cp < 0 || _cp > 0x10FFFF "
+                "{ String::new() } else { char::from_u32(_cp as u32)"
+                ".map(|c| c.to_string()).unwrap_or_default() } }")
     # Single-character ASCII classification (item 233, docs/stdlib-2.0.md
     # §Str.is_alnum), mirroring the python backend's native forms
     # (backends/python/emit.py §is_digit/is_alpha/is_alnum/is_space). The
@@ -10313,20 +10323,33 @@ def _revl_record_preamble() -> list[str]:
         "/// flushed + fsync'd (`sync_all`) before the call that wrote it returns —",
         "/// the write-ahead discipline the py tier uses, so a record a caller saw",
         "/// acknowledged is on disk before the effect it describes is allowed to",
-        "/// matter. Mirrors the go tier's `revlWAL`.",
+        "/// matter. Mirrors the go tier's `revlWAL`. A failed write or fsync is",
+        "/// fatal (issue #2345): the process stops instead of running on with a",
+        "/// record that never became durable. `REVL_WAL_ALLOW_UNSYNCED=1` is the",
+        "/// explicit opt-out for a target that cannot fsync; it is stamped into the",
+        "/// log itself.",
         "struct RevlWal {",
         "    file: std::fs::File,",
         "    seq: u64,",
         "    seqs: Vec<u64>,",
+        "    unsynced: bool,",
         "}",
         "",
         "impl RevlWal {",
+        "    /// Append one record and fsync it. Any failure panics; only the visible",
+        "    /// `REVL_WAL_ALLOW_UNSYNCED` opt-out lets a failed fsync through.",
         "    fn write(&mut self, rec: &serde_json::Value) {",
         "        use std::io::Write;",
-        "        if let Ok(mut line) = serde_json::to_string(rec) {",
-        "            line.push('\\n');",
-        "            let _ = self.file.write_all(line.as_bytes());",
-        "            let _ = self.file.sync_all(); // fsync per record",
+        "        let mut line = serde_json::to_string(rec)",
+        '            .unwrap_or_else(|e| panic!("revl: write-ahead log record could not be encoded: {e}"));',
+        "        line.push('\\n');",
+        "        if let Err(e) = self.file.write_all(line.as_bytes()) {",
+        '            panic!("revl: write-ahead log write failed: {e}");',
+        "        }",
+        "        if let Err(e) = self.file.sync_all() {",
+        "            if !self.unsynced {",
+        '                panic!("revl: write-ahead log fsync failed: {e}");',
+        "            }",
         "        }",
         "    }",
         "}",
@@ -10348,13 +10371,22 @@ def _revl_record_preamble() -> list[str]:
         "                .create(true).write(true).append(true).open(&path)",
         "            {",
         "                Ok(f) => f,",
-        "                Err(_) => return None,",
+        '                Err(e) => panic!("revl: cannot open the write-ahead log REVL_WAL: {e}"),',
         "            };",
-        "            let mut wal = RevlWal { file, seq: 0, seqs: Vec::new() };",
-        "            wal.write(&serde_json::json!({",
+        '            let unsynced = std::env::var("REVL_WAL_ALLOW_UNSYNCED").ok().as_deref() == Some("1");',
+        "            let mut wal = RevlWal { file, seq: 0, seqs: Vec::new(), unsynced };",
+        "            let mut header = serde_json::json!({",
         '                "record": "header", "walVersion": 1, "generation": 1,',
         '                "guarantee": REVL_WAL_GUARANTEE,',
-        "            }));",
+        "            });",
+        "            if unsynced {",
+        '                eprintln!("warning: REVL_WAL_ALLOW_UNSYNCED=1 disables the WAL fsync guarantee");',
+        '                header["durability"] = serde_json::json!("unsynced-opt-out");',
+        "            }",
+        "            wal.write(&header);",
+        "            if unsynced {",
+        '                wal.write(&serde_json::json!({ "record": "durability-opt-out", "fromSeq": 0 }));',
+        "            }",
         "            Some(std::sync::Mutex::new(wal))",
         "        })",
         "        .as_ref()",

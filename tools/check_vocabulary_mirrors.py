@@ -318,14 +318,51 @@ def sites_in_source(source: str, module: str) -> list[Site]:
     return found
 
 
-def scan(root: pathlib.Path = REPO_ROOT) -> list[Site]:
-    """Every vocabulary site under the scanned roots, in a stable order."""
-    found: list[Site] = []
+# Issue #2216. A scan parses every module under the scanned roots, about 19 s
+# on a loaded box, and an in-process caller that asks more than once (the
+# gate's own test module asks once per test) paid for it every time. Each scan
+# is cached per root on exactly what it read: the path and bytes of every file
+# it parses, in order, compared whole rather than through a digest. Any edit,
+# addition, removal or rename under the roots is a miss, and the scan runs
+# again over the bytes just read. One entry per root; a hit returns a fresh
+# list, so a caller that changes its result cannot change the cache. The key
+# does not cover this module's own settings (`SCAN_ROOTS`, `MIN_TOKENS`,
+# `CLAIM_CUES`, `CLAIM_SLACK`): a caller that changes one clears both caches.
+_SCAN_CACHE: dict[str, tuple[tuple, tuple[Site, ...]]] = {}
+_CLAIM_CACHE: dict[str, tuple[tuple, tuple[Claim, ...]]] = {}
+
+
+def _text(data: bytes) -> str:
+    """`data` decoded as `read_text(encoding="utf-8")` would decode it."""
+    return data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _scanned_files(root: pathlib.Path) -> tuple[tuple[str, bytes], ...]:
+    """`(path relative to root, bytes)` for every file `scan` parses, in the
+    order it parses them."""
+    files = []
     for base in SCAN_ROOTS:
         for path in sorted((root / base).rglob("*.py")):
-            rel = path.relative_to(root).as_posix()
-            found.extend(sites_in_source(path.read_text(encoding="utf-8"), rel))
+            files.append((path.relative_to(root).as_posix(), path.read_bytes()))
+    return tuple(files)
+
+
+def scan_key(root: pathlib.Path = REPO_ROOT) -> tuple:
+    """What `scan` caches on: the root and every file it reads, with bytes."""
+    return str(root), _scanned_files(root)
+
+
+def scan(root: pathlib.Path = REPO_ROOT) -> list[Site]:
+    """Every vocabulary site under the scanned roots, in a stable order."""
+    where, files = scan_key(root)
+    cached = _SCAN_CACHE.get(where)
+    if cached is not None and cached[0] == files:
+        return list(cached[1])
+    found: list[Site] = []
+    for rel, data in files:
+        found.extend(sites_in_source(_text(data), rel))
     found.sort(key=lambda s: (s.module, s.name))
+    _SCAN_CACHE[where] = (files, tuple(found))
     return found
 
 
@@ -438,12 +475,17 @@ def scan_claims(sites: list[Site], root: pathlib.Path = REPO_ROOT) -> list[Claim
     for site in sites:
         by_module.setdefault(site.module, []).append(site)
 
+    inputs = (tuple(sites), tuple((module, (root / module).read_bytes())
+                                  for module in sorted(by_module)))
+    cached = _CLAIM_CACHE.get(str(root))
+    if cached is not None and cached[0] == inputs:
+        return list(cached[1])
     found: list[Claim] = []
-    for module in sorted(by_module):
-        source = (root / module).read_text(encoding="utf-8")
-        found.extend(claims_in_source(source, module, by_module[module],
+    for module, data in inputs[1]:
+        found.extend(claims_in_source(_text(data), module, by_module[module],
                                       modules, by_stem))
     found.sort(key=lambda c: c.site)
+    _CLAIM_CACHE[str(root)] = (inputs, tuple(found))
     return found
 
 
