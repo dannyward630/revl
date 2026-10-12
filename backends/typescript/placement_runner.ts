@@ -409,11 +409,12 @@ let stopping = false
 // The bound on the whole teardown, in ms, shared by every fiber's dispose as
 // the go runner shares one 5 s context. `REVL_TEARDOWN_GRACE` is a positive
 // finite number of seconds; unset, empty, zero, negative or unparseable is the
-// 5 s default. Clamped to what a timer accepts.
+// 5 s default, as does anything over a day (the go and rust runners' rule).
 function teardownGraceMs(raw: string | undefined = process.env.REVL_TEARDOWN_GRACE): number {
   const seconds = raw === undefined ? NaN : Number(raw)
   if (!Number.isFinite(seconds) || seconds <= 0) return 5000
-  return Math.min(seconds * 1000, 2147483647)
+  if (seconds > 86400) return 5000
+  return seconds * 1000
 }
 
 // `log`, written synchronously and through the same scrub: the unconfirmed
@@ -462,7 +463,7 @@ async function teardown(): Promise<void> {
   if (server) server.close()
   if (unconfirmed.length > 0) {
     fatal(
-      'teardown incomplete: dispose not confirmed before the bound expired for ' +
+      'teardown incomplete: dispose not confirmed for ' +
         unconfirmed.join(', '),
     )
   }

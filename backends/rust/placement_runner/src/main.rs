@@ -579,19 +579,24 @@ fn main() {
             "[{name}] FATAL teardown incomplete: {detail}")));
         std::process::exit(1)
     };
-    let settled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // One claim decides the race between the watchdog and the end of the
+    // loop: 0 = open, 1 = the teardown finished, 2 = the bound expired. Whoever
+    // moves it off 0 first wins, so the process never prints FATAL and then
+    // `DOWN` (or the reverse).
+    use std::sync::atomic::{AtomicU8, Ordering};
+    let claim = std::sync::Arc::new(AtomicU8::new(0));
     let disposing = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     {
-        let (settled, disposing, name) = (settled.clone(), disposing.clone(), name.clone());
+        let (claim, disposing, name) = (claim.clone(), disposing.clone(), name.clone());
         let deadline = std::time::Instant::now() + teardown_bound();
         std::thread::spawn(move || {
             while std::time::Instant::now() < deadline {
-                if settled.load(std::sync::atomic::Ordering::SeqCst) {
+                if claim.load(Ordering::SeqCst) != 0 {
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
-            if settled.load(std::sync::atomic::Ordering::SeqCst) {
+            if claim.compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst).is_err() {
                 return;
             }
             let label = disposing.lock().map(|l| l.clone()).unwrap_or_default();
@@ -614,7 +619,12 @@ fn main() {
             }
         }
     }
-    settled.store(true, std::sync::atomic::Ordering::SeqCst);
+    if claim.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        // the watchdog expired the bound first and is exiting the process
+        loop {
+            std::thread::park();
+        }
+    }
     if !unconfirmed.is_empty() {
         incomplete(&format!("dispose not confirmed for {}", unconfirmed.join(", ")));
     }
