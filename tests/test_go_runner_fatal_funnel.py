@@ -69,6 +69,7 @@ present) so none can pass on an empty line.
 from __future__ import annotations
 
 import json
+import os
 import selectors
 import shutil
 import socket
@@ -733,3 +734,21 @@ def test_an_unconfirmed_dispose_is_not_reported_as_a_clean_teardown(tmp_path, on
     fatal = [line for line in done.stderr.splitlines() if "] FATAL " in line]
     assert len(fatal) == 1 and "Impl" in fatal[0], done.stderr
     assert done.returncode == 1, both
+
+
+def test_the_teardown_bound_follows_revl_teardown_grace(tmp_path):
+    """The conductor's stranded-teardown report tells a user to raise
+    REVL_TEARDOWN_GRACE, so the runner's own dispose bound reads it (seconds)
+    and keeps 5s only as the default. With a never-settling inverse and a
+    1 second grace the runner gives up well before the 5 second default."""
+    binary = _build(tmp_path, doc=_STUCK_UNDO_DOC)
+    spec = tmp_path / "grace.json"
+    spec.write_text(json.dumps({**_SPEC, "probe": [], "once": False}))
+    started = time.monotonic()
+    done = subprocess.run([binary, str(spec)], capture_output=True, text=True,
+                          timeout=300, stdin=subprocess.DEVNULL,
+                          env={**os.environ, "REVL_TEARDOWN_GRACE": "1"})
+    elapsed = time.monotonic() - started
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "dispose NOT confirmed" in done.stdout + done.stderr
+    assert elapsed < 4.0, elapsed

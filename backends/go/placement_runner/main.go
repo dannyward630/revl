@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -191,12 +192,31 @@ func fatalLine(name string, fatal any) {
 func fatalBoot(name, message string, fibers []labeledFiber,
 	log func(channel, subject, detail string)) {
 	fatalLine(name, message)
-	bootCtx, bootCancel := stdctx.WithTimeout(stdctx.Background(), 5*time.Second)
+	bootCtx, bootCancel := stdctx.WithTimeout(stdctx.Background(), teardownBound())
 	for i := len(fibers) - 1; i >= 0; i-- {
 		disposeAwaited(bootCtx, fibers[i], log)
 	}
 	bootCancel()
 	os.Exit(1)
+}
+
+// defaultTeardownBound is how long the teardown waits for the disposes to
+// settle when REVL_TEARDOWN_GRACE is not set.
+const defaultTeardownBound = 5 * time.Second
+
+// teardownBound is the wait the teardown gives its disposes: the conductor's
+// REVL_TEARDOWN_GRACE (seconds, the variable the stranded-teardown report tells
+// a user to raise) when it is a positive finite number, else the default.
+func teardownBound() time.Duration {
+	raw := os.Getenv("REVL_TEARDOWN_GRACE")
+	if raw == "" {
+		return defaultTeardownBound
+	}
+	secs, err := strconv.ParseFloat(raw, 64)
+	if err != nil || !(secs > 0) || secs > 86400 {
+		return defaultTeardownBound
+	}
+	return time.Duration(secs * float64(time.Second))
 }
 
 // disposeAwaited disposes one fiber and waits (bounded by ctx) for the
@@ -530,7 +550,7 @@ func main() {
 	//    awaited (bounded) in both modes: the inverses of a held composition
 	//    must replay before `DOWN`, and in once mode the residue proof below
 	//    reads a settled runtime, not an in-flight one.
-	goneCtx, cancel := stdctx.WithTimeout(stdctx.Background(), 5*time.Second)
+	goneCtx, cancel := stdctx.WithTimeout(stdctx.Background(), teardownBound())
 	defer cancel()
 	var unconfirmed []string
 	for i := len(fibers) - 1; i >= 0; i-- {

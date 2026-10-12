@@ -71,7 +71,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 import warnings
@@ -557,4 +559,52 @@ def test_a_dispose_that_never_settles_still_reports_and_exits_1(tmp_path):
     assert len([ln for ln in err.splitlines()
                 if "FATAL unknown component Ghost" in ln]) == 1, err
     assert "NOT confirmed: timed out" in out, out
+    assert "unsettled" not in err and "Warning" not in err, err
+
+
+@needs_node
+@pytest.mark.parametrize("once", [True, False], ids=["once", "held"])
+def test_an_unconfirmed_dispose_is_fatal_and_claims_no_down(tmp_path, once):
+    """Issue #2339: a dispose that does not settle inside the teardown bound is
+    not a finished unwind, so the run must not say it was. `REVL_TEARDOWN_GRACE=1`
+    shortens the bound to one second. Both the once-mode teardown and the held
+    one (ended by SIGTERM, as the conductor's `stop_all` does) must name the
+    fiber on one FATAL line on stderr, exit 1, and print neither a residue
+    verdict nor `DOWN`, which `placement.py::_stop_all` reads as proof."""
+    module = _emitted(tmp_path, _HANG_DOC)
+    spec = tmp_path / "unconfirmed.json"
+    spec.write_text(json.dumps({
+        "name": "vault", "module": str(module), "components": ["Impl"],
+        "config": {}, "provides": ["vault"], "proxies": {}, "probe": [],
+        "once": once,
+    }), encoding="utf-8")
+    env = {**os.environ, "REVL_TEARDOWN_GRACE": "1"}
+    proc = subprocess.Popen(
+        ["node", str(_RUNNER), str(spec)], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=_HERE,
+        env=env)
+    head = ""
+    try:
+        if not once:
+            # the held run tears down only when told to: wait for UP, then stop it
+            for line in proc.stdout:
+                head += line
+                if "[vault] UP" in line:
+                    break
+            proc.send_signal(signal.SIGTERM)
+        rest, err = proc.communicate(timeout=120)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    out = head + rest
+
+    assert proc.returncode == 1, (proc.returncode, out, err)
+    assert "[vault] UP" in out, out
+    assert "dispose NOT confirmed" in out, out
+    assert "] DOWN" not in out, out
+    assert "NO-RESIDUE" not in out and "RESIDUE-LEFT" not in out, out
+    fatal = [ln for ln in err.splitlines() if "] FATAL" in ln]
+    assert len(fatal) == 1, err
+    assert "teardown incomplete" in fatal[0] and "Impl" in fatal[0], err
     assert "unsettled" not in err and "Warning" not in err, err
