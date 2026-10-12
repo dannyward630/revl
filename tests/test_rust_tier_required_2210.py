@@ -82,6 +82,11 @@ def test_a_cordis_rs_resolution_skip_fails_when_rust_is_required_and_cargo_is_pr
             pytest.skip("needs a resolvable cordis-rs toolchain: "
                         "cargo could not resolve cordis-rs: no matching package")
 
+        def test_the_realm_conformance_spelling():
+            assert shutil.which("cargo") is not None
+            pytest.skip("cordis-rs: not in the local cargo registry and "
+                        "index.crates.io is unreachable")
+
         def test_other_skip_is_left_alone():
             pytest.skip("node not installed")
 
@@ -98,9 +103,9 @@ def test_a_cordis_rs_resolution_skip_fails_when_rust_is_required_and_cargo_is_pr
     args = ["-p", "conftest", "--rootdir", str(tmp_path), str(probe)]
 
     unrequired = _run(args, "py", path, cwd=tmp_path)
-    assert "3 skipped" in unrequired, unrequired
+    assert "4 skipped" in unrequired, unrequired
 
     required = _run(args, "py,rust", path, cwd=tmp_path)
-    assert "1 failed, 2 skipped" in required, required
+    assert "2 failed, 2 skipped" in required, required
     assert "the rust tier is REQUIRED here" in required, required
     assert "does not resolve" in required and "cargo is on PATH" in required, required

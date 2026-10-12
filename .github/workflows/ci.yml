@@ -605,6 +605,21 @@ jobs:
           # tests/test_landing_witness.py, which FAIL by name on a shallow
           # clone. They used to skip there, and a skip reads as a pass.
           fetch-depth: 0
+      # Issue #2210: rust is required here, and the cargo tests resolve cordis-rs
+      # (a crates.io dependency, see backends/rust/emit.cargo_toml) over the
+      # network. Cache the registry so one failed fetch does not turn a green job
+      # red. The key is the hash of every Cargo.toml and Cargo.lock in the tree,
+      # which are the manifests the rust tier resolves; the lock itself is
+      # generated at run time, so none is tracked.
+      - name: cache the cargo registry
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-v1-${{ runner.os }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-v1-${{ runner.os }}-
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
           python-version: ${{ matrix.python }}
@@ -948,6 +963,21 @@ jobs:
           # The base fetch below must not pass `--depth`: into a full clone
           # that re-shallows it.
           fetch-depth: 0
+      # Issue #2210: rust is required here, and the cargo tests resolve cordis-rs
+      # (a crates.io dependency, see backends/rust/emit.cargo_toml) over the
+      # network. Cache the registry so one failed fetch does not turn a green job
+      # red. The key is the hash of every Cargo.toml and Cargo.lock in the tree,
+      # which are the manifests the rust tier resolves; the lock itself is
+      # generated at run time, so none is tracked.
+      - name: cache the cargo registry
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-v1-${{ runner.os }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-v1-${{ runner.os }}-
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
           python-version: "3.12"
@@ -2095,6 +2125,21 @@ jobs:
       REVL_REQUIRE_TIERS: "go"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+      # Issue #2210: rust is required here, and the cargo tests resolve cordis-rs
+      # (a crates.io dependency, see backends/rust/emit.cargo_toml) over the
+      # network. Cache the registry so one failed fetch does not turn a green job
+      # red. The key is the hash of every Cargo.toml and Cargo.lock in the tree,
+      # which are the manifests the rust tier resolves; the lock itself is
+      # generated at run time, so none is tracked.
+      - name: cache the cargo registry
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-v1-${{ runner.os }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-v1-${{ runner.os }}-
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
           python-version: "3.12"
@@ -2185,8 +2230,8 @@ jobs:
       # something else. All three live in `tests/`, so they were collected by
       # `frontend` and `frontend-cordis`, and skipped nearly whole there,
       # because a tier executes only where its toolchain is installed and
-      # neither job installs node_modules, cargo or a JDK. This job installs
-      # all of them, so run the files HERE, where the skips actually go away.
+      # neither job runs `npm ci` or installs a JDK or a pinned rust toolchain.
+      # This job installs all of them, so run the files HERE, where the skips actually go away.
       # test_time_coeffect.py is in the list because it carries the 17th
       # REVL_CROSS_TIER_SLOW gate (the rust async-timer lifecycle), which had
       # the same problem and is not in the cross-tier file.

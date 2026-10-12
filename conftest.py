@@ -55,10 +55,12 @@ _PROBES: dict[str, tuple[str, re.Pattern[str]]] = {
 #: with the phrases below, and the tests quote it in their skip. That is the same
 #: broken provisioning as a missing cargo, so it fails too. Only those phrases:
 #: a by-design skip that merely names cordis-rs (an offline build of a crate that
-#: needs a warm ~/.cargo, say) stays a skip.
+#: needs a warm ~/.cargo, say) stays a skip. "not in the local cargo registry"
+#: is the one phrase two spellings share ("cordis-rs is not in ..." from
+#: `rust_runtime_reason`, "cordis-rs: not in ..." in test_realm_conformance.py).
 _UNUSABLE: dict[str, re.Pattern[str]] = {
     "rust": re.compile(r"cargo could not resolve cordis-rs"
-                       r"|cordis-rs is not in the local cargo registry"
+                       r"|not in the local cargo registry"
                        r"|cargo not on PATH"),
 }
 
