@@ -2244,10 +2244,12 @@ jobs:
           # that one class of skip into a failure. Only that class: a tier's
           # by-design refusal of a document still skips (revl.test.Absent).
           # go is required job-wide (issue #2264), and a step env replaces the
-          # job's value, so it is named again here. rust/java/wasm are not
-          # required yet; the reasons are enumerated in
-          # tests/test_env_gated_skips_run_somewhere.py.
-          REVL_REQUIRE_TIERS: "py,ts,go"
+          # job's value, so it is named again here. rust is required too
+          # (issue #2210): this job installs cargo, so a cordis-rs resolution
+          # failure or an unreachable index is a failure here, not a skip that
+          # reads green. java/wasm are not required yet; the reasons are
+          # enumerated in tests/test_env_gated_skips_run_somewhere.py.
+          REVL_REQUIRE_TIERS: "py,ts,go,rust"
       # The rest of the tier-execution suites, run where BOTH tiers exist.
       #
       # Issue #266: every one of these files calls `RUNNERS[tier]` and turns an
@@ -2286,7 +2288,7 @@ jobs:
           tests/test_verdict_test_count_2286.py
           -q
         env:
-          REVL_REQUIRE_TIERS: "py,ts,go"
+          REVL_REQUIRE_TIERS: "py,ts,go,rust"
       # ci/placement_smoke.sh boots examples/user_cache.rvl split py<->node,
       # py<->rust, py<->go and py<->java (`--once`: boot, cross the seam via a
       # probe, tear down, exit). It fails the build on a seam that will not come
