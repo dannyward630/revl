@@ -550,7 +550,7 @@ func main() {
 	// FATAL line naming the fibers, and a non-zero exit. `os.Exit` skips the
 	// deferred `cancel`, which is harmless at process end (issue #2339).
 	if len(unconfirmed) > 0 {
-		fatalLine(name, "teardown incomplete: dispose not confirmed for "+
+		fatalLine(name, "teardown incomplete: dispose not confirmed before the bound expired for "+
 			strings.Join(unconfirmed, ", "))
 		os.Exit(1)
 	}
