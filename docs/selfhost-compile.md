@@ -178,7 +178,7 @@ Known gaps of the admission:
   `admit_src` already has on those files.
 - The upward walk above can find a module the reference does not (it has no
   ancestor search), and an imported name the module does not export is not
-  refused; both are tracked separately.
+  refused; both are tracked in issue #2363.
 
 ### All six tiers, measured
 

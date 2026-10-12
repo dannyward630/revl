@@ -1887,39 +1887,56 @@ fn ad_module_refusal(source: Str) -> Str {
   }
   let bad = parse_prog(program).bad
   if (bad == "") { return "" }
-  let lambda = ad_expr_fn_line(ts)
-  if ((bad == "expected { after fn signature") && (lambda > 0)) {
-    return "line ".concat(lambda.to_str())
-      .concat(": an expression-bodied fn (`fn f(...) = expr`) is not supported by the self-host compiler")
+  if (bad == "expected { after fn signature") {
+    // the fn `parse_prog` refuses is the first top-level one whose header
+    // reaches no `{`; only when its body is `= expr` is the program valid
+    let f = ad_bodiless_fn(ts)
+    if (f >= 0) {
+      let at = "line ".concat(ts[f].line.to_str()).concat(": ")
+      if (ad_kind(ts, ad_fn_header_end(ts, f), "=")) {
+        return at.concat("an expression-bodied fn (`fn f(...) = expr`) is not supported by the self-host compiler")
+      }
+      return at.concat(bad)
+    }
   }
   let line = ad_bad_line(ts, program, bad)
   if (line <= 0) { return bad }
   return "line ".concat(line.to_str()).concat(": ").concat(bad)
 }
 
-// The line of the first top-level `fn` whose body is `= expr` rather than a
-// block (valid revl the self-host program grammar does not read), or 0.
-fn ad_expr_fn_line(ts: List[Token]) -> Int {
+// The index of the token that ends the header of the `fn` at `i`: the first
+// `{` or `=` outside its brackets, or the next declaration keyword.
+fn ad_fn_header_end(ts: List[Token], i: Int) -> Int {
+  let heads = ["fn", "pub", "component", "service", "type", "extern", "use", "test"]
+  var d = 0
+  var j = i + 1
+  while (j < ts.length()) {
+    let kj = ts[j].kind
+    if ((d == 0) && ((kj == "{") || (kj == "=") || (kj == "eof"))) { return j }
+    if ((d == 0) && (kj == "kw") && ul_has(heads, ts[j].text)) { return j }
+    if ((kj == "(") || (kj == "[")) { d += 1 }
+    if ((kj == ")") || (kj == "]")) { d -= 1 }
+    j += 1
+  }
+  return j
+}
+
+// The first top-level `fn`, extern fns aside, whose header reaches no `{`
+// (`ad_fn_header_end`), or -1.
+fn ad_bodiless_fn(ts: List[Token]) -> Int {
   var depth = 0
   var i = 0
   while (i < ts.length()) {
     let k = ts[i].kind
     if ((k == "{") || (k == "[") || (k == "(")) { depth += 1 }
     if ((k == "}") || (k == "]") || (k == ")")) { depth -= 1 }
-    if ((depth == 0) && ad_kw(ts, i, "fn") && !ad_extern_head(ts, i)) {
-      var d = 0
-      var j = i + 1
-      while ((j < ts.length()) && !((d == 0) && (ad_kind(ts, j, "{") || ad_kind(ts, j, "=")))) {
-        let kj = ts[j].kind
-        if ((kj == "(") || (kj == "[")) { d += 1 }
-        if ((kj == ")") || (kj == "]")) { d -= 1 }
-        j += 1
-      }
-      if (ad_kind(ts, j, "=")) { return ts[i].line }
+    if ((depth == 0) && ad_kw(ts, i, "fn") && !ad_extern_head(ts, i)
+        && !ad_kind(ts, ad_fn_header_end(ts, i), "{")) {
+      return i
     }
     i += 1
   }
-  return 0
+  return 0 - 1
 }
 
 // Whether the `fn` at `i` belongs to an `extern` declaration, whose `= @backend`
