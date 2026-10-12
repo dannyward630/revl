@@ -528,10 +528,11 @@ jobs:
       # make a red line pass: fix the document, or soften the claim.
       - run: python3 tools/check_vision_claims.py --self-test
       - run: python3 tools/check_vision_claims.py --check
-      # issue #2333: the guards below read only tracked repository text (the
-      # workflow, tests/ and tools/ sources, `git ls-files`): none imports
-      # `revl`, drives a tier runner or needs a toolchain or the network, so
-      # they run in this bare job. Before this step they ran only in
+      # issue #2333: the guards below need no `revl` install, toolchain or
+      # network: they read tracked repository text (the workflow, tests/ and
+      # tools/ sources, `git ls-files`) and, at most, build scratch git
+      # repositories under tmp_path. None imports `revl` or drives a tier
+      # runner, so they run in this bare job. Before this step they ran only in
       # `frontend`, which is main-only (#1679), so a change that broke one was
       # first seen red on main. `!cancelled()` keeps an earlier gate's red from
       # skipping them (tests/test_ci_steps_are_independent.py, #1358).

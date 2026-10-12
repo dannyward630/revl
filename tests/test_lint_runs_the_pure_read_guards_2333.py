@@ -9,9 +9,9 @@ request. The selector change in the same issue re-runs one of them when its
 inputs move; this pins the other half, the guards themselves running in a job
 that every pull request has.
 
-A guard belongs on the list only if it is PURE-READ: it does not import `revl`
-(the `lint` job installs no `revl`), so it reads files and runs nothing of the
-product. The list is explicit and names files, never a glob, so a new guard is
+A guard belongs on the list only if it needs no `revl` install: it does not
+import `revl` (the `lint` job does not install revl's dependencies), reads
+tracked files, and at most builds scratch git repositories under tmp_path. The list is explicit and names files, never a glob, so a new guard is
 a decision in this file.
 """
 from __future__ import annotations
@@ -59,6 +59,12 @@ def _guard_step(job: dict) -> dict | None:
     return None
 
 
+def args_start(run: str) -> int:
+    """Index of the first argument after the pytest options."""
+    words = run.split()
+    return words.index("no:cacheprovider") + 1
+
+
 def _imports_revl(source: str) -> bool:
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
@@ -80,7 +86,10 @@ def test_lint_runs_each_named_guard():
     named = re.findall(r"tests/[A-Za-z0-9_]+\.py", step["run"])
     assert sorted(named) == sorted(set(named)), "a guard is listed twice"
     assert set(named) == set(GUARDS)
-    assert "*" not in step["run"], "name the files, no globs"
+    args = step["run"].split()[args_start(step["run"]):]
+    assert all(a in GUARDS for a in args), f"only named guard files: {args}"
+    assert sum("pytest" in s.get("run", "") and "tests/test_" in s["run"]
+               for s in _lint_job()["steps"]) == 1, "one guard step"
 
 
 def test_the_guard_step_survives_an_earlier_red_gate():
@@ -95,7 +104,8 @@ def test_the_guard_step_survives_an_earlier_red_gate():
 def test_lint_installs_a_pinned_pytest_and_not_revl():
     runs = [s.get("run", "") for s in _lint_job()["steps"]]
     assert any(re.search(r"pip install pytest==\d", r) for r in runs)
-    assert not any("pip install -e" in r for r in runs), (
+    assert not any(re.search(r"pip install\s+(-e\s+)?(\.|revl)\b", r)
+                   for r in runs), (
         "a guard that needs `revl` is not pure-read; move it out of this list")
 
 
