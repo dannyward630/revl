@@ -170,6 +170,16 @@ A program-grammar refusal names its line where one can be placed, and a
 top-level expression-bodied fn (`fn f(x: Int) -> Int = x`, valid revl) is
 named as not supported by the self-host compiler.
 
+The admission runs the whole parse stage of the native gate
+(`lower.rvl::parse_refusal`, issue #2359), the same steps `admit_src` runs on
+the document: the foreign-construct redirects, the nesting limit, the program
+grammar, and `stmt_parse_scan`, which reads the statement-level and type
+declaration rules the reference parser raises and `parse_prog` does not
+(`fail` outside an activation body, `await` in a sync method, lifecycle
+statements outside a `lifecycle test`, `??` mixed with `||` or `&&`, a plain
+access after `?.`, a dynamic realm label, an unclassified extern, the
+computer-use teardown rule, a union alias, a keyword as a field name).
+
 Known gaps of the admission:
 
 - Admitting a used `selfhost/lower.rvl` or `selfhost/emit_rust.rvl` under the
