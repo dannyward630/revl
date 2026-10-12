@@ -83,14 +83,15 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from revl import compile_files, compile_source  # noqa: E402
+from revl import compile_source  # noqa: E402
+from _compiled_ir import compiled_ir  # noqa: E402
 from revl.errors import RevlError, RevlErrors  # noqa: E402
 
 
 # ---------------------------------------------------------------- harness
 
 def _exec_emitted() -> dict:
-    ir = compile_files([str(ROOT / "selfhost" / "lower.rvl")])
+    ir = compiled_ir(ROOT / "selfhost" / "lower.rvl")
     assert ir["ir_version"] == 3
     spec = importlib.util.spec_from_file_location(
         "pyemit_selfhost_lower", ROOT / "backends" / "python" / "emit.py")

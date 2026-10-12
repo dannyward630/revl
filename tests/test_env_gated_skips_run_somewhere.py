@@ -1164,7 +1164,7 @@ def _workflow(on: str, job_extra: str = "", step_extra: str = "",
     (_workflow("[push, pull_request]", job_extra="\n    needs: idle", idle_job=True), False),
     # Positive controls: these do execute.
     (_workflow("{push: {branches: [main]}, pull_request: null}"), True),
-    (_workflow("{push: {branches: [main], paths-ignore: ['**/*.md']}}"), True),
+    (_workflow("{push: {branches: [main], paths-ignore: ['docs/**']}}"), True),
     (_workflow("{schedule: [{cron: '0 7 * * *'}]}"), True),
     (_workflow("{merge_group: {types: [checks_requested]}}"), True),
     (_workflow("[push, pull_request]",

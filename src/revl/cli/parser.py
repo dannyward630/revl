@@ -1154,6 +1154,11 @@ def build_parser() -> argparse.ArgumentParser:
                                 "`registry`) may name (repeatable). Defaults to "
                                 "the directory the server was started in; anything "
                                 "outside is refused before it is read")
+    mcp_serve.add_argument("--print-config", action="store_true",
+                           help="print the MCP client config block (an absolute "
+                                "interpreter that can import revl and cordis, and "
+                                "the module invocation) and exit without serving "
+                                "(issue #2281)")
     mcp_serve.add_argument("--all-tools", action="store_true",
                            help="advertise every verb in tools/list, not only the "
                                 "core tier plus revl_verbs (also: "

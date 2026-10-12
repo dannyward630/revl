@@ -669,7 +669,11 @@ pub fn issue_admission(source: &str) -> Admission {
 /// handoff and unmet-consumer reasoning belongs to the fold and to item 53's
 /// relation. A running component the wire names nowhere carries no provision and
 /// no requirement row, so replacing it hands off no state and strands no
-/// consumer.
+/// consumer. Names are compared folded (letter case and underscores dropped).
+/// Caveat: a candidate whose name folds onto a running component the wire names
+/// nowhere is refused by the reference but still certified here, because the
+/// wire does not carry that component. That false admission is open as a
+/// follow-up.
 ///
 /// In exchange the manifest is what makes an AMBIENT requirement admissible at
 /// all: the item-186 wire's SERVICE BLOCK is a `!services` header followed by
