@@ -4603,43 +4603,59 @@ _REVL_EQ_HELPER = """function revlEq(a: unknown, b: unknown): boolean {
 # is the implementation: it keeps the runtime dispatch for that same case,
 # where lying with a cast would be worse than admitting the union.
 #
-# `revlCps` is the decode, and it is MEMOISED (item 435(c)). Every helper below
-# measures or indexes a string's code points, and `Array.from` builds that
-# decomposition in O(n); done per call, the idiomatic index scan
-# `while (i < s.length()) { ... s.charAt(i) ... }` materialises 2n^2 + n code
-# points and throws all but n of them away, which put 94.8% of that program's
-# self-samples inside these helpers. Memoising collapses the count to exactly
-# n and touches no lowering. TWO slots, not one: a pairwise scan over two
-# strings (comparing them, merging them) is common enough that a single slot
-# thrashes, and a thrashing cache is the pre-memo cost. The miss path IS the
-# pre-memo code, so the cache never costs more than the compare that missed;
-# `===` on strings checks the pointer first, so the hot case — the same string
-# handed back every iteration — is one pointer compare. The array is never
-# handed out to a mutating caller (`slice` copies), and the cache retains at
-# most two strings for the module's lifetime, which is the price of linearity.
-# `revlIndexOf` deliberately stays on its own `Array.from`: its argument is a
-# fresh substring per call, so caching it would evict the scan's entry.
+# `revlCps` is the decode, and it is MEMOISED (item 435(c), issue #2313). Every
+# helper below measures or indexes a string's code points. Decoded per call, the
+# idiomatic index scan `while (i < s.length()) { ... s.charAt(i) ... }` costs
+# O(n) per helper call and O(n^2) per scan.
+#
+# It returns an indexable view of the code points: the string ITSELF when no
+# UTF-16 unit is a surrogate (0xD800..0xDFFF), because then every unit is one
+# code point and `length`, `[i]` and `slice` on the string already answer in
+# code points; otherwise the `Array.from` decomposition, which keeps a lone
+# surrogate as its own element exactly as before. So a BMP-only string never
+# allocates an array, and an astral string is decoded once.
+#
+# Long strings (64 UTF-16 units or more) go through an 8-slot cache with
+# least-recently-used eviction. Strings shorter than that are decided again on
+# every call, which costs about as much as a cache lookup, and they never take a
+# slot: a loop that reads `"<".charAt(0)` or a short separator each pass cannot
+# evict the string it scans. The two-slot cache this replaces lost the scanned
+# string to two such literals and went quadratic (#2313). With eight slots a
+# loop body can read up to eight long strings round-robin and every read after
+# the first hits; a loop that cycles through more than eight distinct long
+# strings misses on every read, which is the pre-memo cost and no worse.
+# `===` on strings checks the pointer first, so the hot case, the same string
+# handed back every iteration, is one compare at slot 0. Two distinct strings
+# with equal contents still compare by content on a lookup; that is the one
+# cost left here. The key is sound because strings are values: equal contents
+# mean equal code points. The cache retains at most eight strings and their
+# arrays for the module's lifetime, and an array is never handed to a mutating
+# caller (`slice` copies). `revlIndexOf` deliberately stays on its own
+# `Array.from`: its argument is a fresh substring per call.
 #
 # `revlCharAt`/`revlCharCodeAt` THROW for an index outside `0 <= i < length()`
 # (docs/stdlib-2.0.md §Str.codepoint_at). `revlCharAt` used to hand back `""`,
 # which is a perfectly good `Str`, so a walk one index too far read a character
 # that is not there and finished with a wrong answer while py, go and rust
 # faulted on the same input. `slice`-then-guard is still the total form.
-_REVL_STR_HELPER = """let revlCpsK0: string | undefined
-let revlCpsV0: string[] = []
-let revlCpsK1: string | undefined
-let revlCpsV1: string[] = []
-function revlCps(s: string): string[] {
-  if (s === revlCpsK0) return revlCpsV0
-  if (s === revlCpsK1) {
-    const k = revlCpsK1, v = revlCpsV1
-    revlCpsK1 = revlCpsK0; revlCpsV1 = revlCpsV0
-    revlCpsK0 = k; revlCpsV0 = v
-    return v
+_REVL_STR_HELPER = """const revlCpsN = 8
+const revlCpsK: (string | undefined)[] = new Array<string | undefined>(revlCpsN).fill(undefined)
+const revlCpsV: (string | string[])[] = new Array<string | string[]>(revlCpsN).fill("")
+function revlCpsDecode(s: string): string | string[] {
+  for (let i = 0; i < s.length; i++) {
+    const u = s.charCodeAt(i)
+    if (u >= 0xD800 && u <= 0xDFFF) return Array.from(s)
   }
-  const v = Array.from(s)
-  revlCpsK1 = revlCpsK0; revlCpsV1 = revlCpsV0
-  revlCpsK0 = s; revlCpsV0 = v
+  return s
+}
+function revlCps(s: string): string | string[] {
+  if (s.length < 64) return revlCpsDecode(s)
+  let k = 0
+  while (k < revlCpsN && revlCpsK[k] !== s) k++
+  const v = k < revlCpsN ? revlCpsV[k] : revlCpsDecode(s)
+  if (k === revlCpsN) k--
+  for (; k > 0; k--) { revlCpsK[k] = revlCpsK[k - 1]; revlCpsV[k] = revlCpsV[k - 1] }
+  revlCpsK[0] = s; revlCpsV[0] = v
   return v
 }
 function revlLen(x: string | ArrayLike<unknown>): bigint {
@@ -4651,9 +4667,9 @@ function revlSlice<T>(x: T[], a: bigint, b: bigint): T[]
 function revlSlice(x: unknown, a: bigint, b: bigint): string | Uint8Array | unknown[]
 function revlSlice(x: unknown, a: bigint, b: bigint): string | Uint8Array | unknown[] {
   const i = Number(a), j = Number(b)
-  return typeof x === "string"
-    ? revlCps(x).slice(i, j).join("")
-    : (x as string | Uint8Array | unknown[]).slice(i, j)
+  if (typeof x !== "string") return (x as Uint8Array | unknown[]).slice(i, j)
+  const v = revlCps(x)
+  return typeof v === "string" ? v.slice(i, j) : v.slice(i, j).join("")
 }
 function revlCharAt(s: string, i: bigint): string {
   const c = revlCps(s)[Number(i)]

@@ -46,6 +46,7 @@ a stage.
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1230,6 +1231,76 @@ def test_native_module_admission_reads_every_stdlib_and_truc_module(compile_rvl)
     assert refused == {}
 
 
+# Issue #2363: case -> (the reference's refusal, files). Each document is
+# refused by `compile_files`, and the native driver used to emit code for it.
+# `doc.rvl` is written into `sub/`, so `use "./lib.rvl"` names a module that
+# sits only in the PARENT directory: the reference resolves a `use` relative to
+# the importer and then on its search path, never up through the importer's
+# ancestors.
+_IMPORT_REFUSED = {
+    "module_only_in_the_parent_directory": ("cannot find imported module `./lib.rvl`", {
+        "sub/doc.rvl": _STORE_DOC % "1",
+        "lib.rvl": "pub service Store { fn put(x: Int) -> Str }\n",
+    }),
+    "a_name_the_module_does_not_declare": ("`Nope` is not a public declaration in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, Nope }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": "pub service Store { fn put(x: Int) -> Str }\n",
+    }),
+    "a_private_fn": ("`helper` is module-private in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, helper }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "fn helper() -> Int { return 1 }\n\n"
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+    }),
+    "a_private_type": ("`Row` is module-private in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, Row }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "type Row = { id: Int }\n\n"
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+    }),
+    "a_private_extern": ("`raw` is module-private in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, raw }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "extern pure fn raw(x: Int) -> Int = @py { return x }\n\n"
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+    }),
+    "a_component": ("`Impl` is not a public declaration in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, Impl }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "pub service Store { fn put(x: Int) -> Str }\n\n"
+            "component Impl provides store: Store {\n"
+            "  provide store {\n"
+            '    fn put(x: Int) = "a"\n'
+            "  }\n"
+            "}\n"),
+    }),
+    # The colour marker sits between `fn` and the extern's name (item 388), so
+    # the private `helper` after it is still private.
+    "a_private_fn_after_a_colour_polymorphic_extern": ("`helper` is module-private in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, send, helper }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "pub extern emission fn|async send(x: Str) -> Str = @py { return x }\n\n"
+            "fn helper() -> Int { return 1 }\n\n"
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+    }),
+    "an_event": ("`Placed` is module-private in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, Placed }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "event Placed(key: id) { id: Str }\n\n"
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+    }),
+    # One `use` further down: the reference checks the names `lib.rvl` imports
+    # too, though nothing of `inner.rvl` is carried.
+    "a_private_fn_two_uses_away": ("`hidden` is module-private in", {
+        "sub/doc.rvl": _STORE_DOC % "1",
+        "sub/lib.rvl": (
+            'use "./inner.rvl" { hidden }\n\n'
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+        "sub/inner.rvl": "fn hidden() -> Int { return 1 }\n",
+    }),
+}
+
+
 _LIB_STORE = "pub service Store { fn put(x: Int) -> Str }\n"
 
 # Review of #2358: case -> (the reference's error, the self-host's, files). The
@@ -1255,6 +1326,56 @@ _MODULE_WALK_REFUSALS = {
                       "pub service Tool { fn run() -> Int }\n"),
     }),
 }
+
+
+@pytest.mark.parametrize("tier", ("py", "go", "java", "rust"))
+@pytest.mark.parametrize("case", sorted(_IMPORT_REFUSED))
+def test_native_driver_refuses_an_import_the_reference_refuses(
+        compile_rvl, tmp_path, monkeypatch, case, tier):
+    """Issue #2363: a `use` target the reference does not find, or an imported
+    name the module does not export, makes the native driver refuse with
+    `REFUSED|BAD|<importer>: line N: <the reference's message>` instead of
+    emitting code for a document the reference rejects."""
+    monkeypatch.delenv("REVL_IMPORT_PATH", raising=False)
+    message, files = _IMPORT_REFUSED[case]
+    for name, text in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    doc = tmp_path / "sub" / "doc.rvl"
+    with pytest.raises(RevlError, match=re.escape(message)):
+        compile_files([str(doc)])
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
+    assert got.startswith("REFUSED|BAD|"), got[:160]
+    assert message in got, got[:300]
+
+
+@pytest.mark.parametrize("tier", ("py", "rust"))
+def test_native_driver_resolves_a_use_on_the_import_path(
+        compile_rvl, reference_emit, tmp_path, monkeypatch, tier):
+    """Issue #2363, the positive control: a module that is not beside the
+    importer resolves through `REVL_IMPORT_PATH` exactly as the reference
+    resolves it, and the native output is the reference's bytes."""
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "store.rvl").write_text(
+        "pub service Store { fn put(x: Int) -> Str }\n", encoding="utf-8")
+    (tmp_path / "app").mkdir()
+    doc = tmp_path / "app" / "doc.rvl"
+    doc.write_text('use "store.rvl" { Store }\n\n' + _STORE_COMPONENT % "1",
+                   encoding="utf-8")
+    monkeypatch.setenv("REVL_IMPORT_PATH", str(tmp_path / "lib"))
+    want = reference_emit[tier](compile_files([str(doc)]))
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
+    assert got == want
+
+
+def test_native_import_check_passes_every_stdlib_and_truc_module(compile_rvl):
+    """Issue #2363, the positive control: every `use` of every stdlib module
+    and truc component resolves and names only what its module exports, so the
+    check does not refuse an import the reference accepts."""
+    modules = _modules_the_reference_parses()
+    refused = {name: why for name, text in modules
+               if (why := compile_rvl["ad_imports_refusal"](text, str(ROOT / name))) != ""}
+    assert refused == {}
 
 
 @pytest.mark.parametrize("case", sorted(_MODULE_WALK_REFUSALS))
@@ -1487,6 +1608,238 @@ def test_native_driver_links_the_truc_cli_as_the_reference_does(
     want = reference_emit[tier](compile_files([str(doc)]))
     got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
     assert got == want, got[:200]
+
+
+# Issue #2329: a document's call to an operation of a service it imports, the
+# module that declares the service, and what the native chain must give:
+# "T1", the reference checker's own message as a native gate refusal; "LINK", a
+# `REFUSED|LINK|` refusal that starts with the given text; "emit", the
+# reference's bytes. The reference checker types the call against the module's
+# declaration; the native gate used to read only the document.
+_IMPORTED_CALLS = {
+    # The issue's reproducer. The reference refuses a `Str` (and an `Int`) for
+    # the private alias `Id`, which is out of the document's scope. Natively the
+    # type link (issue #2308) refuses the module first, since the producer keeps
+    # no `types` entry for an alias, so the gate never types this call: these
+    # two pin that the alias stays refused by that link.
+    "private_alias_str": ("type Id = Int\npub service Store { fn put(id: Id) -> Str }\n",
+                          'store.put("x")', "LINK|type `Id`"),
+    "private_alias_int": ("type Id = Int\npub service Store { fn put(id: Id) -> Str }\n",
+                          "store.put(1)", "LINK|type `Id`"),
+    # The gap itself: built-in and carried parameter types the gate types.
+    "int_given_str": ("pub service Store { fn put(id: Int) -> Str }\n", 'store.put("x")',
+                      "T1"),
+    "list_given_wrong_items": ("pub service Store { fn put(xs: List[Int]) -> Str }\n",
+                               'store.put(["a"])', "T1"),
+    "record_given_int": ("pub type Row = { id: Int }\n"
+                         "pub service Store { fn put(r: Row) -> Str }\n", "store.put(1)",
+                         "T1"),
+    # A brace in a comment ahead of the declaration does not hide it: a scan
+    # that read the comment would stop at its `}` and refuse with LINK.
+    "after_comment_brace": ("// } service Store {\n"
+                            "pub service Store { fn put(id: Int) -> Str }\n",
+                            'store.put("x")', "T1"),
+    # Positive controls: the reference admits these, and the native output
+    # must stay its bytes.
+    "after_comment_brace_ok": ("// } service Store {\n"
+                               "pub service Store { fn put(id: Int) -> Str }\n",
+                               "store.put(1)", "emit"),
+    "int_given_int": ("pub service Store { fn put(id: Int) -> Str }\n", "store.put(1)",
+                      "emit"),
+    "list_given_list": ("pub service Store { fn put(xs: List[Int]) -> Str }\n",
+                        "store.put([1, 2])", "emit"),
+    "record_given_record": ("pub type Row = { id: Int }\n"
+                            "pub service Store { fn put(r: Row) -> Str }\n",
+                            "store.put({ id: 1 })", "emit"),
+}
+
+
+def _write_imported_call(tmp_path, case):
+    lib, call, _expect = _IMPORTED_CALLS[case]
+    (tmp_path / "lib.rvl").write_text(lib, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    doc.write_text('use "./lib.rvl" { Store }\n\n'
+                   + _STORE_COMPONENT.replace("store.put(%s)", call), encoding="utf-8")
+    return doc
+
+
+@pytest.mark.parametrize("case", sorted(_IMPORTED_CALLS))
+def test_native_driver_types_calls_to_an_imported_service(
+        compile_rvl, reference_emit, tmp_path, case):
+    """Issue #2329: where the reference refuses a call to an imported
+    service's operation, the native chain refuses too and never emits, with
+    the reference's own message where the native gate is what refuses. Where
+    the reference admits, the native output is its bytes."""
+    expect = _IMPORTED_CALLS[case][2]
+    doc = _write_imported_call(tmp_path, case)
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
+    if expect == "emit":
+        assert got == reference_emit["py"](compile_files([str(doc)])), got[:200]
+        return
+    with pytest.raises(RevlError) as refused:
+        compile_files([str(doc)])
+    if expect == "T1":
+        assert got == "REFUSED|T1|" + refused.value.message, got[:200]
+    else:
+        assert got.startswith("REFUSED|" + expect), got[:200]
+
+
+# Issue #2362: three call-site rules the native gate did not decide, in a
+# single document and through an imported service. Each case is (the module's
+# declarations, the provide method after `fn go()`, the outcome): "T1" is the
+# reference's own message as a native T1 refusal, "emit" the reference's bytes.
+_CALL_SITE_RULES = {
+    "arity_extra": ("pub service Store { fn put(id: Int) -> Str }\n",
+                    "= store.put(1, 2)", "T1"),
+    "arity_missing": ("pub service Store { fn put(id: Int) -> Str }\n",
+                      "= store.put()", "T1"),
+    "arity_in_let": ("pub service Store { fn put(id: Int) -> Str }\n",
+                     "{\n      let x = store.put(1, 2)\n      return x\n    }", "T1"),
+    "return_arrow": ("pub service Store { fn put(id: Int) -> Int }\n",
+                     "= store.put(1)", "T1"),
+    "return_block": ("pub service Store { fn put(id: Int) -> Int }\n",
+                     "{\n      return store.put(1)\n    }", "T1"),
+    "return_literal_arrow": ("pub service Store { fn put(id: Int) -> Int }\n",
+                             "= 1", "T1"),
+    "argument_in_return": ("pub service Store { fn put(id: Int) -> Str }\n",
+                           '{\n      return store.put("x")\n    }', "T1"),
+    "record_field_type": ("pub type Row = { id: Int }\n"
+                          "pub service Store { fn put(r: Row) -> Str }\n",
+                          '= store.put({ id: "x" })', "T1"),
+    "record_extra_field": ("pub type Row = { id: Int }\n"
+                           "pub service Store { fn put(r: Row) -> Str }\n",
+                           "= store.put({ id: 1, b: 2 })", "T1"),
+    # the requirement call is decided before the return's own check
+    "arity_under_compare": ("pub service Store { fn put(id: Int) -> Int }\n",
+                            "= store.put(1, 2) == 1", "T1"),
+    "argument_in_list": ("pub service Store { fn put(id: Int) -> Str }\n",
+                         '{\n      return [store.put("x")]\n    }', "T1"),
+    # a nested record field is held field-wise too
+    "record_nested_field": ("pub type In = { a: Int }\npub type Row = { i: In }\n"
+                            "pub service Store { fn put(r: Row) -> Str }\n",
+                            '= store.put({ i: { a: "x" } })', "T1"),
+    "record_list_field": ("pub type In = { a: Int }\npub type Row = { i: List[In] }\n"
+                          "pub service Store { fn put(r: Row) -> Str }\n",
+                          '= store.put({ i: [{ a: "x" }] })', "T1"),
+    "record_opt_field": ("pub type In = { a: Int }\npub type Row = { i: Opt[In] }\n"
+                         "pub service Store { fn put(r: Row) -> Str }\n",
+                         '= store.put({ i: { a: "x" } })', "T1"),
+    "record_opt_param": ("pub type Row = { id: Int }\n"
+                         "pub service Store { fn put(r: Opt[Row]) -> Str }\n",
+                         '= store.put({ id: "x" })', "T1"),
+    "record_list_param": ("pub type Row = { id: Int }\n"
+                          "pub service Store { fn put(r: List[Row]) -> Str }\n",
+                          '= store.put([{ id: "x" }])', "T1"),
+    "record_deep_field": ("pub type R0 = { a: R1 }\npub type R1 = { a: R2 }\npub type R2 = { a: R3 }\npub type R3 = { a: R4 }\npub type R4 = { a: R5 }\npub type R5 = { a: Int }\npub service Store { fn put(r: R0) -> Str }\n",
+                          '= store.put({ a: { a: { a: { a: { a: { a: "x" } } } } } })', "T1"),
+    # a requirement call inside a larger expression is typed at its return
+    "nested_call_operand": ("pub service Store { fn put(id: Int) -> Int }\n",
+                            "= store.put(1) + 1", "T1"),
+    "nested_call_in_let": ("pub service Store { fn put(id: Int) -> Int }\n",
+                           "{\n      let n = store.put(1) + 1\n      return n\n    }", "T1"),
+    # a record literal for a variant or a generic record parameter
+    "variant_param": ("pub type Shape = Dot | Box(Int)\n"
+                      "pub service Store { fn put(r: Shape) -> Str }\n",
+                      "= store.put({ a: 1 })", "T1"),
+    "generic_param": ("pub type Cell[T] = { v: T }\n"
+                      "pub service Store { fn put(r: Cell[Int]) -> Str }\n",
+                      '= store.put({ v: "x" })', "T1"),
+    # Positive controls: admitted by the reference, and by the native gate.
+    "record_nested_matches": ("pub type In = { a: Int }\npub type Row = { i: In }\n"
+                              "pub service Store { fn put(r: Row) -> Str }\n",
+                              "= store.put({ i: { a: 1 } })", "emit"),
+    "record_container_matches": ("pub type In = { a: Int }\n"
+                                 "pub type Row = { i: Opt[In], j: List[In] }\n"
+                                 "pub service Store { fn put(r: Row) -> Str }\n",
+                                 "= store.put({ i: { a: 1 }, j: [{ a: 2 }] })", "emit"),
+    "record_opt_param_matches": ("pub type Row = { id: Int }\n"
+                                 "pub service Store { fn put(r: Opt[Row]) -> Str }\n",
+                                 "= store.put({ id: 1 })", "emit"),
+    "record_list_param_matches": ("pub type Row = { id: Int }\n"
+                                  "pub service Store { fn put(r: List[Row]) -> Str }\n",
+                                  "= store.put([{ id: 1 }])", "emit"),
+    "nested_call_int_return": ("pub service Store { fn put(id: Int) -> Int }\n",
+                               "= (store.put(1) + 1).to_str()", "emit"),
+    "nested_call_matches": ("pub service Store { fn put(id: Int) -> Str }\n",
+                            '= store.put(1).concat("x")', "emit"),
+    "return_matches": ("pub service Store { fn put(id: Int) -> Str }\n",
+                       "= store.put(1)", "emit"),
+    "record_matches": ("pub type Row = { id: Int, n: Str }\n"
+                       "pub service Store { fn put(r: Row) -> Str }\n",
+                       '= store.put({ n: "a", id: 1 })', "emit"),
+}
+
+# In one document the native gate does not type a record literal against a
+# generic record parameter; it refuses by name instead of emitting.
+_CALL_SITE_NAMED_IN_ONE_DOC = {
+    "generic_param": "TYPE|`store.put` argument `r`",
+    "record_deep_field": "TYPE|`store.put` argument `r`: a record literal nested",
+}
+
+# Through an import these refuse by name where the reference has an answer:
+# a literal deeper than the shape expansion, and an operator whose operand
+# type only the imported declaration gives (the IR would lack `operands`).
+_CALL_SITE_NAMED_THROUGH_IMPORT = {
+    "record_deep_field": "REFUSED|TYPE|`store.put` argument `r`: a record literal nested",
+    "nested_call_int_return": "REFUSED|LINK|an operator on an imported service call",
+}
+
+_CALL_SITE_COMPONENT = (
+    "service Front { fn go() -> Str }\n\n"
+    "component App requires store: Store provides front: Front {\n"
+    "  provide front {\n"
+    "    fn go() %s\n"
+    "  }\n"
+    "}\n")
+
+
+def _reference_message(compile_one):
+    try:
+        compile_one()
+    except RevlError as e:
+        return e.message
+    return ""
+
+
+@pytest.mark.parametrize("case", sorted(_CALL_SITE_RULES))
+def test_native_gate_decides_the_call_site_rules_in_one_document(
+        admit, compile_rvl, reference_emit, case):
+    """Issue #2362, single document: the service declared in the same text."""
+    decls, body, expect = _CALL_SITE_RULES[case]
+    src = decls + "\n" + _CALL_SITE_COMPONENT % body
+    want = _reference_message(lambda: compile_source(src, "doc.rvl"))
+    if expect == "emit":
+        assert want == ""
+        assert admit(src) == ""
+        got = compile_rvl["compile_to"](src, "py")
+        assert got == reference_emit["py"](compile_source(src, "doc.rvl")), got[:200]
+    elif case in _CALL_SITE_NAMED_IN_ONE_DOC:
+        assert want != ""
+        assert admit(src).startswith(_CALL_SITE_NAMED_IN_ONE_DOC[case])
+    else:
+        assert want != ""
+        assert admit(src) == "T1|" + want
+
+
+@pytest.mark.parametrize("case", sorted(_CALL_SITE_RULES))
+def test_native_driver_decides_the_call_site_rules_through_an_import(
+        compile_rvl, reference_emit, tmp_path, case):
+    """Issue #2362, imported: the service and the record it carries live in
+    the module the document imports the service from."""
+    decls, body, expect = _CALL_SITE_RULES[case]
+    (tmp_path / "lib.rvl").write_text(decls, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    doc.write_text('use "./lib.rvl" { Store }\n\n' + _CALL_SITE_COMPONENT % body,
+                   encoding="utf-8")
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
+    if case in _CALL_SITE_NAMED_THROUGH_IMPORT:
+        assert got.startswith(_CALL_SITE_NAMED_THROUGH_IMPORT[case]), got[:200]
+    elif expect == "emit":
+        assert got == reference_emit["py"](compile_files([str(doc)])), got[:200]
+    else:
+        want = _reference_message(lambda: compile_files([str(doc)]))
+        assert want != ""
+        assert got == "REFUSED|T1|" + want, got[:200]
 
 
 def test_six_way_composition_co_compiles(compile_rvl):

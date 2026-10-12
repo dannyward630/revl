@@ -2961,6 +2961,22 @@ fn arrow_body(ss: List[Stmt]) -> List[Stmt] {
             line: s.line, inTimer: s.inTimer, bindTy: "", edge: "" }]
 }
 
+// Issue #2362: the body the TYPE layer walks for a provide method. The
+// reference makes `fn m(p) = <expr>` one `return <expr>`, so its expression is
+// held to the declared result: `fn go() = 1` against `go() -> Str` is refused
+// there. The statement reader keeps a plain expression as an `expr` step, which
+// the other walks read as written, so only the type walk sees it as the
+// `return` the reference builds.
+fn arrow_typed_body(pm: ProvM) -> List[Stmt] {
+  let ss = pm.body
+  if (!pm.isArrow || ss.length() != 1 || ss[0].kind != "expr" || ss[0].bind != "") {
+    return ss
+  }
+  let s = ss[0]
+  return [{ kind: "return", e: s.e, bind: "", spawnTarget: "", awaited: s.awaited,
+            line: s.line, inTimer: s.inTimer, bindTy: "", edge: "" }]
+}
+
 fn p_prov_methods(ts: List[Token], i: Int, end: Int,
                   acc: List[ProvM]) -> ProvMR {
   if (i >= end || atk(ts, i, "}")) { return { xs: acc, i: i, ok: true } }
@@ -7005,13 +7021,193 @@ fn ct_args(root: Str, meth: Str, decl: MSig, args: List[Expr],
   if (i >= args.length() || i >= decl.ps.length()) { return "" }
   let pt = tk_solid(taint_strip(decl.ps[i].ty), env)
   let inf = tk_infer(args[i], env)
-  if (inf.v == "" && pt != "" && inf.ty != "" && !tk_compatible(pt, inf.ty)) {
+  let raw = taint_strip(decl.ps[i].ty)
+  if (inf.v == "" && tk_is_struct(inf.ty) && tk_generic_record(raw, env)) {
+    return tagged("TYPE", "`".concat(root).concat(".").concat(meth)
+      .concat("` argument `").concat(decl.ps[i].name)
+      .concat("`: a record literal for the generic record `").concat(raw)
+      .concat("` is not typed by the native gate (issue #2362)"))
+  }
+  if (inf.v == "" && pt != "" && ct_too_deep(pt, inf.ty, env)) {
+    return tagged("TYPE", "`".concat(root).concat(".").concat(meth)
+      .concat("` argument `").concat(decl.ps[i].name)
+      .concat("`: a record literal nested deeper than 5 levels is not typed by ")
+      .concat("the native gate (issue #2362)"))
+  }
+  if (inf.v == "" && pt != "" && inf.ty != ""
+      && (ct_struct_to_variant(pt, inf.ty, env)
+          || !tk_compatible(ct_record_shape(pt, inf.ty, env), inf.ty))) {
     return tagged("T1", "`".concat(root).concat(".").concat(meth)
       .concat("` argument `").concat(decl.ps[i].name).concat("` expects `")
       .concat(tk_render(pt)).concat("`, got `")
       .concat(tk_render(inf.ty)).concat("`"))
   }
   return ct_args(root, meth, decl, args, env, i + 1)
+}
+
+// Issue #2362: the parameter type a structural argument is held to. The
+// reference resolves a NOMINAL record parameter field-wise through its
+// declared-type table when a record literal meets it (`typecheck.compatible`,
+// item 71): the same field set, each value compatible. `tk_compatible` stays
+// silent on that pairing because it carries no table, but the `field
+// <Type>.<name>` rows in `env` are that table, so a parameter whose record
+// fields they spell is expanded to its shape here. Any other pairing, and a
+// nominal name with no rows, keeps the declared spelling.
+// Issue #2362: the `reqret <root>.<op>` row `ct_req_ret_rows` gives a
+// requirement call's declared return, or "".
+fn tk_req_row(callee: Expr, env: List[Bind]) -> Str {
+  return match callee {
+    Field(f) => match f.target {
+      Var(v) => tenv_get(env, "reqret ".concat(v).concat(".").concat(f.name)),
+      _      => "",
+    },
+    _        => "",
+  }
+}
+
+// Issue #2362: one `reqret <root>.<op>` row per operation of every requirement
+// the provide method can call, at the operation's declared return. A return
+// that does not resolve is left out, so its call stays untyped.
+fn ct_req_ret_rows(cx: Ctx, env: List[Bind]) -> List[Bind] {
+  var out = env
+  let ks = cx.reqMap.keys()
+  var i = 0
+  while (i < ks.length()) {
+    let root = ks[i]
+    if (!cx.provAlias.has(root)) {
+      let svc = match cx.reqMap.lookup(root) { Some(sv) => sv, None => "" }
+      let ms = cx.svcs.has(svc) ? svc_of(cx, svc).methods
+             : match cx.ambOps.lookup(svc) { Some(a) => a.sigs, None => [] }
+      var j = 0
+      while (j < ms.length()) {
+        let t = tk_solid(taint_strip(ms[j].ret), env)
+        if (t != "") {
+          out = out.push({ name: "reqret ".concat(root).concat(".").concat(ms[j].name), ty: t })
+        }
+        j += 1
+      }
+    }
+    i += 1
+  }
+  return out
+}
+
+// Issue #2362: a record literal never meets a variant parameter
+// (`typecheck.compatible` has no struct-to-ADT arm).
+fn ct_struct_to_variant(pt: Str, actual: Str, env: List[Bind]) -> Bool {
+  return tk_is_struct(actual) && tk_nominal_name(pt) && ty_variant_decl(pt, env)
+}
+
+// Issue #2362: how deep the braces of a structural type nest. A record shape
+// is expanded five levels (`tk_nominal_field`'s cap), so a literal deeper than
+// that is refused by name rather than held to an unexpanded field.
+fn tk_brace_depth(t: Str) -> Int {
+  var d = 0
+  var best = 0
+  var j = 0
+  while (j < t.length()) {
+    let c = t.slice(j, j + 1)
+    if (c == "{") {
+      d += 1
+      if (d > best) { best = d }
+    }
+    if (c == "}") { d -= 1 }
+    j += 1
+  }
+  return best
+}
+
+// Issue #2362: `Cell[Int]` where `Cell` is a declared generic record.
+fn tk_generic_record(pt: Str, env: List[Bind]) -> Bool {
+  let b = pt.indexOf("[")
+  return b > 0 && tenv_get(env, "grec ".concat(pt.slice(0, b))) != ""
+}
+
+fn ct_record_shape(pt: Str, actual: Str, env: List[Bind]) -> Str {
+  if (actual.indexOf("{") == 0 - 1) { return pt }
+  // a container parameter (`Opt[Row]`, `List[Row]`): every record named in it
+  // is expanded, one level down
+  if (!tk_nominal_name(pt)) { return tk_nominal_field(pt, env, 0) }
+  if (!tk_is_struct(actual)) { return pt }
+  let shape = tk_nominal_shape(pt, env)
+  return shape == "" ? pt : shape
+}
+
+// Issue #2362: a literal nested past the shape expansion: five brace levels
+// for a record parameter, four inside a container one.
+fn ct_too_deep(pt: Str, actual: Str, env: List[Bind]) -> Bool {
+  if (tk_nominal_name(pt)) {
+    return tk_is_struct(actual) && tk_brace_depth(actual) > 5
+      && tk_nominal_shape(pt, env) != ""
+  }
+  return actual.indexOf("{") != 0 - 1 && tk_brace_depth(actual) > 4
+    && tk_nominal_field(pt, env, 0) != pt
+}
+
+// The structural shape `{a: A, b: B}` the `field <Type>.<name>` rows of `env`
+// give the record `t`, or "" when no row names it. A field whose type is itself
+// a record with rows is expanded too (issue #2362: `typecheck.compatible`
+// resolves nested records field-wise), down to a fixed depth so a recursive
+// record cannot loop.
+fn tk_nominal_shape(t: Str, env: List[Bind]) -> Str {
+  return tk_nominal_shape_at(t, env, 0)
+}
+
+// Every record name in the field type `ft`, a type argument (`List[In]`,
+// `Opt[In]`) as much as the whole type, replaced by its shape.
+fn tk_nominal_field(ft: Str, env: List[Bind], depth: Int) -> Str {
+  if (depth >= 4) { return ft }
+  let word = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"
+  var out = ""
+  var cur = ""
+  var j = 0
+  while (j <= ft.length()) {
+    let c = j < ft.length() ? ft.slice(j, j + 1) : " "
+    if (word.indexOf(c) != 0 - 1) { cur = cur.concat(c) }
+    else {
+      out = out.concat(tk_nominal_word(cur, env, depth))
+      cur = ""
+      if (j < ft.length()) { out = out.concat(c) }
+    }
+    j += 1
+  }
+  return out
+}
+
+fn tk_nominal_word(w: Str, env: List[Bind], depth: Int) -> Str {
+  if (w == "" || "ABCDEFGHIJKLMNOPQRSTUVWXYZ".indexOf(w.slice(0, 1)) == 0 - 1) { return w }
+  let sub = tk_nominal_shape_at(w, env, depth + 1)
+  return sub == "" ? w : sub
+}
+
+fn tk_nominal_shape_at(t: Str, env: List[Bind], depth: Int) -> Str {
+  let pfx = "field ".concat(t).concat(".")
+  var seen: List[Str] = []
+  var out = ""
+  var i = 0
+  while (i < env.length()) {
+    let nm = env[i].name
+    if (nm.slice(0, pfx.length()) == pfx) {
+      let f = nm.slice(pfx.length(), nm.length())
+      if (!contains(seen, f)) {
+        seen = seen.push(f)
+        out = out.concat(out == "" ? "" : ", ").concat(f).concat(": ")
+          .concat(tk_nominal_field(tenv_get(env, nm), env, depth))
+      }
+    }
+    i += 1
+  }
+  return out == "" ? "" : "{".concat(out).concat("}")
+}
+
+// Issue #2362: `_component_req_call`'s arity rule, which it raises ahead of
+// the emission and argument rules. Code-less in the reference; it carries the
+// T1 a module `fn`'s arity refusal carries here.
+fn ct_arity(root: Str, meth: Str, decl: MSig, n: Int) -> Str {
+  if (decl.name == "" || n == decl.ps.length()) { return "" }
+  return tagged("T1", "`".concat(root).concat(".").concat(meth).concat("` takes ")
+    .concat(decl.ps.length().to_str()).concat(" argument(s), ")
+    .concat(n.to_str()).concat(" given"))
 }
 
 // The first non-empty of two verdicts, in source order.
@@ -7054,6 +7250,8 @@ fn ct_call(c: CallN, cx: Ctx, env: List[Bind]) -> Str {
   let inner = ct_exprs(c.args, 0, cx, env)
   if (inner != "") { return inner }
   let decl = ct_req_decl(c.target, cx)
+  let ar = ct_arity(ct_req_root(c.target), ct_req_op(c.target), decl, c.args.length())
+  if (ar != "") { return ar }
   if (decl.name != "" && c.args.length() == decl.ps.length()) {
     let v = ct_args(ct_req_root(c.target), ct_req_op(c.target), decl, c.args,
                     env, 0)
@@ -7274,8 +7472,16 @@ fn mth_type_verdict(body: List[Stmt], i: Int, env: List[Bind], cx: Ctx,
   // a bare `return` carries no expression to check (see `p_stmt_run`); its
   // parse leaves a `skip`, and `is_bad` is the second fence on the same rule.
   if (s.kind == "return" && ret != "" && !is_bad(s.e)) {
-    let rc = tk_check(s.e, ret, env, "`".concat(mname).concat("` returns"))
+    let where_ = "`".concat(mname).concat("` returns")
+    // issue #2362: a requirement call in the returned value is held to its
+    // declaration first (`_component_req_call` runs while the value is
+    // lowered, ahead of `_do_return`'s check), as every other statement's is.
+    let rq = ct_scan(s.e, cx, env)
+    if (rq != "") { return mk_verd(rq, ln) }
+    let rc = tk_check(s.e, ret, env, where_)
     if (rc.v != "") { return mk_verd(rc.v, ln) }
+    let rr = ct_return_req(s.e, ret, cx, env, where_)
+    if (rr != "") { return mk_verd(rr, ln) }
     return mth_type_verdict(body, i + 1, env, cx, ret, mname, fallback)
   }
   // WHICH STATEMENTS THE REFERENCE SWEEPS. `_sweep` (item 404's raising oracle)
@@ -7353,6 +7559,19 @@ fn ct_stmt_req_ret(e: Expr, cx: Ctx) -> Str {
     Emit(u) => ct_stmt_req_ret(u.e, cx),
     _       => "",
   }
+}
+
+// Issue #2362: a `return` whose value is a requirement call, held to the
+// method's declared result at the operation's declared return. `tk_infer`
+// does not type a requirement call, so `tk_check` alone stays silent on
+// `fn go() = store.put(1)` against `put(...) -> Int` and `go() -> Str`, which
+// the reference refuses (`_do_return`'s `check_ir` over `infer_ir`, which reads
+// a `req` call at its declared return).
+fn ct_return_req(e: Expr, ret: Str, cx: Ctx, env: List[Bind], where_: Str) -> Str {
+  let rt = tk_solid(ct_stmt_req_ret(e, cx), env)
+  let want = tk_solid(ret, env)
+  if (rt == "" || want == "" || tk_compatible(want, rt)) { return "" }
+  return tk_mismatch(where_, ret, rt).v
 }
 
 // The environment one body LEAVES BEHIND: the same binding rule the verdict walk
@@ -8422,8 +8641,8 @@ fn check_component(comp: CompD, cx: Ctx, gtys: List[Bind]) -> Verd {
       // walk is the one that runs in statement order; a body carrying both a
       // wiring verdict and a type one reports the wiring verdict, which is the
       // under-refusing direction.
-      let mtv = mth_type_verdict(pm.body, 0,
-                                 mth_param_tys(pm, decl, 0, setupTys), mcx,
+      let mtv = mth_type_verdict(arrow_typed_body(pm), 0,
+                                 ct_req_ret_rows(mcx, mth_param_tys(pm, decl, 0, setupTys)), mcx,
                                  tk_solid(taint_strip(decl.ret), gtys), pm.name,
                                  comp.line)
       if (mtv.v != "") { return mtv }
@@ -13772,6 +13991,12 @@ fn tk_call(c: CallN, env: List[Bind]) -> TInf {
   // level, which compounds with nesting.
   let tv = tk_callee(c.target, env)
   if (tv.v != "") { return tv }
+  // Issue #2362: a requirement call in a provide method is typed at its
+  // operation's declared return (`infer_ir` reads a `req` call that way), so
+  // it is held to it inside a larger expression too. Its arguments are
+  // `ct_args`'s, as below.
+  let rq = tk_req_row(c.target, env)
+  if (rq != "") { return tk_ok(rq) }
   // THE HOST-OBJECT CALL, in a component body. An untyped method receiver there
   // is an acquired handle, a requirement handle or a provision alias, and the
   // reference lowers a call on one through the host / provision path — which
@@ -25916,7 +26141,11 @@ fn decl_cases(ts: List[Token], i: Int, a: CaseAcc, al: Map[Str, Str]) -> CaseSte
   if (atk(ts, j, "{")) {
     let bend = close_brace(ts, j)
     if (bend == 0 - 1 || atk(ts, i + 2, "[")) {
-      return { a: a, i: bend == 0 - 1 ? lineHi : bend }
+      // issue #2362: a generic record gets no field rows, only a `grec` mark,
+      // so a record literal meeting it is refused by name (`ct_args`).
+      let marked = bend == 0 - 1 ? a
+        : { binds: a.binds.push({ name: "grec ".concat(nm), ty: nm }), amb: a.amb }
+      return { a: marked, i: bend == 0 - 1 ? lineHi : bend }
     }
     let fields = rec_field_binds(ts, j + 1, bend - 1, nm, a.binds, al)
     return { a: { binds: fields, amb: a.amb }, i: bend }

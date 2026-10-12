@@ -731,12 +731,16 @@ const revlWALGuarantee = "the WAL records each committed effect's step identity,
 // revlWAL is the process's durable append-only log. One line per record, JSON,
 // flushed + fsync'd before the call that wrote it returns — the write-ahead
 // discipline the py tier uses, so a record a caller saw acknowledged is on disk
-// before the effect it describes is allowed to matter.
+// before the effect it describes is allowed to matter. A failed write or fsync
+// is fatal (issue #2345): the process stops instead of running on with a record
+// that never became durable. REVL_WAL_ALLOW_UNSYNCED=1 is the explicit opt-out
+// for a target that cannot fsync; it is stamped into the log itself.
 type revlWAL struct {
-	mu   sync.Mutex
-	f    *os.File
-	seq  int
-	seqs []int
+	mu       sync.Mutex
+	f        *os.File
+	seq      int
+	seqs     []int
+	unsynced bool
 }
 
 var revlWALSink *revlWAL
@@ -750,24 +754,41 @@ func revlWALOpen() {
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return
+		panic("revl: cannot open the write-ahead log REVL_WAL: " + err.Error())
 	}
-	revlWALSink = &revlWAL{f: f}
-	revlWALSink.write(map[string]any{
+	unsynced := os.Getenv("REVL_WAL_ALLOW_UNSYNCED") == "1"
+	revlWALSink = &revlWAL{f: f, unsynced: unsynced}
+	header := map[string]any{
 		"record": "header", "walVersion": 1, "generation": 1,
 		"guarantee": revlWALGuarantee,
-	})
+	}
+	if unsynced {
+		os.Stderr.WriteString("warning: REVL_WAL_ALLOW_UNSYNCED=1 disables the WAL fsync guarantee\n")
+		header["durability"] = "unsynced-opt-out"
+	}
+	revlWALSink.write(header)
+	if unsynced {
+		revlWALSink.write(map[string]any{"record": "durability-opt-out", "fromSeq": 0})
+	}
 }
 
 func init() { revlWALOpen() }
 
+// write appends one record and fsyncs it. Any failure panics: a record the
+// caller cannot be sure is on disk must stop the run before the next effect,
+// never pass silently. Only the visible REVL_WAL_ALLOW_UNSYNCED opt-out lets a
+// failed fsync through.
 func (w *revlWAL) write(rec map[string]any) {
 	line, err := json.Marshal(rec)
 	if err != nil {
-		return
+		panic("revl: write-ahead log record could not be encoded: " + err.Error())
 	}
-	_, _ = w.f.Write(append(line, '\n'))
-	_ = w.f.Sync()
+	if _, err := w.f.Write(append(line, '\n')); err != nil {
+		panic("revl: write-ahead log write failed: " + err.Error())
+	}
+	if err := w.f.Sync(); err != nil && !w.unsynced {
+		panic("revl: write-ahead log fsync failed: " + err.Error())
+	}
 }
 
 // revlRecordTransactional appends the discharge-descriptor for one witnessed
