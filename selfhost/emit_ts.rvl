@@ -2354,7 +2354,7 @@ fn emit_externs(externs: List[Any], ui_externs: List[Str]) -> List[Str] {
       continue
     }
     if (!value_has(bodies, "ts")) {
-      out = out.push(`<<EXTERN-NO-TS-BODY:${name}>>`)
+      out = out.push(`<<UNSUPPORTED-EXTERN-NO-TS-BODY:${name}>>`)
     } else {
       // issue #1369: the wrapper is emitted only for an extern that HAS a body,
       // matching the reference (which refuses a bodyless one outright).
@@ -4472,6 +4472,37 @@ fn lifecycle_test_lines(tests: List[Any], services: Any, components: List[Any]) 
   return out
 }
 
+// `_refuse_deferred_emissions`: a CALL to a `deferred` emission extern, in any
+// position inside a component, needs a session owner runtime this tier does
+// not have, so the reference refuses the document. The port names each
+// reached call, component first (issue #2353). A declared but never-called
+// deferred extern is not named, as on the reference. The flag and the class
+// are read through `flag_of` and `list_contains`: tools/selfhost_coverage.py
+// reads the inline spellings as a port, and a refusal is not one.
+fn flag_of(node: Any, field: Str) -> Bool { return value_bool(value_field(node, field)) }
+
+fn deferred_emission_markers(ir: Any) -> List[Str] {
+  var deferred = []
+  for (e of value_list(value_field(ir, "externs"))) {
+    if (list_contains(["emission"], value_str(value_field(e, "class"))) && flag_of(e, "deferred")) {
+      deferred = deferred.push(value_str(value_field(e, "name")))
+    }
+  }
+  var out = []
+  if (deferred.length() == 0) { return out }
+  for (c of value_list(value_field(ir, "components"))) {
+    let cname = value_str(value_field(c, "name"))
+    for (n of ir_nodes(c)) {
+      let name = value_str(value_field(n, "name"))
+      let mark = `<<UNSUPPORTED-DEFERRED-EMISSION:${cname}.${name}>>`
+      if (node_kind(n) == "fn" && list_contains(deferred, name) && !list_contains(out, mark)) {
+        out = out.push(mark)
+      }
+    }
+  }
+  return out
+}
+
 fn fault_test_markers(ir: Any) -> List[Str] {
   var out = []
   for (t of value_list(value_field(ir, "fault_tests"))) {
@@ -4561,6 +4592,7 @@ pub fn emit_ts_src(ir: Any) -> Str {
   if (components.length() > 0 || value_keys(services).length() > 0) {
     out = out.concat(emit_component_tail(ir, async_names))
   }
+  out = out.concat(deferred_emission_markers(ir))
   return py_rstrip(out.join(newline())).concat(newline())
 }
 

@@ -766,7 +766,7 @@ def test_selfhosted_emitter_extern_section(emitted):
     # the extern-seeded `let` inference (the E0382 half of 275)
     assert "let moved = nudge(p.clone(), 1i64);" in src
     assert "return shout(up.clone());" in src
-    assert "<<DEFER" not in src and "<<EXTERN-NO-RS-BODY" not in src
+    assert "<<DEFER" not in src and "EXTERN-NO-RS-BODY" not in src
 
 
 def test_selfhosted_emitter_component_bridge_scaffold(emitted):
@@ -1393,3 +1393,58 @@ def test_a_host_identifier_collision_is_refused_by_name(reference):
     with pytest.raises(reference.EmitError,
                        match="both spell the Rust identifier"):
         reference.emit(ir)
+
+
+# issue #2353: documents the reference refuses for the whole tier, which the
+# port used to answer with output carrying no `<<UNSUPPORTED` marker. An extern
+# with no `@rs` body is named where the extern would be; a CALL to a
+# `deferred` emission is named once per component and call.
+NO_RS_BODY_REFUSALS = [
+    ("examples/evolve_loop.rvl", "host_propose"),
+    ("examples/placement/gate_provider.rvl", "host_gate_admit"),
+    ("tests/fixtures/model_reach_crossing/ok_extern_block_value.rvl", "run_tool"),
+    ("tests/fixtures/model_reach_crossing/ok_extern_no_block.rvl", "run_tool"),
+    ("tests/fixtures/model_reach_crossing/ok_helper_no_block.rvl", "run_tool"),
+    ("tests/fixtures/service_typed_params/ok_param_no_approval.rvl", "charge"),
+    ("tests/fixtures/emit_wasm_refusals/ui_transaction_unit.rvl", "read_pane"),
+]
+DEFERRED_EMISSION_REFUSALS = [
+    "tests/fixtures/deferred_reach/ok_emit_step.rvl",
+    "tests/fixtures/deferred_reach/ok_emit_tail.rvl",
+    "tests/fixtures/deferred_reach/ok_plain_value_in_fn_body.rvl",
+] + [f"tests/fixtures/emit_{t}_refusals/deferred_emission_call.rvl"
+     for t in ("go", "java", "rust", "ts", "wasm")]
+
+
+@pytest.mark.parametrize("rel, extern", NO_RS_BODY_REFUSALS,
+                         ids=[rel for rel, _ in NO_RS_BODY_REFUSALS])
+def test_an_extern_with_no_rs_body_is_a_named_refusal(emitted, reference, rel, extern):
+    ir = compile_files([str(ROOT / rel)])
+    with pytest.raises(reference.EmitError,
+                       match=f"extern `{extern}` has no @rs body"):
+        reference.emit(ir)
+    got = emitted["emit_rust_src"](ir)
+    assert f"<<UNSUPPORTED-EXTERN-NO-RS-BODY:{extern}>>" in got
+
+
+@pytest.mark.parametrize("rel", DEFERRED_EMISSION_REFUSALS)
+def test_a_called_deferred_emission_is_a_named_refusal(emitted, reference, rel):
+    ir = compile_files([str(ROOT / rel)])
+    with pytest.raises(reference.EmitError,
+                       match="Agent: `deferred` emission `deliver` needs a session owner"):
+        reference.emit(ir)
+    assert "<<UNSUPPORTED-DEFERRED-EMISSION:Agent.deliver>>" in emitted["emit_rust_src"](ir)
+
+
+def test_a_declared_but_uncalled_deferred_emission_is_not_named(emitted, reference,
+                                                                tmp_path):
+    """The refusal is call-site keyed on the reference: the same extern with
+    nothing calling it emits, and the port agrees byte for byte."""
+    src = (ROOT / "tests" / "fixtures" / "emit_rust_refusals"
+           / "deferred_emission_call.rvl").read_text()
+    doc = tmp_path / "uncalled.rvl"
+    doc.write_text(src.replace("{ emit deliver(sink, msg) }", "{ return }"))
+    ir = compile_files([str(doc)])
+    got = emitted["emit_rust_src"](ir)
+    assert "<<UNSUPPORTED" not in got
+    assert got == reference.emit(ir)

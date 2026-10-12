@@ -2498,7 +2498,7 @@ fn emit_v3_externs(externs: List[Any], tnames: Map[Str, Str]) -> List[Str] {
     if (value_is_null(rs_body)) {
       // The reference RAISES here (`extern ... has no @rs body`). This slice has
       // no refusal channel, so the marker stands in — loud, never silent.
-      out = out.push(`<<EXTERN-NO-RS-BODY:${name}>>`)
+      out = out.push(`<<UNSUPPORTED-EXTERN-NO-RS-BODY:${name}>>`)
       out = out.push("")
     } else {
       let body = trim(value_str(rs_body))
@@ -6672,7 +6672,47 @@ pub fn emit_rust_src(ir: Any) -> Str {
   // silence (issue #1123).
   let test_markers = deferred_test_markers(ir)
   if (test_markers.length() > 0) { out = out.concat(test_markers) }
+  out = out.concat(deferred_emission_markers(ir))
   return rstrip(out.join(newline())).concat(newline())
+}
+
+// `_refuse_deferred_emissions`: a CALL to a `deferred` emission extern, in any
+// position inside a component, needs a session owner runtime this tier does
+// not have, so the reference refuses the document. The port names each
+// reached call, component first (issue #2353). A declared but never-called
+// deferred extern is not named, as on the reference. The flag and the class
+// are read through `flag_of` and `list_contains`: tools/selfhost_coverage.py
+// reads the inline spellings as a port, and a refusal is not one.
+fn flag_of(node: Any, field: Str) -> Bool { return value_bool(value_field(node, field)) }
+
+fn deferred_emission_markers(ir: Any) -> List[Str] {
+  var deferred = []
+  for (e of value_list(value_field(ir, "externs"))) {
+    if (list_contains(["emission"], value_str(value_field(e, "class"))) && flag_of(e, "deferred")) {
+      deferred = deferred.push(value_str(value_field(e, "name")))
+    }
+  }
+  var out = []
+  if (deferred.length() == 0) { return out }
+  for (c of value_list(value_field(ir, "components"))) {
+    out = deferred_calls_in(c, deferred, value_str(value_field(c, "name")), out)
+  }
+  return out
+}
+
+// Pre-order over every record and list under a component, as the reference's
+// `_reached_deferred_calls` walks it.
+fn deferred_calls_in(node: Any, deferred: List[Str], cname: Str, acc: List[Str]) -> List[Str] {
+  var out = acc
+  if (value_kind(node) == "record") {
+    let name = value_str(value_field(node, "name"))
+    let mark = `<<UNSUPPORTED-DEFERRED-EMISSION:${cname}.${name}>>`
+    if (node_kind(node) == "fn" && list_contains(deferred, name) && !list_contains(out, mark)) {
+      out = out.push(mark)
+    }
+  }
+  for (child of value_children(node)) { out = deferred_calls_in(child, deferred, cname, out) }
+  return out
 }
 
 // ---------------------------------------------------------------- in-file tests

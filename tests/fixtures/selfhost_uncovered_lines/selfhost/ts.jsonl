@@ -38,7 +38,7 @@
 
 ["function", "empty-list-conservative-fallbacks-empty-list-ann-uses", "list_element", 1, 1]
 
-["reason", "extern-body-and-context-empty-cases-emit-externs", "Extern-body and context empty cases: `emit_externs` writes `<<EXTERN-NO-TS-BODY>>` for a declared extern without an @ts target, while `context_augmentation` returns no declaration for a document with no provided/required keys. Admitted extern fixtures carry @ts bodies; function-only documents bypass component context output at the module gate"]
+["reason", "extern-body-and-context-empty-cases-emit-externs", "Extern-body and context empty cases: `emit_externs` writes `<<UNSUPPORTED-EXTERN-NO-TS-BODY>>` for a declared extern without an @ts target, while `context_augmentation` returns no declaration for a document with no provided/required keys. Admitted extern fixtures carry @ts bodies; function-only documents bypass component context output at the module gate"]
 
 ["function", "extern-body-and-context-empty-cases-emit-externs", "emit_externs", 1, 1]
 

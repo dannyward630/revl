@@ -1686,7 +1686,7 @@ section for an `undo`/capability-tagged extern) and `NATIVE_GATE_GAPS`.
 between the types and the functions) and the extern half of the `fn_returns`
 seeding. Two reference shapes stay out and take a LOUD marker instead of a
 guess — the same treatment `selfhost/emit_go.rvl` gives them: an extern with no
-`@rs` body (`<<EXTERN-NO-RS-BODY:name>>`; the reference RAISES, a portability
+`@rs` body (`<<UNSUPPORTED-EXTERN-NO-RS-BODY:name>>` since issue #2353; the reference RAISES, a portability
 boundary) and an extern carrying a `config` schema
 (`<<DEFER-EXTERN-config:name>>`; item 378 Stage 5's `_revl_extern_config`
 scaffold). The body splice is LF-only, so a body carrying one of the code points

@@ -4178,7 +4178,7 @@ fn emit_v3_externs(externs: Vec<Value>, tnames: std::collections::HashMap<String
         }
         let rs_body = value_field(value_field(ext.clone(), String::from("bodies")), String::from("rs"));
         if value_is_null(rs_body.clone()) {
-            out.push(format!("<<EXTERN-NO-RS-BODY:{}>>", name));
+            out.push(format!("<<UNSUPPORTED-EXTERN-NO-RS-BODY:{}>>", name));
             out.push(String::from(""));
         } else {
             let body = trim(value_str(rs_body.clone()));
@@ -8198,7 +8198,44 @@ pub fn emit_rust_src(ir: Value) -> String {
     if (test_markers.revl_length() > 0i64) {
         out.extend((test_markers).iter().cloned());
     }
+    out.extend((deferred_emission_markers(ir.clone())).iter().cloned());
     return rstrip__m1(&(out.revl_join(&newline()))).revl_concat(&newline());
+}
+
+fn flag_of(node: Value, field: String) -> bool {
+    return value_bool(value_field(node.clone(), field.clone()));
+}
+
+fn deferred_emission_markers(ir: Value) -> Vec<String> {
+    let mut deferred: Vec<String> = vec![];
+    for e in value_list(value_field(ir.clone(), String::from("externs"))) {
+        if (list_contains(vec![String::from("emission")], value_str(value_field(e.clone(), String::from("class")))) && flag_of(e.clone(), String::from("deferred"))) {
+            deferred.push(value_str(value_field(e.clone(), String::from("name"))));
+        }
+    }
+    let mut out = vec![];
+    if (deferred.revl_length() == 0i64) {
+        return out;
+    }
+    for c in value_list(value_field(ir.clone(), String::from("components"))) {
+        out = deferred_calls_in(c.clone(), deferred.clone(), &value_str(value_field(c.clone(), String::from("name"))), out.clone());
+    }
+    return out;
+}
+
+fn deferred_calls_in(node: Value, deferred: Vec<String>, cname: &str, acc: Vec<String>) -> Vec<String> {
+    let mut out = acc;
+    if (value_kind(node.clone()) == "record") {
+        let name = value_str(value_field(node.clone(), String::from("name")));
+        let mark = format!("<<UNSUPPORTED-DEFERRED-EMISSION:{}.{}>>", cname, name);
+        if (((node_kind(node.clone()) == "fn") && list_contains(deferred.clone(), name.clone())) && (!list_contains(out.clone(), mark.clone()))) {
+            out.push(mark.clone());
+        }
+    }
+    for child in value_children(node.clone()) {
+        out = deferred_calls_in(child.clone(), deferred.clone(), cname, out.clone());
+    }
+    return out;
 }
 
 fn emit_v3_tests(tests: Vec<Value>, functions: Vec<Value>, externs: Vec<Value>, fr: std::collections::HashMap<String, String>, tables: TypeTables) -> Vec<String> {
