@@ -60,6 +60,9 @@ CRATE = "cordis4j"
 # golden oracle + the selfhost mirror both run with record off, so neither
 # shifts). Mirrors backends/go/emit.py's `_RECORD_MODE`.
 _RECORD_MODE = False
+# issue #2345: set while a v3 document's record sink is emitted, so the
+# service-emission sites know the journalling helpers are present.
+_JOURNAL_SINK = False
 
 # issue #1369 (item 522 slice 3): the document's computer-use externs, by name,
 # and its provide methods that run in a UI scope, keyed by
@@ -3830,16 +3833,70 @@ def _journalled_emission(name: str, params: str, forward: str,
     Returns the wrapper lines and the inner name the body is emitted under."""
     inner = f"_revl_emission_{name}"
     lines = [f"public static {ret} {name}({params}) {{",
-             f"    int _revlEm = revlRecordEmissionStart({_string(name)});"]
+             f"    int _revlEm = revlRecordEmissionStart({_string(name)}, "
+             f"{_string(name)}, null);"]
     if ret == "void":
-        lines.append(f"    {inner}({forward});")
+        lines.append(f"    try {{ {inner}({forward}); }}")
     else:
-        lines.append(f"    {ret} _revlOut = {inner}({forward});")
+        lines.append(f"    {ret} _revlOut;")
+        lines.append(f"    try {{ _revlOut = {inner}({forward}); }}")
+    lines.append("    catch (Throwable _revlT) "
+                 "{ revlRecordEmissionFailed(_revlEm, _revlT); throw _revlT; }")
     lines.append('    revlRecordEmissionOutcome(_revlEm, "emission-complete");')
     if ret != "void":
         lines.append("    return _revlOut;")
     lines.extend(["}", ""])
     return lines, inner
+
+
+def _service_emission(node, requires: dict):
+    """Issue #2345: the (key, method, service) of an `emit` that crosses
+    through a required service or an instance provision (the py tier's
+    `_ServiceProxy` and `_SpawnRecorder` paths), or None for an extern call,
+    which its own definition wrapper journals."""
+    if not isinstance(node, dict) or node.get("kind") != "call":
+        return None
+    callee = node.get("callee")
+    if isinstance(callee, dict):
+        if callee.get("kind") != "field":
+            return None
+        target = callee.get("target") or {}
+        key = target.get("key") or target.get("name") or "instance"
+        return (str(key), str(callee.get("name")), None)
+    if "method" not in node:
+        return None
+    key = str((node.get("target") or {}).get("name") or "call")
+    service = (requires or {}).get(key)
+    return (key, str(node["method"]), service if isinstance(service, str) else None)
+
+
+def _has_service_emits(node) -> bool:
+    """Whether any `emit` in the components crosses through a service."""
+    if isinstance(node, dict):
+        if node.get("step") == "emit" and _service_emission(node.get("expr"), {}):
+            return True
+        return any(_has_service_emits(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_service_emits(v) for v in node)
+    return False
+
+
+def _journal_service_stmt(node, env, call: str) -> str:
+    """`call;`, or in record mode a block that makes the service emission's
+    start record durable before the call and writes its outcome after
+    (issue #2345), `emission-failed` when the call throws."""
+    if not _JOURNAL_SINK:
+        return f"{call};"
+    component = getattr(env, "component", None) or {}
+    desc = _service_emission(node, component.get("requires") or {})
+    if desc is None:
+        return f"{call};"
+    key, method, service = desc
+    svc = _string(service) if service else "null"
+    return (f"{{ int _revlEm = revlRecordEmissionStart({_string(key)}, "
+            f"{_string(method)}, {svc}); try {{ {call}; }} catch (Throwable _revlT) "
+            f"{{ revlRecordEmissionFailed(_revlEm, _revlT); throw _revlT; }} "
+            f"revlRecordEmissionOutcome(_revlEm, \"emission-complete\"); }}")
 
 
 def _has_emission_externs(externs: list) -> bool:
@@ -7648,19 +7705,20 @@ public static void revlRecordTransactional(String receiver, String method, Strin
 // `emission`, one-way, no inverse. Fsync'd before it returns, and a failed fsync
 // throws, so the host body never runs unless its start record is on disk.
 // Returns the record's seq, or -1 when REVL_WAL is unset.
-public static int revlRecordEmissionStart(String name) {
+public static int revlRecordEmissionStart(String key, String method, String service) {
     if (revlWalOut == null) {
         return -1;
     }
     synchronized (revlWalLock) {
         int seq = revlWalSeq++;
-        String quoted = revlWalStr(name);
+        String label = revlWalStr(key.equals(method) ? key : key + "." + method);
         revlWalWrite("{\"record\":\"effect\",\"seq\":" + seq
-                + ",\"component\":null,\"stepIndex\":null,\"kind\":\"emission\",\"label\":" + quoted
+                + ",\"component\":null,\"stepIndex\":null,\"kind\":\"emission\",\"label\":" + label
                 + ",\"site\":null,\"source\":null,\"origin\":{}"
                 + ",\"boundary\":{\"class\":\"emission\",\"referent\":\"process-crossing\""
-                + ",\"compensated\":false,\"detail\":{\"key\":" + quoted + ",\"method\":" + quoted
-                + ",\"service\":null,\"args\":[]}}"
+                + ",\"compensated\":false,\"detail\":{\"key\":" + revlWalStr(key)
+                + ",\"method\":" + revlWalStr(method)
+                + ",\"service\":" + (service == null ? "null" : revlWalStr(service)) + ",\"args\":[]}}"
                 + ",\"inverse\":{\"reconstructible\":false,"
                 + "\"reason\":\"an emission is a one-way crossing; it has no inverse\"}}");
         return seq;
@@ -7668,13 +7726,23 @@ public static int revlRecordEmissionStart(String name) {
 }
 
 // revlRecordEmissionOutcome settles a journalled emission once its body
-// returned. A body that throws leaves the start record unsettled, which recover
-// reports.
+// returned. A body that throws is settled by revlRecordEmissionFailed instead.
 public static void revlRecordEmissionOutcome(int seq, String outcome) {
     if (revlWalOut == null || seq < 0) {
         return;
     }
     revlWalWrite("{\"record\":" + revlWalStr(outcome) + ",\"seq\":" + seq + "}");
+}
+
+// revlRecordEmissionFailed writes `emission-failed` for a body that threw, as
+// the py tier's _call_within does. Only the exception's type is kept: this tier
+// has no redaction funnel for its message.
+public static void revlRecordEmissionFailed(int seq, Throwable error) {
+    if (revlWalOut == null || seq < 0) {
+        return;
+    }
+    revlWalWrite("{\"record\":\"emission-failed\",\"seq\":" + seq
+            + ",\"error\":{\"type\":" + revlWalStr(error.getClass().getSimpleName()) + "}}");
 }
 
 // revlRecordDischarge writes the commit-path proof that every recorded
@@ -8007,7 +8075,8 @@ def _method_body_lines(
                 # even when it throws
                 lines.append(f"{_ui_crossing_statement(stmt, v3_ctx, rename, env, lines)};")
                 continue
-            lines.append(f"{_site_compensated_call(stmt, v3_ctx, rename, env)};")
+            lines.append(_journal_service_stmt(
+                stmt.get("expr"), env, _site_compensated_call(stmt, v3_ctx, rename, env)))
             if stmt.get("compensate") is not None:
                 _emit_compensation_track(
                     lines, "", stmt["expr"], stmt["compensate"], v3_ctx, env, frame_expr,
@@ -8378,7 +8447,8 @@ def _emit_component_stmts(
             _emit_bracket_track(out, pad, step["acquire"], step["undo"], v3_ctx, env,
                                 frame_expr, None, step)
         elif kind == "emit":
-            out.append(f"{pad}{_site_compensated_call(step, v3_ctx, None, env)};")
+            out.append(pad + _journal_service_stmt(
+                step.get("expr"), env, _site_compensated_call(step, v3_ctx, None, env)))
             if step.get("compensate") is not None:
                 _emit_compensation_track(
                     out, pad, step["expr"], step["compensate"], v3_ctx, env, frame_expr)
@@ -9128,7 +9198,8 @@ def _emit_component(
             out.append(f"            undos.add(Disposables.of(() -> {_expr(step['undo'], None, None, env)}));")
             disposers.append("effect")
         elif kind == "emit":
-            out.append(f"            {_expr(step['expr'], None, None, env)};")
+            out.append("            " + _journal_service_stmt(
+                step.get("expr"), env, _expr(step['expr'], None, None, env)))
         elif kind == "provide":
             key = step.get("name")
             service = step.get("service")
@@ -9514,8 +9585,11 @@ def _emit_v3(ir: dict, package_name: str) -> str:
     # frame, but ONLY under `--record`; off, this whole block is absent and
     # the output is byte-identical (the golden oracle + selfhost gate). Issue
     # #2345: also for a journalled `extern emission fn`.
-    if _RECORD_MODE and components and (
-            _uses_revl_frame(ir) or _has_emission_externs(externs)):
+    global _JOURNAL_SINK
+    _JOURNAL_SINK = bool(_RECORD_MODE and components and (
+        _uses_revl_frame(ir) or _has_emission_externs(externs)
+        or _has_service_emits(components)))
+    if _JOURNAL_SINK:
         out.extend(["    " + line if line else line for line in _emit_record_sink()])
     for component in components:
         out.extend(["    " + line if line else line for line in _emit_component(
@@ -9743,7 +9817,7 @@ def emit(ir: dict, package_name: str = "revl", record: bool = False) -> str:
 
     _refuse_fault_tests(ir)
 
-    global _RECORD_MODE, _LIFECYCLE_MODE, _V3_DECLARED_TYPES, _SECRET_MODE
+    global _RECORD_MODE, _JOURNAL_SINK, _LIFECYCLE_MODE, _V3_DECLARED_TYPES, _SECRET_MODE
     global _JOURNAL_MODE
     global _STREAM_ITER_COUNTER
     _STREAM_ITER_COUNTER = 0
@@ -9776,6 +9850,7 @@ def emit(ir: dict, package_name: str = "revl", record: bool = False) -> str:
         )
     finally:
         _RECORD_MODE = saved
+        _JOURNAL_SINK = False
         _LIFECYCLE_MODE = saved_lifecycle
         _JOURNAL_MODE = saved_journal
         _V3_DECLARED_TYPES = saved_types

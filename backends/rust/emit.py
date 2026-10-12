@@ -4867,7 +4867,8 @@ def _rust_render_pure_stmts(steps: list, env: _Env, scope: dict,
             arg_scope = dict(scope)
             for param in params:
                 arg_scope[param] = f"{param}.clone()"
-            parts.append(f"let _ = {_expr(step['expr'], env, arg_scope)};")
+            parts.append("let _ = %s;" % _journal_service_emit(
+                step.get("expr"), env, _expr(step['expr'], env, arg_scope)))
         elif kind == "break":
             parts.append("break;")
         elif kind == "continue":
@@ -5259,6 +5260,8 @@ def _method_body_lines(env: _Env, method: dict, out: list[str], indent: int) -> 
             env.v3_ctx().declared_skip = acquire_node
             acquire = _expr(acquire_node, env, acquire_rename)
             env.v3_ctx().declared_skip = None
+            if not _is_ui_crossing(acquire_node, env.v3_ctx()):
+                acquire = _journal_service_emit(acquire_node, env, acquire)
             compensations = _emit_compensations(step, env.compensated)
             if _is_ui_crossing(acquire_node, env.v3_ctx()):
                 # issue #1369: a computer-use crossing registers its own
@@ -6318,7 +6321,8 @@ def _emit_step(step: dict, env: _Env, out: list[str], indent: int) -> None:
         else:
             out.append(f"{pad}ctx.effect({label}, move || {{ {undo}; Ok(()) }})?;")
     elif kind == "emit":
-        out.append(f"{pad}let _ = {_expr(step['expr'], env)};")
+        out.append("%slet _ = %s;" % (pad, _journal_service_emit(
+            step.get("expr"), env, _expr(step['expr'], env))))
         # one compensation per crossing, registered after the fire: the
         # site-spelled clause, else the extern's own declared one (item 254,
         # issues #1592 and #1902).
@@ -6364,7 +6368,8 @@ def _emit_step(step: dict, env: _Env, out: list[str], indent: int) -> None:
             if em.get("step") != "emit":  # lowerer invariant (scope: emissions)
                 raise EmitError(
                     f"timer body carries emissions only, found {em.get('step')!r}")
-            out.append(f"{pad}    let _ = {_expr(em.get('expr'), env, rename=rename)};")
+            out.append("%s    let _ = %s;" % (pad, _journal_service_emit(
+                em.get("expr"), env, _expr(em.get('expr'), env, rename=rename))))
             for compensate_node in _emit_compensations(em, env.compensated):
                 out.append(f"{pad}    let _revl_teardown = revl_teardown_of(&_revl_ctx_t{n});")
                 _emit_compensation_registration(
@@ -9159,6 +9164,57 @@ def _rust_extern_config_bind(ext: dict) -> str:
             f"{_string(name)}, {req_lit}, {def_lit});")
 
 
+def _service_emission(node, requires: dict):
+    """Issue #2345: the (key, method, service) of an `emit` that crosses
+    through a required service or an instance provision (the py tier's
+    `_ServiceProxy` and `_SpawnRecorder` paths), or None for an extern call,
+    which its own definition wrapper journals."""
+    if not isinstance(node, dict) or node.get("kind") != "call":
+        return None
+    callee = node.get("callee")
+    if isinstance(callee, dict):
+        if callee.get("kind") != "field":
+            return None
+        target = callee.get("target") or {}
+        key = target.get("key") or target.get("name") or "instance"
+        return (str(key), str(callee.get("name")), None)
+    if "method" not in node:
+        return None
+    key = str((node.get("target") or {}).get("name") or "call")
+    service = (requires or {}).get(key)
+    return (key, str(node["method"]), service if isinstance(service, str) else None)
+
+
+def _has_service_emits(node) -> bool:
+    """Whether any `emit` in the components crosses through a service."""
+    if isinstance(node, dict):
+        if node.get("step") == "emit" and _service_emission(node.get("expr"), {}):
+            return True
+        return any(_has_service_emits(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_service_emits(v) for v in node)
+    return False
+
+
+def _journal_service_emit(node, env, rendered: str) -> str:
+    """In record mode, wrap a service emission so its start record is durable
+    before the call and its outcome is written after (issue #2345). The result
+    is still an expression, so every `let _ = ...;` site keeps its shape."""
+    if not _RECORD_SINK:
+        return rendered
+    requires = getattr(env, "requires_raw", None)
+    if requires is None:
+        requires = (getattr(env, "component", None) or {}).get("requires") or {}
+    desc = _service_emission(node, requires)
+    if desc is None:
+        return rendered
+    key, method, service = desc
+    svc = f"Some({_string(service)})" if service else "None"
+    return (f"{{ let _revl_em = RevlEmission::start({_string(key)}, "
+            f"{_string(method)}, {svc}); let _revl_v = {rendered}; "
+            f"_revl_em.complete(); _revl_v }}")
+
+
 def _journalled_emission(name: str, params: str, forward: str,
                          returns: str) -> tuple[list[str], str]:
     """Issue #2345: in record mode an `extern emission fn` is journalled before
@@ -9171,9 +9227,10 @@ def _journalled_emission(name: str, params: str, forward: str,
     inner = f"_revl_emission_{name}"
     return [
         f"fn {name}({params}) -> {returns} {{",
-        f"    let _revl_em = revl_record_emission_start({_string(name)});",
+        f"    let _revl_em = RevlEmission::start({_string(name)}, "
+        f"{_string(name)}, None);",
         f"    let _revl_out = {inner}({forward});",
-        '    revl_record_emission_outcome(_revl_em, "emission-complete");',
+        "    _revl_em.complete();",
         "    _revl_out",
         "}",
         "",
@@ -10458,19 +10515,20 @@ def _revl_record_preamble() -> list[str]:
         "/// `emission`, one-way, no inverse. Fsync'd before it returns, and a failed",
         "/// fsync panics, so the host body never runs unless its start record is on",
         "/// disk. Returns the record's seq, or `None` when `REVL_WAL` is unset.",
-        "pub fn revl_record_emission_start(name: &str) -> Option<u64> {",
+        "pub fn revl_record_emission_start(key: &str, method: &str, service: Option<&str>) -> Option<u64> {",
+        "    let label = if key == method { key.to_string() } else { format!(\"{}.{}\", key, method) };",
         "    let sink = revl_wal_sink()?;",
         "    let mut wal = sink.lock().unwrap();",
         "    let seq = wal.seq;",
         "    wal.seq += 1;",
         "    wal.write(&serde_json::json!({",
         '        "record": "effect", "seq": seq, "component": serde_json::Value::Null,',
-        '        "stepIndex": serde_json::Value::Null, "kind": "emission", "label": name,',
+        '        "stepIndex": serde_json::Value::Null, "kind": "emission", "label": label,',
         '        "site": serde_json::Value::Null, "source": serde_json::Value::Null,',
         '        "origin": {},',
         '        "boundary": { "class": "emission", "referent": "process-crossing",',
-        '            "compensated": false, "detail": { "key": name, "method": name,',
-        '            "service": serde_json::Value::Null, "args": [] } },',
+        '            "compensated": false, "detail": { "key": key, "method": method,',
+        '            "service": service, "args": [] } },',
         '        "inverse": { "reconstructible": false,',
         '            "reason": "an emission is a one-way crossing; it has no inverse" },',
         "    }));",
@@ -10478,11 +10536,41 @@ def _revl_record_preamble() -> list[str]:
         "}",
         "",
         "/// Settle a journalled emission once its body returned. A body that panics",
-        "/// leaves the start record unsettled, which recover reports.",
+        "/// is settled as `emission-failed` by `RevlEmission`'s drop instead.",
         "pub fn revl_record_emission_outcome(seq: Option<u64>, outcome: &str) {",
         "    if let (Some(seq), Some(sink)) = (seq, revl_wal_sink()) {",
         "        let mut wal = sink.lock().unwrap();",
         '        wal.write(&serde_json::json!({ "record": outcome, "seq": seq }));',
+        "    }",
+        "}",
+        "",
+        "/// One journalled emission (issue #2345): `start` makes the start record",
+        "/// durable before the body runs, `complete` settles it. Dropped without",
+        "/// `complete` (the body panicked), it writes `emission-failed`, as the py",
+        "/// tier's `_call_within` does. Only the error type is kept: this tier has",
+        "/// no redaction funnel for a panic message.",
+        "pub struct RevlEmission { seq: Option<u64>, done: bool }",
+        "",
+        "impl RevlEmission {",
+        "    pub fn start(key: &str, method: &str, service: Option<&str>) -> Self {",
+        "        RevlEmission { seq: revl_record_emission_start(key, method, service), done: false }",
+        "    }",
+        "    pub fn complete(mut self) {",
+        "        self.done = true;",
+        '        revl_record_emission_outcome(self.seq, "emission-complete");',
+        "    }",
+        "}",
+        "",
+        "impl Drop for RevlEmission {",
+        "    fn drop(&mut self) {",
+        "        if self.done {",
+        "            return;",
+        "        }",
+        "        if let (Some(seq), Some(sink)) = (self.seq, revl_wal_sink()) {",
+        "            let mut wal = sink.lock().unwrap_or_else(|e| e.into_inner());",
+        '            wal.write(&serde_json::json!({ "record": "emission-failed", "seq": seq,',
+        '                "error": { "type": "panic" } }));',
+        "        }",
         "    }",
         "}",
         "",
@@ -11020,7 +11108,8 @@ def _emit_components(ir: dict, components: list) -> list[str]:
             out.extend(_REVL_UI_TRANSACTION.splitlines() + [""])
     _RECORD_SINK = _RECORD_MODE and bool(components) and (
         _uses_teardown(components, ir.get("externs") or [])
-        or _has_emission_externs(ir.get("externs") or []))
+        or _has_emission_externs(ir.get("externs") or [])
+        or _has_service_emits(components))
     if _RECORD_SINK:
         # item 322 Slice 2: the durable WAL sink rides alongside the teardown
         # accumulator (a witnessed transactional step needs both). Issue #2345:

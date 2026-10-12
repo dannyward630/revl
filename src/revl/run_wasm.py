@@ -180,6 +180,13 @@ def _drop_unsynced_tail(handle, start: int | None) -> None:
         os.ftruncate(handle.fileno(), start)
         handle.seek(0, os.SEEK_END)
     except (OSError, ValueError):
+        return
+    try:
+        # make the cut itself durable, or a power loss could bring the record
+        # back; on a target that refused the record's fsync this fails too,
+        # and the run is stopping anyway
+        os.fsync(handle.fileno())
+    except (OSError, ValueError):
         pass
 
 

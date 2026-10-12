@@ -2181,6 +2181,8 @@ def _emit_method_body(body, env: _Env, out, indent, ret_surface=None):
             env.declared_skip = step.get("expr")
             emit_call = _expr(step["expr"], env)
             env.declared_skip = None
+            if not _is_ui_crossing(step.get("expr"), env):
+                emit_call = _journal_service_emit(step.get("expr"), emit_call)
             if _is_ui_crossing(step.get("expr"), env):
                 # issue #1369: a computer-use crossing registers its own
                 # compensation, the site-spelled one or else the declared one,
@@ -4249,7 +4251,8 @@ def _emit_component_step(comp, step, services, env: _Env, out, indent=3):
         # (Phase 1 first, in full, no matter what Phase 2 later does) —
         # `runCompensationPhase` drains the queue, best-effort and bounded,
         # via the goroutine-abandon pattern (go's per-tier obligation).
-        emit_call = _expr(step["expr"], env)
+        emit_call = _journal_service_emit(step.get("expr"),
+                                          _expr(step["expr"], env))
         # one compensation per crossing: the site-spelled clause, else the
         # emitted extern's own declared one (item 254, issues #1592 and
         # #1902), as the py reference registers it. The emission fires inside
@@ -4304,7 +4307,8 @@ def _emit_component_step(comp, step, services, env: _Env, out, indent=3):
             if em.get("step") != "emit":  # lowerer invariant (scope: emissions)
                 raise EmitError("timer body carries emissions only, found %r"
                                 % (em.get("step"),))
-            out.append("%s\t%s" % (inner, _expr(em.get("expr"), env)))
+            out.append("%s\t%s" % (inner, _journal_service_emit(
+                em.get("expr"), _expr(em.get("expr"), env))))
             # an emitted extern that declares its own `compensate` registers it
             # on every firing, after the fire (item 254, issue #1592). A firing
             # runs after activation, so it parks on the frame exactly like a
@@ -8363,6 +8367,40 @@ def _go_extern_config_bind(ext: dict) -> str:
             f"{_go_string(name)}, {req_lit}, {_go_literal(defaults)})")
 
 
+def _service_emission(node):
+    """Issue #2345: the (key, method, service) of an `emit` that crosses
+    through a required service or an instance provision (the py tier's
+    `_ServiceProxy` and `_SpawnRecorder` paths), or None for an extern call,
+    which its own definition wrapper journals."""
+    if not isinstance(node, dict) or node.get("kind") != "call":
+        return None
+    callee = node.get("callee")
+    if isinstance(callee, dict):
+        if callee.get("kind") != "field":
+            return None
+        target = callee.get("target") or {}
+        key = target.get("key") or target.get("name") or "instance"
+        return (str(key), str(callee.get("name")), "")
+    if "method" not in node:
+        return None
+    key = str((node.get("target") or {}).get("name") or "call")
+    service = _REQ_SERVICE.get(key)
+    return (key, str(node["method"]), service if isinstance(service, str) else "")
+
+
+def _journal_service_emit(node, emit_call: str) -> str:
+    """In record mode, route a service emission through revlJournalEmission
+    so its start record is durable before the call (issue #2345)."""
+    desc = _service_emission(node) if _RECORD_MODE else None
+    if desc is None:
+        return emit_call
+    global _COMP_NEEDS_TEARDOWN
+    _COMP_NEEDS_TEARDOWN = True
+    key, method, service = desc
+    return "revlJournalEmission(%s, %s, %s, func() { %s })" % (
+        _go_string(key), _go_string(method), _go_string(service), emit_call)
+
+
 def _emit_v3_go_journalled_emission(name: str, params: str, arg_list: str,
                                      sig_ret: str) -> tuple[list[str], str]:
     """Issue #2345: in record mode an `extern emission fn` is journalled before
@@ -8373,11 +8411,15 @@ def _emit_v3_go_journalled_emission(name: str, params: str, arg_list: str,
     Returns the wrapper lines and the inner name the body is emitted under."""
     inner = f"revlEmission_{name}"
     lines = [f"func {name}({params}){sig_ret} {{",
-             f"\t_revlEm := revlRecordEmissionStart({_go_string(name)})"]
+             f"\t_revlEm := revlRecordEmissionStart("
+             f"{_go_string(name)}, {_go_string(name)}, \"\")",
+             "\t_revlOK := false",
+             "\tdefer revlEmissionFailedUnless(_revlEm, &_revlOK)"]
     if sig_ret:
         lines.append(f"\t_revlOut := {inner}({arg_list})")
     else:
         lines.append(f"\t{inner}({arg_list})")
+    lines.append("\t_revlOK = true")
     lines.append('\trevlRecordEmissionOutcome(_revlEm, "emission-complete")')
     if sig_ret:
         lines.append("\treturn _revlOut")
@@ -9041,9 +9083,17 @@ func revlRecordTransactional(receiver, method string, args []string) {
 // `emission`, one-way, no inverse. It is fsync'd before it returns and a failed
 // fsync panics, so the host body never runs unless its start record is on disk.
 // Returns the record's seq, or -1 when REVL_WAL is unset.
-func revlRecordEmissionStart(name string) int {
+func revlRecordEmissionStart(key, method, service string) int {
 	if revlWALSink == nil {
 		return -1
+	}
+	label := key
+	if method != key {
+		label = key + "." + method
+	}
+	var svc any
+	if service != "" {
+		svc = service
 	}
 	w := revlWALSink
 	w.mu.Lock()
@@ -9052,11 +9102,11 @@ func revlRecordEmissionStart(name string) int {
 	w.seq++
 	w.write(map[string]any{
 		"record": "effect", "seq": seq, "component": nil, "stepIndex": nil,
-		"kind": "emission", "label": name, "site": nil, "source": nil,
+		"kind": "emission", "label": label, "site": nil, "source": nil,
 		"origin": map[string]any{},
 		"boundary": map[string]any{
 			"class": "emission", "referent": "process-crossing", "compensated": false,
-			"detail": map[string]any{"key": name, "method": name, "service": nil, "args": []any{}},
+			"detail": map[string]any{"key": key, "method": method, "service": svc, "args": []any{}},
 		},
 		"inverse": map[string]any{
 			"reconstructible": false,
@@ -9068,15 +9118,46 @@ func revlRecordEmissionStart(name string) int {
 
 // revlRecordEmissionOutcome settles a journalled emission once its body
 // returned (`emission-complete`), the record the py tier writes after the call.
-// A body that panics leaves the start record unsettled, which recover reports.
+// A body that panics is settled as `emission-failed` instead
+// (revlEmissionFailedUnless); either way recover reports it as unresolved.
 func revlRecordEmissionOutcome(seq int, outcome string) {
+	revlWriteEmissionOutcome(seq, map[string]any{"record": outcome, "seq": seq})
+}
+
+func revlWriteEmissionOutcome(seq int, record map[string]any) {
 	if revlWALSink == nil || seq < 0 {
 		return
 	}
 	w := revlWALSink
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.write(map[string]any{"record": outcome, "seq": seq})
+	w.write(record)
+}
+
+// revlEmissionFailedUnless is deferred right after the start record: when the
+// body panicked (ok still false) it writes `emission-failed`, as the py tier's
+// _call_within does, and the panic carries on. Only the error type is kept:
+// this tier has no redaction funnel for a panic message.
+func revlEmissionFailedUnless(seq int, ok *bool) {
+	if *ok {
+		return
+	}
+	revlWriteEmissionOutcome(seq, map[string]any{
+		"record": "emission-failed", "seq": seq,
+		"error": map[string]any{"type": "panic"},
+	})
+}
+
+// revlJournalEmission journals one emission made through a required service
+// (the py tier's _ServiceProxy path): durable start record, then the call,
+// then its outcome.
+func revlJournalEmission(key, method, service string, body func()) {
+	seq := revlRecordEmissionStart(key, method, service)
+	ok := false
+	defer revlEmissionFailedUnless(seq, &ok)
+	body()
+	ok = true
+	revlRecordEmissionOutcome(seq, "emission-complete")
 }
 
 // revlRecordDischarge writes the commit-path proof that every recorded

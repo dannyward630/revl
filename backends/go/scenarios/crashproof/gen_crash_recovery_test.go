@@ -823,9 +823,17 @@ func revlRecordTransactional(receiver, method string, args []string) {
 // `emission`, one-way, no inverse. It is fsync'd before it returns and a failed
 // fsync panics, so the host body never runs unless its start record is on disk.
 // Returns the record's seq, or -1 when REVL_WAL is unset.
-func revlRecordEmissionStart(name string) int {
+func revlRecordEmissionStart(key, method, service string) int {
 	if revlWALSink == nil {
 		return -1
+	}
+	label := key
+	if method != key {
+		label = key + "." + method
+	}
+	var svc any
+	if service != "" {
+		svc = service
 	}
 	w := revlWALSink
 	w.mu.Lock()
@@ -834,11 +842,11 @@ func revlRecordEmissionStart(name string) int {
 	w.seq++
 	w.write(map[string]any{
 		"record": "effect", "seq": seq, "component": nil, "stepIndex": nil,
-		"kind": "emission", "label": name, "site": nil, "source": nil,
+		"kind": "emission", "label": label, "site": nil, "source": nil,
 		"origin": map[string]any{},
 		"boundary": map[string]any{
 			"class": "emission", "referent": "process-crossing", "compensated": false,
-			"detail": map[string]any{"key": name, "method": name, "service": nil, "args": []any{}},
+			"detail": map[string]any{"key": key, "method": method, "service": svc, "args": []any{}},
 		},
 		"inverse": map[string]any{
 			"reconstructible": false,
@@ -850,15 +858,46 @@ func revlRecordEmissionStart(name string) int {
 
 // revlRecordEmissionOutcome settles a journalled emission once its body
 // returned (`emission-complete`), the record the py tier writes after the call.
-// A body that panics leaves the start record unsettled, which recover reports.
+// A body that panics is settled as `emission-failed` instead
+// (revlEmissionFailedUnless); either way recover reports it as unresolved.
 func revlRecordEmissionOutcome(seq int, outcome string) {
+	revlWriteEmissionOutcome(seq, map[string]any{"record": outcome, "seq": seq})
+}
+
+func revlWriteEmissionOutcome(seq int, record map[string]any) {
 	if revlWALSink == nil || seq < 0 {
 		return
 	}
 	w := revlWALSink
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.write(map[string]any{"record": outcome, "seq": seq})
+	w.write(record)
+}
+
+// revlEmissionFailedUnless is deferred right after the start record: when the
+// body panicked (ok still false) it writes `emission-failed`, as the py tier's
+// _call_within does, and the panic carries on. Only the error type is kept:
+// this tier has no redaction funnel for a panic message.
+func revlEmissionFailedUnless(seq int, ok *bool) {
+	if *ok {
+		return
+	}
+	revlWriteEmissionOutcome(seq, map[string]any{
+		"record": "emission-failed", "seq": seq,
+		"error": map[string]any{"type": "panic"},
+	})
+}
+
+// revlJournalEmission journals one emission made through a required service
+// (the py tier's _ServiceProxy path): durable start record, then the call,
+// then its outcome.
+func revlJournalEmission(key, method, service string, body func()) {
+	seq := revlRecordEmissionStart(key, method, service)
+	ok := false
+	defer revlEmissionFailedUnless(seq, &ok)
+	body()
+	ok = true
+	revlRecordEmissionOutcome(seq, "emission-complete")
 }
 
 // revlRecordDischarge writes the commit-path proof that every recorded

@@ -42,18 +42,22 @@ On these three tiers, in a document with components, an `extern emission fn`
 is wrapped at its definition: the wrapper writes and fsyncs an `effect` record
 of kind `emission` with the Python backend's record shape (without the
 component, step, origin or arguments), then runs the host body, then writes
-`emission-complete` with the original `seq`. A body that throws writes nothing
-more, so the crossing stays unresolved, as `emission-failed` leaves it on
-Python. A start record that cannot be made durable stops the process, so the
-host body never runs unless its start record reached disk. Emissions made
-through a required service (the Python `_ServiceProxy` path) are not
-journalled on these tiers yet.
+`emission-complete` with the original `seq`. An `emit` through a required
+service or an instance provision (the Python `_ServiceProxy` path) is
+journalled the same way at its call site. A body that panics or throws writes
+`emission-failed` with the error's type, as Python's `_call_within` does; the
+message is left out because these tiers have no redaction funnel for it. The
+crossing stays unresolved either way. A start record that cannot be made
+durable stops the process, so the host body never runs unless its start record
+reached disk.
 
 When an fsync fails without either opt-out, the Python WAL and the wasm host
 drain truncate the file back to its length before that record, so recovery
-reads the record as absent rather than as a durable one. The truncation is
-not itself fsynced, so after a power loss the record can reappear; the run
-still stopped before acting on it.
+reads the record as absent rather than as a durable one, and fsync the file
+again after the cut so a power loss cannot bring the record back. On a target
+that refused the first fsync the second one fails too; the run has stopped
+either way. The go, rust and java sinks stop the process on a failed fsync
+and do not cut the record.
 
 `revl run app.rvl --wal run.wal --require-settled-wal` refuses before activation
 when the existing WAL has an emission without completion, an approved deferred

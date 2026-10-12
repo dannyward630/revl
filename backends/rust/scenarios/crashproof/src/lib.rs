@@ -397,19 +397,20 @@ pub fn revl_record_transactional(receiver: &str, method: &str, args: Vec<String>
 /// `emission`, one-way, no inverse. Fsync'd before it returns, and a failed
 /// fsync panics, so the host body never runs unless its start record is on
 /// disk. Returns the record's seq, or `None` when `REVL_WAL` is unset.
-pub fn revl_record_emission_start(name: &str) -> Option<u64> {
+pub fn revl_record_emission_start(key: &str, method: &str, service: Option<&str>) -> Option<u64> {
+    let label = if key == method { key.to_string() } else { format!("{}.{}", key, method) };
     let sink = revl_wal_sink()?;
     let mut wal = sink.lock().unwrap();
     let seq = wal.seq;
     wal.seq += 1;
     wal.write(&serde_json::json!({
         "record": "effect", "seq": seq, "component": serde_json::Value::Null,
-        "stepIndex": serde_json::Value::Null, "kind": "emission", "label": name,
+        "stepIndex": serde_json::Value::Null, "kind": "emission", "label": label,
         "site": serde_json::Value::Null, "source": serde_json::Value::Null,
         "origin": {},
         "boundary": { "class": "emission", "referent": "process-crossing",
-            "compensated": false, "detail": { "key": name, "method": name,
-            "service": serde_json::Value::Null, "args": [] } },
+            "compensated": false, "detail": { "key": key, "method": method,
+            "service": service, "args": [] } },
         "inverse": { "reconstructible": false,
             "reason": "an emission is a one-way crossing; it has no inverse" },
     }));
@@ -417,11 +418,41 @@ pub fn revl_record_emission_start(name: &str) -> Option<u64> {
 }
 
 /// Settle a journalled emission once its body returned. A body that panics
-/// leaves the start record unsettled, which recover reports.
+/// is settled as `emission-failed` by `RevlEmission`'s drop instead.
 pub fn revl_record_emission_outcome(seq: Option<u64>, outcome: &str) {
     if let (Some(seq), Some(sink)) = (seq, revl_wal_sink()) {
         let mut wal = sink.lock().unwrap();
         wal.write(&serde_json::json!({ "record": outcome, "seq": seq }));
+    }
+}
+
+/// One journalled emission (issue #2345): `start` makes the start record
+/// durable before the body runs, `complete` settles it. Dropped without
+/// `complete` (the body panicked), it writes `emission-failed`, as the py
+/// tier's `_call_within` does. Only the error type is kept: this tier has
+/// no redaction funnel for a panic message.
+pub struct RevlEmission { seq: Option<u64>, done: bool }
+
+impl RevlEmission {
+    pub fn start(key: &str, method: &str, service: Option<&str>) -> Self {
+        RevlEmission { seq: revl_record_emission_start(key, method, service), done: false }
+    }
+    pub fn complete(mut self) {
+        self.done = true;
+        revl_record_emission_outcome(self.seq, "emission-complete");
+    }
+}
+
+impl Drop for RevlEmission {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        if let (Some(seq), Some(sink)) = (self.seq, revl_wal_sink()) {
+            let mut wal = sink.lock().unwrap_or_else(|e| e.into_inner());
+            wal.write(&serde_json::json!({ "record": "emission-failed", "seq": seq,
+                "error": { "type": "panic" } }));
+        }
     }
 }
 

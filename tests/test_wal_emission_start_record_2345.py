@@ -11,6 +11,11 @@ declared name writes the `effect`/`emission` start record (fsync'd, failing
 closed), runs the body, then writes `emission-complete`. The proof is a body
 that reads `$REVL_WAL` itself and reports whether its own start record is
 already in the file when it runs.
+
+Slice 3 journals an `emit` through a required service the same way (the py
+`_ServiceProxy` path), settles a body that panics or throws with
+`emission-failed` (py `_call_within`), and fsyncs the cut py and the wasm
+drain make after a failed fsync, so the cut record cannot come back.
 """
 
 from __future__ import annotations
@@ -105,7 +110,7 @@ def test_go_emission_extern_is_journalled_before_its_body():
     src = _go_source()
     wrapper = src[src.index("func announce() int64 {"):]
     wrapper = wrapper[:wrapper.index("\n}\n")]
-    start = wrapper.index('revlRecordEmissionStart("announce")')
+    start = wrapper.index('revlRecordEmissionStart("announce", "announce", "")')
     assert start < wrapper.index("revlEmission_announce()")
     assert wrapper.index("revlEmission_announce()") < wrapper.index(
         'revlRecordEmissionOutcome(_revlEm, "emission-complete")')
@@ -195,7 +200,7 @@ def test_rust_emission_extern_is_journalled_before_its_body():
     src = _rust_source(_ir_with_emission("rust", RUST_BODY))
     wrapper = src[src.index("fn announce() -> i64 {"):]
     wrapper = wrapper[:wrapper.index("\n}\n")]
-    assert wrapper.index('revl_record_emission_start("announce")') < wrapper.index(
+    assert wrapper.index('RevlEmission::start("announce", "announce", None)') < wrapper.index(
         "_revl_emission_announce()")
 
 
@@ -248,7 +253,7 @@ def test_java_emission_extern_is_journalled_before_its_body():
     src = _java_source()
     wrapper = src[src.index("public static long announce() {"):]
     wrapper = wrapper[:wrapper.index("\n    }\n")]
-    assert wrapper.index('revlRecordEmissionStart("announce")') < wrapper.index(
+    assert wrapper.index('revlRecordEmissionStart("announce", "announce", null)') < wrapper.index(
         "_revl_emission_announce()")
 
 
@@ -325,3 +330,246 @@ def test_wasm_record_whose_fsync_failed_is_cut_from_the_file(tmp_path, monkeypat
         run_wasm.write_wal_record(handle, run_wasm.wal_activation_complete())
     assert path.read_bytes().startswith(before)
     assert [r["record"] for r in _records(path)] == ["activation-complete"]
+
+
+# ---- slice 3: emissions through a required service --------------------------
+#
+# py journals a call through a required service in `_ServiceProxy` (the same
+# `record_emission` + `_call_within` pair). The compiled tiers journal the
+# `emit` site itself: start record, then the call, then its outcome.
+
+
+def _ir_with_service_emission(tier: str) -> dict:
+    """The tier's crashproof IR, with the Crasher requiring `log: Log` and
+    emitting `log.write("hi")` before its witnessed effect."""
+    ir = _crashproof_ir(tier)
+    ir["services"]["Log"] = {"methods": {"write": {
+        "params": [{"name": "msg", "type": "Str"}], "returns": None, "emission": True}}}
+    crasher = ir["components"][0]
+    crasher["requires"] = {"log": "Log"}
+    crasher["body"].insert(0, {"step": "emit", "expr": {
+        "kind": "call", "target": {"kind": "req", "name": "log"}, "method": "write",
+        "args": [{"kind": "lit", "value": "hi"}]}})
+    return ir
+
+
+def _in_order(src: str, *needles: str) -> None:
+    at = [src.index(n) for n in needles]
+    assert at == sorted(at), list(zip(needles, at))
+
+
+def test_go_service_emission_is_journalled_before_the_call():
+    src = _load_emitter("go").emit(_ir_with_service_emission("go"), "crashrecovery",
+                                   record=True)
+    site = 'revlJournalEmission("log", "write", "Log", func() { log.Write("hi") })'
+    assert site in src
+    body = src[src.index("func revlJournalEmission("):]
+    body = body[:body.index("\n}\n")]
+    _in_order(body, "revlRecordEmissionStart(key, method, service)", "body()",
+              'revlRecordEmissionOutcome(seq, "emission-complete")')
+
+
+def test_rust_service_emission_is_journalled_before_the_call():
+    src = _rust_source(_ir_with_service_emission("rust"))
+    site = src[src.index('RevlEmission::start("log", "write", Some("Log"))'):]
+    site = site[:site.index("\n")]
+    _in_order(site, "RevlEmission::start", "log.write(", "_revl_em.complete()")
+
+
+def test_java_service_emission_is_journalled_before_the_call():
+    src = _load_emitter("java").emit(_ir_with_service_emission("java"), "revl",
+                                     record=True)
+    site = src[src.index('revlRecordEmissionStart("log", "write", "Log")'):]
+    site = site[:site.index("\n")]
+    _in_order(site, "revlRecordEmissionStart", 'log.write("hi")',
+              "revlRecordEmissionFailed(_revlEm, _revlT)",
+              'revlRecordEmissionOutcome(_revlEm, "emission-complete")')
+    assert "public static int revlRecordEmissionStart(" in src
+
+
+def test_go_service_emission_compiles(tmp_path):
+    if GO is None:
+        pytest.skip("go toolchain not available")
+    module = tmp_path / "svc_go"
+    module.mkdir()
+    for name in ("go.mod", "go.sum"):
+        shutil.copy(GO_SCENARIOS / name, module / name)
+    pkg = module / "crashproof"
+    pkg.mkdir()
+    src = _load_emitter("go").emit(_ir_with_service_emission("go"), "crashrecovery",
+                                   record=True)
+    assert 'revlJournalEmission("log", "write", "Log"' in src
+    (pkg / "gen_crash_recovery_test.go").write_text(src, encoding="utf-8")
+    env = {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+    vet = subprocess.run([GO, "test", "-c", "-o", str(module / "x.test"), "./crashproof/"],
+                         cwd=str(module), capture_output=True, text=True, env=env)
+    assert vet.returncode == 0, vet.stderr
+
+
+def test_rust_service_emission_compiles(tmp_path):
+    from revl.run_rust import rust_runtime_reason  # noqa: PLC0415
+    reason = rust_runtime_reason()
+    if reason is not None:
+        pytest.skip(f"cordis-rs runtime not available: {reason}")
+    crate = tmp_path / "svc_rust"
+    (crate / "src").mkdir(parents=True)
+    shutil.copy(RUST_SCENARIO / "Cargo.toml", crate / "Cargo.toml")
+    shutil.copytree(RUST_SCENARIO / "src" / "bin", crate / "src" / "bin")
+    src = _rust_source(_ir_with_service_emission("rust"))
+    assert 'RevlEmission::start("log", "write", Some("Log"))' in src
+    (crate / "src" / "lib.rs").write_text(src, encoding="utf-8")
+    target = Path(os.environ.get("CARGO_TARGET_DIR") or (crate / "target"))
+    build = subprocess.run(
+        ["cargo", "build", "--lib", "--manifest-path", str(crate / "Cargo.toml")],
+        capture_output=True, text=True, env={**os.environ, "CARGO_TARGET_DIR": str(target)})
+    assert build.returncode == 0, build.stderr
+
+
+def test_java_service_emission_compiles(tmp_path):
+    from revl.run_java import JAVAC_RELEASE, _working_jdk_bin, java_runtime_reason  # noqa: PLC0415
+    reason = java_runtime_reason()
+    if reason is not None:
+        pytest.skip(f"java runtime unavailable: {reason}")
+    jdk_bin = Path(_working_jdk_bin())
+    gen = tmp_path / "revl"
+    gen.mkdir()
+    src = _load_emitter("java").emit(_ir_with_service_emission("java"), "revl", record=True)
+    assert 'revlRecordEmissionStart("log", "write", "Log")' in src
+    (gen / "Components.java").write_text(src, encoding="utf-8")
+    out = tmp_path / "classes"
+    out.mkdir()
+    stubs = [str(p) for p in (JAVA_DIR / "stubs").rglob("*.java")]
+    compiled = subprocess.run(
+        [str(jdk_bin / "javac"), "--release", JAVAC_RELEASE, "-d", str(out), *stubs,
+         str(gen / "Components.java")], capture_output=True, text=True)
+    assert compiled.returncode == 0, compiled.stderr
+
+
+# ---- slice 3: a body that fails writes `emission-failed` ---------------------
+
+
+def _assert_failed(wal: Path) -> None:
+    records = _records(wal)
+    starts = [r for r in records
+              if r.get("record") == "effect" and r.get("kind") == "emission"]
+    assert len(starts) == 1, records
+    failed = [r for r in records if r.get("record") == "emission-failed"]
+    assert len(failed) == 1 and failed[0]["seq"] == starts[0]["seq"], records
+    assert failed[0]["error"]["type"], failed
+    assert not any(r.get("record") == "emission-complete" for r in records)
+    # still unresolved, as py leaves a failed emission
+    assert [c["seq"] for c in wal_core.unresolved_crossings(records)] == [starts[0]["seq"]]
+
+
+def test_go_body_that_panics_writes_emission_failed(tmp_path):
+    if GO is None:
+        pytest.skip("go toolchain not available")
+    module = tmp_path / "fail_go"
+    module.mkdir()
+    for name in ("go.mod", "go.sum"):
+        shutil.copy(GO_SCENARIOS / name, module / name)
+    pkg = module / "crashproof"
+    pkg.mkdir()
+    shutil.copy(GO_SCENARIOS / "crashproof" / "crash_proof_test.go", pkg)
+    (pkg / "gen_crash_recovery_test.go").write_text(_load_emitter("go").emit(
+        _ir_with_emission("go", '\n\tpanic("boom")\n'), "crashrecovery", record=True),
+        encoding="utf-8")
+    out = module / "crashproof.test"
+    env = {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+    build = subprocess.run([GO, "test", "-c", "-o", str(out), "./crashproof/"],
+                           cwd=str(module), capture_output=True, text=True, env=env)
+    assert build.returncode == 0, build.stderr
+    wal = tmp_path / "go.wal"
+    proc = subprocess.run([str(out), "-test.run", "TestGoCrashRecoveryProducer"],
+                          env={"REVL_WAL": str(wal), "PATH": "/usr/bin:/bin"},
+                          capture_output=True, text=True)
+    assert proc.returncode != 0 and "boom" in proc.stdout + proc.stderr
+    _assert_failed(wal)
+
+
+def test_rust_body_that_panics_writes_emission_failed(tmp_path_factory, tmp_path):
+    binary = _rust_crate(tmp_path_factory, "fail_rust",
+                         _ir_with_emission("rust", '\n    panic!("boom")\n'))
+    wal = tmp_path / "rust.wal"
+    proc = _run_rust(binary, str(wal))
+    assert proc.returncode != 0 and "boom" in proc.stderr, proc.stderr
+    _assert_failed(wal)
+
+
+def test_java_body_that_throws_writes_emission_failed(tmp_path):
+    from revl.run_java import JAVAC_RELEASE, _working_jdk_bin, java_runtime_reason  # noqa: PLC0415
+    reason = java_runtime_reason()
+    if reason is not None:
+        pytest.skip(f"java runtime unavailable: {reason}")
+    jdk_bin = Path(_working_jdk_bin())
+    gen = tmp_path / "revl"
+    gen.mkdir()
+    (gen / "Components.java").write_text(_load_emitter("java").emit(
+        _ir_with_emission("java", '\n    throw new IllegalStateException("boom");\n'),
+        "revl", record=True), encoding="utf-8")
+    out = tmp_path / "classes"
+    out.mkdir()
+    stubs = [str(p) for p in (JAVA_DIR / "stubs").rglob("*.java")]
+    compiled = subprocess.run(
+        [str(jdk_bin / "javac"), "--release", JAVAC_RELEASE, "-d", str(out), *stubs,
+         str(gen / "Components.java"),
+         str(JAVA_DIR / "scenarios" / "crashproof" / "CrashProducer.java")],
+        capture_output=True, text=True)
+    assert compiled.returncode == 0, compiled.stderr
+    wal = tmp_path / "java.wal"
+    proc = subprocess.run([str(jdk_bin / "java"), "-cp", str(out), "CrashProducer"],
+                          env={"REVL_WAL": str(wal), "PATH": "/usr/bin:/bin"},
+                          capture_output=True, text=True)
+    assert proc.returncode != 0 and "boom" in proc.stderr, proc.stdout + proc.stderr
+    _assert_failed(wal)
+    assert [r for r in _records(wal) if r.get("record") == "emission-failed"][0][
+        "error"] == {"type": "IllegalStateException"}
+
+
+# ---- slice 3: the cut is fsynced, so the record cannot come back -------------
+
+
+def _fsync_log(monkeypatch, module, calls: list) -> None:
+    """The record's fsync fails; every call (and each ftruncate) is logged."""
+    def fsync(_fd):
+        calls.append("fsync")
+        if calls.count("fsync") == 1:
+            raise OSError("injected fsync failure")
+
+    real_truncate = os.ftruncate
+
+    def ftruncate(fd, length):
+        calls.append("ftruncate")
+        real_truncate(fd, length)
+    monkeypatch.setattr(module.os, "fsync", fsync)
+    monkeypatch.setattr(module.os, "ftruncate", ftruncate)
+
+
+def test_py_cut_is_fsynced(tmp_path, monkeypatch):
+    sys.path.insert(0, str(ROOT / "backends" / "python"))
+    import replay  # noqa: PLC0415
+    path = tmp_path / "run.wal"
+    wal = replay.WriteAheadLog(str(path), ir={}, generation=1).open()
+    timeline = replay.Timeline("Svc")
+    timeline.attach_wal(wal, {})
+    calls: list = []
+    _fsync_log(monkeypatch, replay, calls)
+    with pytest.raises(replay.ReplayError, match="fsync failed"):
+        timeline.record_emission("db", "send", (), None, ("test", 1))
+    monkeypatch.undo()
+    wal.close()
+    assert calls == ["fsync", "ftruncate", "fsync"]
+
+
+def test_wasm_cut_is_fsynced(tmp_path, monkeypatch):
+    from revl import run_wasm  # noqa: PLC0415
+    path = tmp_path / "run.wal"
+    calls: list = []
+    with open(path, "w", encoding="utf-8") as handle:
+        run_wasm.write_wal_record(handle, run_wasm.wal_header())
+        monkeypatch.delenv("REVL_WAL_ALLOW_UNSYNCED", raising=False)
+        _fsync_log(monkeypatch, run_wasm, calls)
+        with pytest.raises(run_wasm.WALDurabilityError):
+            run_wasm.write_wal_record(handle, run_wasm.wal_discharge([0]))
+        monkeypatch.undo()
+    assert calls == ["fsync", "ftruncate", "fsync"]

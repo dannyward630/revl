@@ -346,19 +346,20 @@ public final class Components {
     // `emission`, one-way, no inverse. Fsync'd before it returns, and a failed fsync
     // throws, so the host body never runs unless its start record is on disk.
     // Returns the record's seq, or -1 when REVL_WAL is unset.
-    public static int revlRecordEmissionStart(String name) {
+    public static int revlRecordEmissionStart(String key, String method, String service) {
         if (revlWalOut == null) {
             return -1;
         }
         synchronized (revlWalLock) {
             int seq = revlWalSeq++;
-            String quoted = revlWalStr(name);
+            String label = revlWalStr(key.equals(method) ? key : key + "." + method);
             revlWalWrite("{\"record\":\"effect\",\"seq\":" + seq
-                    + ",\"component\":null,\"stepIndex\":null,\"kind\":\"emission\",\"label\":" + quoted
+                    + ",\"component\":null,\"stepIndex\":null,\"kind\":\"emission\",\"label\":" + label
                     + ",\"site\":null,\"source\":null,\"origin\":{}"
                     + ",\"boundary\":{\"class\":\"emission\",\"referent\":\"process-crossing\""
-                    + ",\"compensated\":false,\"detail\":{\"key\":" + quoted + ",\"method\":" + quoted
-                    + ",\"service\":null,\"args\":[]}}"
+                    + ",\"compensated\":false,\"detail\":{\"key\":" + revlWalStr(key)
+                    + ",\"method\":" + revlWalStr(method)
+                    + ",\"service\":" + (service == null ? "null" : revlWalStr(service)) + ",\"args\":[]}}"
                     + ",\"inverse\":{\"reconstructible\":false,"
                     + "\"reason\":\"an emission is a one-way crossing; it has no inverse\"}}");
             return seq;
@@ -366,13 +367,23 @@ public final class Components {
     }
 
     // revlRecordEmissionOutcome settles a journalled emission once its body
-    // returned. A body that throws leaves the start record unsettled, which recover
-    // reports.
+    // returned. A body that throws is settled by revlRecordEmissionFailed instead.
     public static void revlRecordEmissionOutcome(int seq, String outcome) {
         if (revlWalOut == null || seq < 0) {
             return;
         }
         revlWalWrite("{\"record\":" + revlWalStr(outcome) + ",\"seq\":" + seq + "}");
+    }
+
+    // revlRecordEmissionFailed writes `emission-failed` for a body that threw, as
+    // the py tier's _call_within does. Only the exception's type is kept: this tier
+    // has no redaction funnel for its message.
+    public static void revlRecordEmissionFailed(int seq, Throwable error) {
+        if (revlWalOut == null || seq < 0) {
+            return;
+        }
+        revlWalWrite("{\"record\":\"emission-failed\",\"seq\":" + seq
+                + ",\"error\":{\"type\":" + revlWalStr(error.getClass().getSimpleName()) + "}}");
     }
 
     // revlRecordDischarge writes the commit-path proof that every recorded
