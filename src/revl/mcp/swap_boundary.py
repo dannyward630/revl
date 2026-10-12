@@ -23,8 +23,9 @@ What is compared, and the refusal each one raises:
   `REGISTER_DRIFT`. Only the enumerated set is compared; a register added to the
   runtime later is a hole until it is listed here. The two registers the
   runtime fills per generation and never empties (`DISCHARGED`: resolved config
-  and decoding grammars) are emptied of the predecessor's keys first, because
-  that residue is the toolchain's to pay, not the author's.
+  and decoding grammars) are emptied of the predecessor's own entries first
+  (`discharge`), because that residue is the toolchain's to pay, not the
+  author's. A refused seal puts them back (`restore`).
 * `threads`: a thread alive at the seal that was not alive at the baseline.
   `THREAD_LEFT`.
 * `env`: an `os.environ` key added, removed or changed. `ENV_DRIFT`. The proof
@@ -96,13 +97,15 @@ REGISTERS = (
 )
 
 #: Registers the runtime fills for each generation and never empties: the
-#: config each component resolved (secret fields included) and the decoding
-#: grammars each emitted module states. That is the toolchain's own residue,
-#: not the author's, so before comparing, the seal withdraws every key added
-#: since the baseline and names it in `detail.discharged`. A successor
-#: registers both for itself (its components resolve their config at
-#: activation, its module registers its grammars when it is emitted), and a
-#: refused swap's predecessor does the same when it is booted again.
+#: config each component resolved (secret fields included), keyed by component
+#: name, and the decoding grammars each emitted module states, keyed
+#: `Service.method`. That is the toolchain's own residue, not the author's, so
+#: before comparing, the session withdraws the PREDECESSOR's entries
+#: (`owned_keys`, `discharge`) and the seal names them in `detail.discharged`.
+#: A successor registers both for itself (its components resolve their config
+#: at activation, its module registers its grammars when it is emitted). A
+#: refused seal restores what was withdrawn before the predecessor is booted
+#: again (`restore`), so the tables end where the swap found them.
 DISCHARGED = ("RESOLVED_CONFIG", "_revl_grammars")
 
 #: The `sys.modules` prefix every emitted generation registers under
@@ -134,7 +137,8 @@ def take(runtime) -> Snapshot:
         threads=frozenset(threading.enumerate()),
         env=dict(os.environ),
         modules=frozenset(sys.modules),
-        discharged={name: frozenset(getattr(runtime, name, None) or ())
+        discharged={name: {key: id(value) for key, value
+                           in (getattr(runtime, name, None) or {}).items()}
                     for name in DISCHARGED},
     )
 
@@ -169,17 +173,21 @@ def _drifted(before, after) -> bool:
     return before != after
 
 
-def seal(baseline: Snapshot, runtime, residue: dict, owner) -> dict:
+def seal(baseline: Snapshot, runtime, residue: dict, owner,
+         withdrawn: dict | None = None) -> dict:
     """The boundary proof: compare the process now against `baseline`.
 
     `residue` is the session's R4 report for the disposed generation
     (`checks`, `detail` and `unverified`, as `Session._residue_checks` returns
     them). `owner` is the disposed generation's session owner, or None.
+    `withdrawn` is what `discharge` took out of the `DISCHARGED` tables; the
+    proof names its keys, never its values (a config value can be a secret).
 
     Returns `{noResidue, checks, detail}`, with `unverified` when a check could
     not run and `refusals` when anything is off baseline. `noResidue` is true
     only when every check ran and passed."""
-    discharged = _discharge(baseline, runtime)
+    discharged = {name: sorted((str(key) for key in entries))
+                  for name, entries in (withdrawn or {}).items() if entries}
     # a disposed generation's frames can sit in reference cycles until the
     # collector runs; unreachable, they reach nothing, so collect them first
     gc.collect()
@@ -237,22 +245,57 @@ def refusals(proof: dict) -> list:
     return named
 
 
-def _discharge(baseline: Snapshot, runtime) -> dict:
-    """Withdraw from each `DISCHARGED` register the keys added since the
-    baseline. Returns the withdrawn keys per register (keys only: a config
-    value can be a secret)."""
-    out = {}
+def owned_keys(ir: dict) -> dict:
+    """The keys a generation's own load writes into each `DISCHARGED` table,
+    read off its IR: a component resolves its config under its component name
+    (the emitted `Frame` is named after it), and the emitted module registers a
+    grammar under `Service.method` for every service method that states a
+    `response_grammar` (emit.py `_grammar_registry`)."""
+    components = frozenset(component["name"]
+                           for component in ir.get("components") or ()
+                           if isinstance(component, dict) and component.get("name"))
+    grammars = frozenset(
+        f"{svc_name}.{m_name}"
+        for svc_name, svc in (ir.get("services") or {}).items()
+        for m_name, spec in ((svc or {}).get("methods") or {}).items()
+        if isinstance(spec, dict) and spec.get("response_grammar"))
+    return {"RESOLVED_CONFIG": components, "_revl_grammars": grammars}
+
+
+def discharge(baseline: Snapshot, runtime, owned: dict) -> dict:
+    """Withdraw the predecessor's own entries (`owned`, from `owned_keys`) from
+    each `DISCHARGED` table, and return them, `{table: {key: value}}`, for
+    `restore`.
+
+    Only a key the predecessor's IR names is touched, so another session's
+    entry under another name never is. Of those, an entry still holding the
+    very object it held at `baseline` was not written by this session's
+    generations (it is an earlier session's, left behind), so it stays too.
+    The tables are keyed by name, so a second live session with a component
+    of the SAME name shares the entry; the runtime cannot tell the two apart
+    and neither can this."""
+    withdrawn: dict = {}
     for name in DISCHARGED:
         table = getattr(runtime, name, None)
         if not isinstance(table, dict):
             continue
-        kept = baseline.discharged.get(name, frozenset())
-        added = sorted((key for key in table if key not in kept), key=str)
-        for key in added:
-            del table[key]
-        if added:
-            out[name] = [str(key) for key in added]
-    return out
+        before = baseline.discharged.get(name, {})
+        taken = {}
+        for key in sorted(owned.get(name, ()), key=str):
+            if key in table and before.get(key) != id(table[key]):
+                taken[key] = table.pop(key)
+        if taken:
+            withdrawn[name] = taken
+    return withdrawn
+
+
+def restore(runtime, withdrawn: dict) -> None:
+    """Put back what `discharge` withdrew, for a seal that refused: the
+    predecessor is booted again and finds the tables as the swap found them."""
+    for name, entries in (withdrawn or {}).items():
+        table = getattr(runtime, name, None)
+        if isinstance(table, dict):
+            table.update(entries)
 
 
 def _pending(owner) -> tuple:

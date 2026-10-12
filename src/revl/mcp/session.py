@@ -1901,11 +1901,18 @@ class Session:
         if prove_boundary:
             # issue #2277: past the teardown, so a refusal (or a fault in the
             # seal itself) boots the predecessor again, as below
+            withdrawn: dict = {}
             try:
-                boundary = self._prove_boundary(driver)
+                withdrawn = _swap_boundary.discharge(
+                    self._boundary_baseline, driver.runtime,
+                    _swap_boundary.owned_keys(old_ir))
+                boundary = self._prove_boundary(driver, withdrawn)
                 if boundary.get("refusals"):
                     raise _boundary_refused(boundary)
             except BaseException:
+                # the predecessor's config and grammar entries go back first,
+                # so the process-global tables end where the swap found them
+                _swap_boundary.restore(driver.runtime, withdrawn)
                 self._reboot_predecessor(old_ir, pre, saved_previous,
                                          saved_previous_origin, handoff_pre)
                 self._record_generation()
@@ -4554,9 +4561,11 @@ class Session:
         unverified = self._check_host_resources(driver, checks, detail)
         return checks, detail, unverified
 
-    def _prove_boundary(self, driver) -> dict:
+    def _prove_boundary(self, driver, withdrawn: dict) -> dict:
         """Seal the swap boundary (issue #2277): the disposed generation's R4
-        checks plus the process snapshot, against the session's baseline."""
+        checks plus the process snapshot, against the session's baseline.
+        `withdrawn` is the predecessor's config and grammar entries, already
+        taken out of the runtime's tables (`swap_boundary.discharge`)."""
         owner = self._owner
         owed = owner.collect_compensation_residue() if owner is not None else []
         checks, detail, unverified = self._residue_checks(driver, owed)
@@ -4564,7 +4573,7 @@ class Session:
             detail["compensationResidue"] = len(owed)
         residue = {"checks": checks, "detail": detail, "unverified": unverified}
         return _swap_boundary.seal(self._boundary_baseline, driver.runtime,
-                                   residue, self._owner)
+                                   residue, self._owner, withdrawn)
 
     @staticmethod
     def _check_host_resources(driver, checks: dict, detail: dict) -> list:

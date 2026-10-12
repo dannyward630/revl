@@ -277,10 +277,13 @@ def test_boundary_refuses_module_left(session, tmp_path, monkeypatch):
 
 
 #: A component with resolved config. The runtime keeps every component's
-#: resolved config (secret fields included) and never empties it.
+#: resolved config (secret fields included), keyed by component name, and
+#: never empties it, so each test that loads one names its own component
+#: (`_configured`): a name another test file also configures would make the
+#: table's contents depend on test order.
 CONFIGURED = """
 service Counter { fn next() -> Int }
-component CounterSvc provides counter: Counter {
+component BoundaryCfg2277Svc provides counter: Counter {
   config { a: Int = 7 }
   provide counter { fn next() { return config.a } }
 }
@@ -295,6 +298,11 @@ component OtherSvc provides counter: Counter {
 """
 
 
+def _configured(name: str, value: int = 7) -> dict:
+    return _ir(CONFIGURED.replace("BoundaryCfg2277Svc", name)
+                         .replace("a: Int = 7", f"a: Int = {value}"))
+
+
 def test_the_predecessors_resolved_config_is_withdrawn_not_refused(session):
     """The resolved-config table is the toolchain's residue, not the author's:
     the seal withdraws the predecessor's entry rather than refusing every
@@ -303,13 +311,105 @@ def test_the_predecessors_resolved_config_is_withdrawn_not_refused(session):
     import runtime
 
     session.load(_ir(CONFIGURED))
-    assert runtime.resolved_config("CounterSvc") == {"a": 7}
+    assert runtime.resolved_config("BoundaryCfg2277Svc") == {"a": 7}
     state = session.swap(_ir(UNCONFIGURED), prove_boundary=True)
     boundary = state["boundary"]
     assert boundary["noResidue"] is True, boundary
-    assert boundary["detail"]["discharged"] == {"RESOLVED_CONFIG": ["CounterSvc"]}
-    assert runtime.resolved_config("CounterSvc") is None
+    assert boundary["detail"]["discharged"] == {
+        "RESOLVED_CONFIG": ["BoundaryCfg2277Svc"]}
+    assert runtime.resolved_config("BoundaryCfg2277Svc") is None
     assert _next(session) == 8
+
+
+def test_a_reloaded_configured_composition_seals_clean(session):
+    """The MCP server pattern: one process, one session, a load, an unload and
+    a load again. The second boot's baseline already holds the first load's
+    config entry and the second activation replaces it, so the predecessor's
+    entry is not a key "added since the baseline". It is the predecessor's own
+    by name, and is withdrawn, rather than refusing REGISTER_DRIFT."""
+    import runtime
+
+    name = "BoundaryReload2277Svc"
+    session.load(_configured(name))
+    session.unload()
+    session.load(_configured(name))
+    assert runtime.resolved_config(name) == {"a": 7}
+    state = session.swap(_ir(UNCONFIGURED), prove_boundary=True)
+    boundary = state["boundary"]
+    assert boundary["noResidue"] is True, boundary
+    assert boundary["detail"]["discharged"] == {"RESOLVED_CONFIG": [name]}
+    assert _next(session) == 8
+
+
+def test_discharge_spares_other_entries_and_a_refusal_restores(session,
+                                                              monkeypatch):
+    """The discharge withdraws only the predecessor's own entries. An entry
+    under another name (another session's) outlives a clean proof and a
+    refused one as the very same object, and a refused proof leaves the
+    predecessor its own entry when it is booted again. The second refusal is
+    an entry that appears mid-generation, as a session booting alongside this
+    one would write it: the proof cannot attribute that, so it refuses, and
+    the entry is still not withdrawn."""
+    import runtime
+
+    name = "BoundaryKeep2277Svc"
+    earlier, later, grammar = {"b": 1}, {"c": 2}, {"gbnf": "root ::= x"}
+    monkeypatch.setitem(runtime.RESOLVED_CONFIG, "OtherEarlier2277", earlier)
+    monkeypatch.setitem(runtime._revl_grammars, "OtherEarlier2277.m", grammar)
+    session.load(_configured(name))
+    state = session.swap(_configured(name, 9), prove_boundary=True)
+    assert state["boundary"]["noResidue"] is True, state["boundary"]
+    assert state["boundary"]["detail"]["discharged"] == {"RESOLVED_CONFIG": [name]}
+    assert runtime.RESOLVED_CONFIG["OtherEarlier2277"] is earlier
+    assert runtime._revl_grammars["OtherEarlier2277.m"] is grammar
+    assert _next(session) == 9
+
+    monkeypatch.setitem(runtime.RESOLVED_CONFIG, "OtherLater2277", later)
+    refusal = _refused(session, _configured(name, 11))
+    assert refusal.code == "REGISTER_DRIFT", refusal
+    assert refusal.boundary["detail"]["registers"] == ["RESOLVED_CONFIG"]
+    assert refusal.boundary["detail"]["discharged"] == {"RESOLVED_CONFIG": [name]}
+    assert runtime.RESOLVED_CONFIG["OtherEarlier2277"] is earlier
+    assert runtime.RESOLVED_CONFIG["OtherLater2277"] is later
+    assert runtime._revl_grammars["OtherEarlier2277.m"] is grammar
+    assert runtime.resolved_config(name) == {"a": 9}
+    assert _next(session) == 9
+
+
+def test_a_refused_seal_restores_the_withdrawn_entries():
+    """`restore` puts back exactly what `discharge` took, so the tables end
+    where the swap found them even before the predecessor reboots."""
+    import runtime
+    from revl.mcp import swap_boundary
+
+    name = "BoundaryRestore2277Svc"
+    baseline = swap_boundary.take(runtime)
+    entry = {"a": 1}
+    runtime.RESOLVED_CONFIG[name] = entry
+    try:
+        withdrawn = swap_boundary.discharge(
+            baseline, runtime, {"RESOLVED_CONFIG": frozenset({name})})
+        assert name not in runtime.RESOLVED_CONFIG
+        swap_boundary.restore(runtime, withdrawn)
+        assert runtime.RESOLVED_CONFIG[name] is entry
+    finally:
+        runtime.RESOLVED_CONFIG.pop(name, None)
+
+
+def test_an_owed_compensation_refuses_residue_left():
+    """An unresolved compensation is one of the R4 checks (`compensations`)
+    the residue check folds in. Through the Session API a swap does not reach
+    the seal with one owed (an `abort` that leaves one unloads), so this
+    drives the seal directly."""
+    import runtime
+    from revl.mcp import swap_boundary
+
+    baseline = swap_boundary.take(runtime)
+    residue = {"checks": {"registry": True, "compensations": False},
+               "detail": {"compensationResidue": 1}, "unverified": []}
+    proof = swap_boundary.seal(baseline, runtime, residue, None)
+    assert proof["checks"]["residue"] is False
+    assert proof["refusals"] == ["RESIDUE_LEFT"]
 
 
 def test_a_realm_placement_seals_clean(session):

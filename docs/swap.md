@@ -273,9 +273,17 @@ refused:
 Two runtime registers fill up for every generation and are never emptied by
 the runtime: the config each component resolved (secret fields included) and
 the decoding grammars each emitted module states. That residue is revl's, not
-the author's, so with the option the seal withdraws the predecessor's keys from
-both before comparing and lists them in `detail.discharged` (keys only). The
-successor registers its own. The realm-label table is not compared at all: it
+the author's, so with the option the swap withdraws the predecessor's own
+entries from both before comparing and lists them in `detail.discharged` (keys
+only). The predecessor's entries are the ones its IR names: its component names
+for the config table, and `Service.method` for every method with a response
+grammar. An entry under any other name, such as another session's, is never
+touched, and neither is one still holding the object it held at the baseline (an
+earlier session's leftover). The tables are keyed by name, so a second session
+running a component of the same name shares its entry. If the seal refuses, the
+withdrawn entries go back before the predecessor is booted again, so the tables
+end where the swap found them. The successor registers its own. The realm-label
+table is not compared at all: it
 interns stateless `(realm, key)` identities that every generation shares on
 purpose.
 
