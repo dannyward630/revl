@@ -1378,6 +1378,8 @@ _CALL_SITE_RULES = {
     "record_opt_field": ("pub type In = { a: Int }\npub type Row = { i: Opt[In] }\n"
                          "pub service Store { fn put(r: Row) -> Str }\n",
                          '= store.put({ i: { a: "x" } })', "T1"),
+    "record_deep_field": ("pub type R0 = { a: R1 }\npub type R1 = { a: R2 }\npub type R2 = { a: R3 }\npub type R3 = { a: R4 }\npub type R4 = { a: R5 }\npub type R5 = { a: Int }\npub service Store { fn put(r: R0) -> Str }\n",
+                          '= store.put({ a: { a: { a: { a: { a: { a: "x" } } } } } })', "T1"),
     # a requirement call inside a larger expression is typed at its return
     "nested_call_operand": ("pub service Store { fn put(id: Int) -> Int }\n",
                             "= store.put(1) + 1", "T1"),
@@ -1398,6 +1400,8 @@ _CALL_SITE_RULES = {
                                  "pub type Row = { i: Opt[In], j: List[In] }\n"
                                  "pub service Store { fn put(r: Row) -> Str }\n",
                                  "= store.put({ i: { a: 1 }, j: [{ a: 2 }] })", "emit"),
+    "nested_call_int_return": ("pub service Store { fn put(id: Int) -> Int }\n",
+                               "= (store.put(1) + 1).to_str()", "emit"),
     "nested_call_matches": ("pub service Store { fn put(id: Int) -> Str }\n",
                             '= store.put(1).concat("x")', "emit"),
     "return_matches": ("pub service Store { fn put(id: Int) -> Str }\n",
@@ -1409,7 +1413,18 @@ _CALL_SITE_RULES = {
 
 # In one document the native gate does not type a record literal against a
 # generic record parameter; it refuses by name instead of emitting.
-_CALL_SITE_NAMED_IN_ONE_DOC = {"generic_param": "TYPE|`store.put` argument `r`"}
+_CALL_SITE_NAMED_IN_ONE_DOC = {
+    "generic_param": "TYPE|`store.put` argument `r`",
+    "record_deep_field": "TYPE|`store.put` argument `r`: a record literal nested",
+}
+
+# Through an import these refuse by name where the reference has an answer:
+# a literal deeper than the shape expansion, and an operator whose operand
+# type only the imported declaration gives (the IR would lack `operands`).
+_CALL_SITE_NAMED_THROUGH_IMPORT = {
+    "record_deep_field": "REFUSED|TYPE|`store.put` argument `r`: a record literal nested",
+    "nested_call_int_return": "REFUSED|LINK|an operator on an imported service call",
+}
 
 _CALL_SITE_COMPONENT = (
     "service Front { fn go() -> Str }\n\n"
@@ -1429,7 +1444,8 @@ def _reference_message(compile_one):
 
 
 @pytest.mark.parametrize("case", sorted(_CALL_SITE_RULES))
-def test_native_gate_decides_the_call_site_rules_in_one_document(admit, case):
+def test_native_gate_decides_the_call_site_rules_in_one_document(
+        admit, compile_rvl, reference_emit, case):
     """Issue #2362, single document: the service declared in the same text."""
     decls, body, expect = _CALL_SITE_RULES[case]
     src = decls + "\n" + _CALL_SITE_COMPONENT % body
@@ -1437,6 +1453,8 @@ def test_native_gate_decides_the_call_site_rules_in_one_document(admit, case):
     if expect == "emit":
         assert want == ""
         assert admit(src) == ""
+        got = compile_rvl["compile_to"](src, "py")
+        assert got == reference_emit["py"](compile_source(src, "doc.rvl")), got[:200]
     elif case in _CALL_SITE_NAMED_IN_ONE_DOC:
         assert want != ""
         assert admit(src).startswith(_CALL_SITE_NAMED_IN_ONE_DOC[case])
@@ -1456,7 +1474,9 @@ def test_native_driver_decides_the_call_site_rules_through_an_import(
     doc.write_text('use "./lib.rvl" { Store }\n\n' + _CALL_SITE_COMPONENT % body,
                    encoding="utf-8")
     got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
-    if expect == "emit":
+    if case in _CALL_SITE_NAMED_THROUGH_IMPORT:
+        assert got.startswith(_CALL_SITE_NAMED_THROUGH_IMPORT[case]), got[:200]
+    elif expect == "emit":
         assert got == reference_emit["py"](compile_files([str(doc)])), got[:200]
     else:
         want = _reference_message(lambda: compile_files([str(doc)]))

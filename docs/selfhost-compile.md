@@ -189,11 +189,23 @@ path, which is what the resolution needs:
     admission's verdict when that refuses too, so the call's message wins as
     it does in the reference.
 
-  Still refused differently from the reference: in a single document, a record
-  literal for a generic record parameter (`Cell[Int]`) is refused by name
-  (`TYPE|... is not typed by the native gate`), not typed. A wrong argument
-  count to an unmarked `emission` operation refuses with the wiring's G4 where
-  the reference reports the count first. Both are refusals; neither emits.
+  Still refused differently from the reference (all refusals, none emits):
+  - In a single document, a record literal for a generic record parameter
+    (`Cell[Int]`) is refused by name (`TYPE|... is not typed by the native
+    gate`), not typed.
+  - A record literal nested deeper than five levels, past the shape
+    expansion, is refused by name (`TYPE|... nested deeper than 5 levels`).
+  - Through an import, an operator whose operand type only the imported
+    declaration gives (`store.put(1) + 1` with `put -> Int`) is refused by
+    name (`LINK|an operator on an imported service call's result ...`): the
+    document is lowered without the declaration, so its IR would lack the
+    `operands` the reference writes (the py tier's overflow guard). The
+    check lowers the import admission text too and compares the typed
+    operators.
+  - A wrong argument count to an unmarked `emission` operation refuses with
+    the wiring's G4 where the reference reports the count first.
+  - Through an import, a record literal for a carried generic record
+    (`Cell[T]`) gets a T1 where the reference admits (issue #2374).
 
 This is the honest multi-file native compile: the whole chain still runs in revl,
 and the only host crossing is the read the reference loader also performs. It

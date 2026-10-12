@@ -1812,7 +1812,34 @@ fn tc_admit_imports(source: Str, path: Str, own: Str) -> Str {
   let built = tc_admission_text(source, path, own)
   if (built.refusal != "") { return built.refusal }
   if (built.text == source) { return "" }
-  return admit_src(built.text)
+  let v = admit_src(built.text)
+  if (v != "") { return v }
+  return tc_operand_types(own, built.text, path)
+}
+
+// Issue #2362: an operator whose operand type only the imported declaration
+// gives (`store.put(1) + 1` with `put -> Int`) is lowered here without it, so
+// the IR lacks the `operands` the reference writes (the py tier's overflow
+// guard). The admission text has the declaration in scope; when it lowers to
+// more typed operators than the document alone, the native link would differ,
+// so it refuses by name.
+fn tc_operand_types(own: Str, text: Str, path: Str) -> Str {
+  let full = lower_to_ir_refs(text, rf_ref_rows(text, path))
+  if (tc_count(full, "\"operands\":") == tc_count(own, "\"operands\":")) { return "" }
+  return "LINK|an operator on an imported service call's result is typed only with "
+    .concat("the service in scope; the native link does not retype it (issue #2362)")
+}
+
+fn tc_count(s: Str, sub: Str) -> Int {
+  var n = 0
+  var rest = s
+  var at = rest.indexOf(sub)
+  while (at != 0 - 1) {
+    n += 1
+    rest = rest.slice(at + sub.length(), rest.length())
+    at = rest.indexOf(sub)
+  }
+  return n
 }
 
 // The identifier starting at `at`, up to the first delimiter. The scans below

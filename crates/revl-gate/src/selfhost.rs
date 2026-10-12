@@ -13218,6 +13218,9 @@ fn ct_args(root_: &str, meth: &str, decl: MSig, args: Vec<Expr>, env: Vec<Bind>,
     if (((inf.v == "") && tk_is_struct(&inf.ty)) && tk_generic_record(&raw, &env)) {
         return tagged("TYPE", &((((((((String::from("`").revl_concat(&root_)).revl_concat(".")).revl_concat(&meth)).revl_concat("` argument `")).revl_concat(&(decl.ps)[(i) as usize].name)).revl_concat("`: a record literal for the generic record `")).revl_concat(&raw)).revl_concat("` is not typed by the native gate (issue #2362)")));
     }
+    if ((((((inf.v == "") && (pt != "")) && tk_is_struct(&inf.ty)) && tk_nominal_name(pt.clone())) && (tk_brace_depth(&inf.ty) > 5i64)) && (tk_nominal_shape(&pt, &env) != "")) {
+        return tagged("TYPE", &(((((((String::from("`").revl_concat(&root_)).revl_concat(".")).revl_concat(&meth)).revl_concat("` argument `")).revl_concat(&(decl.ps)[(i) as usize].name)).revl_concat("`: a record literal nested deeper than 5 levels is not typed by ")).revl_concat("the native gate (issue #2362)")));
+    }
     if ((((inf.v == "") && (pt != "")) && (inf.ty != "")) && (ct_struct_to_variant(pt.clone(), &inf.ty, &env) || (!tk_compatible(ct_record_shape(pt.clone(), &inf.ty, &env), inf.ty.clone())))) {
         return tagged("T1", &((((((((((String::from("`").revl_concat(&root_)).revl_concat(".")).revl_concat(&meth)).revl_concat("` argument `")).revl_concat(&(decl.ps)[(i) as usize].name)).revl_concat("` expects `")).revl_concat(&tk_render(pt.clone()))).revl_concat("`, got `")).revl_concat(&tk_render(inf.ty.clone()))).revl_concat("`")));
     }
@@ -13267,6 +13270,26 @@ fn ct_req_ret_rows(cx: Ctx__m2, env: Vec<Bind>) -> Vec<Bind> {
 
 fn ct_struct_to_variant(pt: String, actual: &str, env: &[Bind]) -> bool {
     return ((tk_is_struct(actual) && tk_nominal_name(pt.clone())) && ty_variant_decl(&pt, env));
+}
+
+fn tk_brace_depth(t: &str) -> i64 {
+    let mut d = 0i64;
+    let mut best = 0i64;
+    let mut j = 0i64;
+    while (j < t.revl_length()) {
+        let c = t.revl_slice(j, (j).checked_add(1i64).expect("revl: Int overflow"));
+        if (c == "{") {
+            d = (d).checked_add(1i64).expect("revl: Int overflow");
+            if (d > best) {
+                best = d;
+            }
+        }
+        if (c == "}") {
+            d = (d).checked_sub(1i64).expect("revl: Int overflow");
+        }
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return best;
 }
 
 fn tk_generic_record(pt: &str, env: &[Bind]) -> bool {
