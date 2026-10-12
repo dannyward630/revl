@@ -743,6 +743,8 @@ pub struct SgR {
     line: i64,
 }
 
+pub type NmLn = CshBind;
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Cut {
     s: String,
@@ -2120,7 +2122,7 @@ fn build_type_tables(types: Value) -> TypeTables {
 fn record_type_for_fields(ctx_: Ctx__m1, names: Vec<String>) -> String {
     let name = map_get(ctx_.rbf, sorted_key(names.clone()));
     if (!resolved(&name)) {
-        return format!("<<DEFER-record>>");
+        return format!("<<UNSUPPORTED-record>>");
     }
     return mangle(name.clone());
 }
@@ -2196,7 +2198,7 @@ fn rust_type_t(tv: Value, tnames: std::collections::HashMap<String, String>) -> 
         return String::from("Value");
     }
     if is_fn_type(&name) {
-        return String::from("<<DEFER-fn-type>>");
+        return String::from("<<UNSUPPORTED-fn-type>>");
     }
     let tm = type_map(&name);
     if (tm != "") {
@@ -3197,7 +3199,7 @@ fn constructor(ctx_: Ctx__m1, name: String, args: &[String]) -> String {
     if (((name == "Some") || (name == "Ok")) || (name == "Err")) {
         return format!("{}({})", name, (args)[(0i64) as usize]);
     }
-    return format!("<<DEFER-ctor:{}>>", name);
+    return format!("<<UNSUPPORTED-ctor:{}>>", name);
 }
 
 fn match_pattern(ctx_: Ctx__m1, arm: Value) -> String {
@@ -3214,7 +3216,7 @@ fn match_pattern(ctx_: Ctx__m1, arm: Value) -> String {
         if is_builtin_ctor(&pattern) {
             prefix = pattern.clone();
         } else {
-            return format!("<<DEFER-match:{}>>", pattern);
+            return format!("<<UNSUPPORTED-match:{}>>", pattern);
         }
     }
     if (bind != "") {
@@ -3385,7 +3387,7 @@ fn render_call(node: Value, ctx_: Ctx__m1) -> String {
     }
     let ckind = node_kind(callee_node.clone());
     if (ckind == "field") {
-        return String::from("<<DEFER-method-call>>");
+        return String::from("<<UNSUPPORTED-method-call>>");
     }
     let mut callee_name = String::from("");
     if (ckind == "var") {
@@ -3748,7 +3750,7 @@ fn render_builtin(node: Value, ctx_: Ctx__m1) -> String {
 
 fn render_host(node: Value, ctx_: Ctx__m1) -> String {
     if (!value_is_null(value_field(node.clone(), String::from("replay")))) {
-        return String::from("<<DEFER-host-replay>>");
+        return String::from("<<UNSUPPORTED-host-replay>>");
     }
     let fname = value_str(value_field(node.clone(), String::from("fn")));
     let parts = fname.revl_split(".");
@@ -3862,7 +3864,7 @@ fn json_dumps(v: Value) -> String {
         }
         return format!("{{{}}}", parts.revl_join(", "));
     }
-    return format!("<<DEFER-json-kind:{}>>", k);
+    return format!("<<UNSUPPORTED-json-kind:{}>>", k);
 }
 
 fn stream_head(node: Value, ctx_: Ctx__m1) -> String {
@@ -3880,7 +3882,7 @@ fn stream_stage_arrow(stage: Value, ctx_: Ctx__m1) -> String {
     let fnode = value_field(stage.clone(), String::from("fn"));
     let params = value_list(value_field(fnode.clone(), String::from("params")));
     if ((node_kind(fnode.clone()) != "arrow") || (params.revl_length() != 1i64)) {
-        return format!("<<DEFER-stream-stage-arrow:{}>>", value_str(value_field(stage.clone(), String::from("stage"))));
+        return format!("<<UNSUPPORTED-stream-stage-arrow:{}>>", value_str(value_field(stage.clone(), String::from("stage"))));
     }
     let raw = value_str((params)[(0i64) as usize].clone());
     let pname = mangle(raw.clone());
@@ -3902,7 +3904,7 @@ fn stream_chain(head: Value, stages: Vec<Value>, ctx_: Ctx__m1) -> String {
             if ((kind == "map") || (kind == "filter")) {
                 out = format!("Stream::{}(&{}, {})", kind, out, stream_stage_arrow(stage.clone(), ctx_.clone()));
             } else {
-                out = format!("<<DEFER-stream-combinator:{}>>", kind);
+                out = format!("<<UNSUPPORTED-stream-combinator:{}>>", kind);
             }
         }
     }
@@ -3911,10 +3913,10 @@ fn stream_chain(head: Value, stages: Vec<Value>, ctx_: Ctx__m1) -> String {
 
 fn render_subscribe(node: Value, ctx_: Ctx__m1) -> String {
     if (!value_is_null(value_field(node.clone(), String::from("replay")))) {
-        return String::from("<<DEFER-stream-replay>>");
+        return String::from("<<UNSUPPORTED-stream-replay>>");
     }
     if (!value_is_null(value_field(node.clone(), String::from("drain")))) {
-        return String::from("<<DEFER-stream-drain>>");
+        return String::from("<<UNSUPPORTED-stream-drain>>");
     }
     let mut policy = value_str(value_field(node.clone(), String::from("policy")));
     if (policy == "") {
@@ -4188,13 +4190,13 @@ fn emit_v3_externs(externs: Vec<Value>, tnames: std::collections::HashMap<String
         }
         let rs_body = value_field(value_field(ext.clone(), String::from("bodies")), String::from("rs"));
         if value_is_null(rs_body.clone()) {
-            out.push(format!("<<EXTERN-NO-RS-BODY:{}>>", name));
+            out.push(format!("<<UNSUPPORTED-EXTERN-NO-RS-BODY:{}>>", name));
             out.push(String::from(""));
         } else {
             let body = trim(value_str(rs_body.clone()));
             let defer = extern_body_defer(ext.clone(), &body);
             if (defer != "") {
-                out.push(format!("<<DEFER-EXTERN-{}:{}>>", defer, name));
+                out.push(format!("<<UNSUPPORTED-EXTERN-{}:{}>>", defer, name));
                 out.push(String::from(""));
             } else {
                 out.push(format!("fn {}({}) -> {} {{", name, ps.revl_join(", "), returns));
@@ -6039,7 +6041,7 @@ fn pure_stmt(step: Value, kind: &str, c: Ctx__m1, params: Vec<String>) -> String
     if (kind == "continue") {
         return String::from("continue;");
     }
-    return format!("<<DEFER-method-step:{}>>", kind);
+    return format!("<<UNSUPPORTED-method-step:{}>>", kind);
 }
 
 fn binds(comp: Value) -> Vec<String> {
@@ -6547,7 +6549,7 @@ fn svc_ident(name: String) -> String {
 
 fn require_ty(svc: String) -> String {
     if svc.revl_starts_with("Stream[") {
-        return format!("<<DEFER-required-stream:{}>>", svc);
+        return format!("<<UNSUPPORTED-required-stream:{}>>", svc);
     }
     return svc_ident(svc.clone());
 }
@@ -6893,7 +6895,7 @@ fn method_body_lines(comp: Value, method: Value, services: Value, ctx_: Ctx__m1,
                             out.push(format!("{}{}", pad, ln));
                         }
                     } else {
-                        out.push(format!("{}<<DEFER-method-step:{}>>", pad, kind));
+                        out.push(format!("{}<<UNSUPPORTED-method-step:{}>>", pad, kind));
                     }
                 }
             }
@@ -7085,7 +7087,7 @@ fn uses_teardown(ir: Value) -> bool {
 fn declared_compensate_marker(ir: Value) -> Vec<String> {
     for ext in value_list(value_field(ir.clone(), String::from("externs"))) {
         if ((value_str(value_field(ext.clone(), String::from("class"))) == "emission") && (!value_is_null(value_field(ext.clone(), String::from("compensate"))))) {
-            return vec![String::from("<<DEFER-declared-compensate>>")];
+            return vec![String::from("<<UNSUPPORTED-declared-compensate>>")];
         }
     }
     return vec![];
@@ -7160,14 +7162,14 @@ fn emit_let_effect_step(comp: Value, step: Value, ir: Value, ctx_: Ctx__m1, map_
     let bind = mangle(raw_bind.clone());
     let acq_node = value_field(step.clone(), String::from("acquire"));
     if (value_list(value_field(step.clone(), String::from("setup"))).revl_length() > 0i64) {
-        out.push(format!("{}<<DEFER-let-effect-setup:{}>>", pad, raw_bind));
+        out.push(format!("{}<<UNSUPPORTED-let-effect-setup:{}>>", pad, raw_bind));
     }
     if witnessed_acquire(ir.clone(), acq_node.clone()) {
-        out.push(format!("{}<<DEFER-let-effect-witnessed:{}>>", pad, raw_bind));
+        out.push(format!("{}<<UNSUPPORTED-let-effect-witnessed:{}>>", pad, raw_bind));
         return out;
     }
     if is_map_cas(acq_node.clone()) {
-        out.push(format!("{}<<DEFER-let-effect-cas:{}>>", pad, raw_bind));
+        out.push(format!("{}<<UNSUPPORTED-let-effect-cas:{}>>", pad, raw_bind));
         return out;
     }
     let mut acq_src = render_expr(acq_node.clone(), ctx_.clone());
@@ -7237,10 +7239,10 @@ fn emit_comp_step(comp: Value, step: Value, ir: Value, ctx_: Ctx__m1, map_values
     }
     if (kind == "effect") {
         if (value_list(value_field(step.clone(), String::from("setup"))).revl_length() > 0i64) {
-            out.push(format!("{}<<DEFER-effect-setup:{}>>", pad, name));
+            out.push(format!("{}<<UNSUPPORTED-effect-setup:{}>>", pad, name));
         }
         if witnessed_acquire(ir.clone(), value_field(step.clone(), String::from("acquire"))) {
-            out.push(format!("{}<<DEFER-effect-witnessed:{}>>", pad, name));
+            out.push(format!("{}<<UNSUPPORTED-effect-witnessed:{}>>", pad, name));
             return out;
         }
         let acq_src = render_expr(value_field(step.clone(), String::from("acquire")), ctx_.clone());
@@ -7284,7 +7286,7 @@ fn emit_comp_step(comp: Value, step: Value, ir: Value, ctx_: Ctx__m1, map_values
         let tctx = set_rn(ctx_.clone(), tR.clone());
         for em in value_list(value_field(step.clone(), String::from("body"))) {
             if (value_str(value_field(em.clone(), String::from("step"))) != "emit") {
-                out.push(format!("{}    <<DEFER-timer-body:{}>>", pad, value_str(value_field(em.clone(), String::from("step")))));
+                out.push(format!("{}    <<UNSUPPORTED-timer-body:{}>>", pad, value_str(value_field(em.clone(), String::from("step")))));
             } else {
                 out.push(format!("{}    let _ = {};", pad, render_expr(value_field(em.clone(), String::from("expr")), tctx.clone())));
             }
@@ -7299,7 +7301,7 @@ fn emit_comp_step(comp: Value, step: Value, ir: Value, ctx_: Ctx__m1, map_values
         let bind = mangle(raw_bind.clone());
         let body = value_list(value_field(step.clone(), String::from("body")));
         if (body.revl_length() == 0i64) {
-            return vec![format!("{}<<DEFER-stream-iter-empty:{}>>", pad, name)];
+            return vec![format!("{}<<UNSUPPORTED-stream-iter-empty:{}>>", pad, name)];
         }
         let contract = value_field(step.clone(), String::from("event"));
         let mut bodyctx = ctx_.clone();
@@ -7313,7 +7315,7 @@ fn emit_comp_step(comp: Value, step: Value, ir: Value, ctx_: Ctx__m1, map_values
             let key = value_str(value_field(contract.clone(), String::from("key")));
             let window = value_int(value_field(contract.clone(), String::from("window")));
             if (window < 1i64) {
-                return vec![format!("{}<<DEFER-stream-event-window:{}>>", pad, evname)];
+                return vec![format!("{}<<UNSUPPORTED-stream-event-window:{}>>", pad, evname)];
             }
             gate = format!("_revl_event{}", (sbase).checked_add(1i64).expect("revl: Int overflow"));
             where__ = string_lit(Value::new(serde_json::Value::from(format!("{}: on {}", name, evname))));
@@ -7394,7 +7396,7 @@ fn emit_comp_step(comp: Value, step: Value, ir: Value, ctx_: Ctx__m1, map_values
         out.push(format!("{}}}", pad));
         return out;
     }
-    return vec![format!("<<DEFER-comp-step:{}>>", kind)];
+    return vec![format!("<<UNSUPPORTED-comp-step:{}>>", kind)];
 }
 
 fn emit_component(comp: Value, services: Value, ir: Value) -> Vec<String> {
@@ -8208,7 +8210,102 @@ pub fn emit_rust_src(ir: Value) -> String {
     if (test_markers.revl_length() > 0i64) {
         out.extend((test_markers).iter().cloned());
     }
+    out = (out.revl_concat(&deferred_emission_markers(ir.clone()))).revl_concat(&validated_markers(ir.clone()));
+    out.extend((host_key_collision_markers(ir.clone())).iter().cloned());
     return rstrip__m1(&(out.revl_join(&newline()))).revl_concat(&newline());
+}
+
+fn flag_of(node: Value, field: String) -> bool {
+    return value_bool(value_field(node.clone(), field.clone()));
+}
+
+fn validated_markers(ir: Value) -> Vec<String> {
+    let mut wheres: Vec<String> = vec![];
+    let mut nodes: Vec<Value> = vec![];
+    let services = value_field(ir.clone(), String::from("services"));
+    for sname in value_keys(services.clone()) {
+        let methods = value_field(value_field(services.clone(), sname.clone()), String::from("methods"));
+        for mname in value_keys(methods.clone()) {
+            wheres.push(format!("{}.{}", sname, mname));
+            nodes.push(value_field(methods.clone(), mname.clone()));
+        }
+    }
+    for e in value_list(value_field(ir.clone(), String::from("externs"))) {
+        wheres.push(value_str(value_field(e.clone(), String::from("name"))));
+        nodes.push(e.clone());
+    }
+    let mut out: Vec<String> = vec![];
+    let mut i = 0i64;
+    while (i < nodes.revl_length()) {
+        if flag_of((nodes)[(i) as usize].clone(), String::from("validated")) {
+            out.push(format!("<<UNSUPPORTED-VALIDATED:{}>>", (wheres)[(i) as usize]));
+        }
+        i = (i).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return out;
+}
+
+fn host_key(key: String) -> String {
+    if (key.revl_index_of("::") < 0i64) {
+        return key;
+    }
+    let mut parts: Vec<String> = vec![];
+    for part in key.revl_split("::") {
+        parts.push((part.revl_split("_")).revl_join("_u"));
+    }
+    return parts.revl_join("__");
+}
+
+fn host_key_collision_markers(ir: Value) -> Vec<String> {
+    let mut seen = std::collections::HashMap::new();
+    let mut out: Vec<String> = vec![];
+    for c in value_list(value_field(ir.clone(), String::from("components"))) {
+        for table in vec![String::from("provides"), String::from("requires"), String::from("routes"), String::from("isolate"), String::from("intercept")] {
+            for k in value_keys(value_field(c.clone(), table)) {
+                let host = host_key(k.clone());
+                if seen.contains_key(&host) {
+                    if (map_get(seen.clone(), host.clone()) != k) {
+                        out.push(format!("<<UNSUPPORTED-HOST-KEY-COLLISION:{}>>", k));
+                    }
+                } else {
+                    seen.insert(host.clone(), k.clone());
+                }
+            }
+        }
+    }
+    return out;
+}
+
+fn deferred_emission_markers(ir: Value) -> Vec<String> {
+    let mut deferred: Vec<String> = vec![];
+    for e in value_list(value_field(ir.clone(), String::from("externs"))) {
+        if (list_contains(vec![String::from("emission")], value_str(value_field(e.clone(), String::from("class")))) && flag_of(e.clone(), String::from("deferred"))) {
+            deferred.push(value_str(value_field(e.clone(), String::from("name"))));
+        }
+    }
+    let mut out = vec![];
+    if (deferred.revl_length() == 0i64) {
+        return out;
+    }
+    for c in value_list(value_field(ir.clone(), String::from("components"))) {
+        out = deferred_calls_in(c.clone(), deferred.clone(), &value_str(value_field(c.clone(), String::from("name"))), out.clone());
+    }
+    return out;
+}
+
+fn deferred_calls_in(node: Value, deferred: Vec<String>, cname: &str, acc: Vec<String>) -> Vec<String> {
+    let mut out = acc;
+    if (value_kind(node.clone()) == "record") {
+        let name = value_str(value_field(node.clone(), String::from("name")));
+        let mark = format!("<<UNSUPPORTED-DEFERRED-EMISSION:{}.{}>>", cname, name);
+        if (((node_kind(node.clone()) == "fn") && list_contains(deferred.clone(), name.clone())) && (!list_contains(out.clone(), mark.clone()))) {
+            out.push(mark.clone());
+        }
+    }
+    for child in value_children(node.clone()) {
+        out = deferred_calls_in(child.clone(), deferred.clone(), cname, out.clone());
+    }
+    return out;
 }
 
 fn emit_v3_tests(tests: Vec<Value>, functions: Vec<Value>, externs: Vec<Value>, fr: std::collections::HashMap<String, String>, tables: TypeTables) -> Vec<String> {
@@ -18397,6 +18494,47 @@ fn ext_decl_verdict(ts: Vec<Token>, i: i64, declared: Vec<String>, gtys: Vec<Bin
 }
 
 fn extern_decl_refusal(ts: Vec<Token>, pg: Prog) -> Verd {
+    let pv = extern_parse_refusal(ts.clone(), pg.clone());
+    if (pv.v != "") {
+        return pv;
+    }
+    return extern_lower_refusal(ts.clone(), pg.clone());
+}
+
+fn extern_parse_refusal(ts: Vec<Token>, pg: Prog) -> Verd {
+    let declared = ext_declared_names(ts.clone(), pg.clone());
+    let al = alias_map(ts.clone());
+    let gtys = sig_binds(ts.clone(), case_binds(ts.clone(), al.clone()), al.clone());
+    let mut seen: Vec<String> = vec![];
+    let mut d = 0i64;
+    let mut i = 0i64;
+    while (i < ts.revl_length()) {
+        if atk(&ts, i, "{") {
+            d = (d).checked_add(1i64).expect("revl: Int overflow");
+        } else {
+            if atk(&ts, i, "}") {
+                d = (d).checked_sub(1i64).expect("revl: Int overflow");
+            } else {
+                if ((d == 0i64) && atw(&ts, i, "extern")) {
+                    let nm = ext_decl_name(&ts, i);
+                    if ((nm == "") || (!contains__m2(&seen, &nm))) {
+                        let v = ext_decl_verdict(ts.clone(), i, declared.clone(), gtys.clone(), al.clone());
+                        if (v.v.revl_slice(0i64, 3i64) == "G8|") {
+                            return v;
+                        }
+                    }
+                    if (nm != "") {
+                        seen.push(nm.clone());
+                    }
+                }
+            }
+        }
+        i = (i).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return no_verd();
+}
+
+fn extern_lower_refusal(ts: Vec<Token>, pg: Prog) -> Verd {
     let declared = ext_declared_names(ts.clone(), pg.clone());
     let al = alias_map(ts.clone());
     let gtys = sig_binds(ts.clone(), case_binds(ts.clone(), al.clone()), al.clone());
@@ -25327,6 +25465,124 @@ pub fn parse_refusal(src: String) -> String {
     return ((((sv.v.revl_slice(0i64, (bar).checked_add(1i64).expect("revl: Int overflow"))).revl_concat("line ")).revl_concat(&(sv.line).to_string())).revl_concat(": ")).revl_concat(&sv.v.revl_slice((bar).checked_add(1i64).expect("revl: Int overflow"), sv.v.revl_length()));
 }
 
+fn nf_char(c: String) -> String {
+    let k = String::from("ABCDEFGHIJKLMNOPQRSTUVWXYZ").revl_index_of(&c);
+    if (k == (0i64).checked_sub(1i64).expect("revl: Int overflow")) {
+        return c;
+    }
+    return String::from("abcdefghijklmnopqrstuvwxyz").revl_slice(k, (k).checked_add(1i64).expect("revl: Int overflow"));
+}
+
+fn name_fold(s: &str) -> String {
+    let mut out = String::from("");
+    let mut i = 0i64;
+    while (i < s.revl_length()) {
+        let c = s.revl_slice(i, (i).checked_add(1i64).expect("revl: Int overflow"));
+        if (c != "_") {
+            out.push_str(&nf_char(c.clone()));
+        }
+        i = (i).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return out;
+}
+
+fn fold_msg(kind: &str, name: &str, other: &str, wh: &str) -> String {
+    return (((((((((kind.revl_concat(" `")).revl_concat(&name)).revl_concat("` collides with ")).revl_concat(&other)).revl_concat(" (")).revl_concat(&wh)).revl_concat("): the two names differ only in letter case or underscores, ")).revl_concat("and both reduce to `")).revl_concat(&name_fold(name))).revl_concat("`");
+}
+
+fn svc_decl_lines(ts: &[Token]) -> Vec<NmLn> {
+    let mut out: Vec<NmLn> = vec![];
+    let mut depth = 0i64;
+    let mut i = 0i64;
+    while (i < ts.revl_length()) {
+        let t = (ts)[(i) as usize].clone();
+        if (t.kind == "{") {
+            depth = (depth).checked_add(1i64).expect("revl: Int overflow");
+        } else {
+            if (t.kind == "}") {
+                depth = (depth).checked_sub(1i64).expect("revl: Int overflow");
+            } else {
+                if (((depth == 0i64) && atw(ts, i, "service")) && atk(ts, (i).checked_add(1i64).expect("revl: Int overflow"), "ident")) {
+                    out.push(CshBind { name: tkc(ts, (i).checked_add(1i64).expect("revl: Int overflow")).text, line: t.line });
+                }
+            }
+        }
+        i = (i).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return out;
+}
+
+fn comp_decl_lines(cs: &[CompD]) -> Vec<NmLn> {
+    let mut out: Vec<NmLn> = vec![];
+    let mut i = 0i64;
+    while (i < cs.revl_length()) {
+        out.push(CshBind { name: (cs)[(i) as usize].name.clone(), line: (cs)[(i) as usize].line.clone() });
+        i = (i).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return out;
+}
+
+fn fold_in_program(kind: &str, ds: &[NmLn]) -> String {
+    let mut j = 0i64;
+    while (j < ds.revl_length()) {
+        let key = name_fold(&(ds)[(j) as usize].name);
+        let mut p = 0i64;
+        while ((p < j) && (name_fold(&(ds)[(p) as usize].name) != key)) {
+            p = (p).checked_add(1i64).expect("revl: Int overflow");
+        }
+        if ((p < j) && ((ds)[(p) as usize].name != (ds)[(j) as usize].name)) {
+            return tagged("FOLD", &fold_msg(kind, &(ds)[(j) as usize].name, &(((kind.revl_concat(" `")).revl_concat(&(ds)[(p) as usize].name)).revl_concat("`")), &(String::from("line ").revl_concat(&((ds)[(p) as usize].line).to_string()))));
+        }
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return String::from("");
+}
+
+fn fold_running(kind: &str, ds: &[NmLn], held: &[String]) -> String {
+    let mut j = 0i64;
+    while (j < ds.revl_length()) {
+        if (!contains__m2(held, &(ds)[(j) as usize].name)) {
+            let key = name_fold(&(ds)[(j) as usize].name);
+            let mut k = 0i64;
+            while ((k < held.revl_length()) && (name_fold(&(held)[(k) as usize]) != key)) {
+                k = (k).checked_add(1i64).expect("revl: Int overflow");
+            }
+            if (k < held.revl_length()) {
+                return tagged("FOLD", &fold_msg(kind, &(ds)[(j) as usize].name, &((((String::from("running ").revl_concat(&kind)).revl_concat(" `")).revl_concat(&(held)[(k) as usize])).revl_concat("`")), "in the manifest"));
+            }
+        }
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return String::from("");
+}
+
+fn fold_after_parse(ts: Vec<Token>, pg: Prog, fold: String) -> String {
+    if (fold == "") {
+        return String::from("");
+    }
+    let ev = extern_parse_refusal(ts.clone(), pg.clone());
+    if (ev.v != "") {
+        return ev.v;
+    }
+    return fold;
+}
+
+fn program_name_folds(ts: Vec<Token>, pg: Prog) -> String {
+    let sv = fold_in_program("service", &svc_decl_lines(&ts));
+    if (sv != "") {
+        return fold_after_parse(ts.clone(), pg.clone(), sv.clone());
+    }
+    return fold_after_parse(ts.clone(), pg.clone(), fold_in_program("component", &comp_decl_lines(&pg.comps)));
+}
+
+fn running_name_folds(ts: Vec<Token>, pg: Prog, svcs: Vec<String>, kept: Vec<String>) -> String {
+    let sv = fold_running("service", &svc_decl_lines(&ts), &svcs);
+    if (sv != "") {
+        return fold_after_parse(ts.clone(), pg.clone(), sv.clone());
+    }
+    return fold_after_parse(ts.clone(), pg.clone(), fold_running("component", &comp_decl_lines(&pg.comps), &kept));
+}
+
 pub fn admit_src(src: String) -> String {
     let ts = lex_src(src.clone());
     let fgn = foreign_scan_ts(&ts);
@@ -25355,6 +25611,10 @@ pub fn admit_src(src: String) -> String {
     let sps = stmt_parse_scan(ts.clone());
     if (sps.v != "") {
         return sps.v;
+    }
+    let fold = program_name_folds(ts.clone(), pg.clone());
+    if (fold != "") {
+        return fold;
     }
     let refs = collect_refusals(ts.clone(), pg.clone());
     if (refs.revl_length() == 0i64) {
@@ -25625,6 +25885,9 @@ fn parse_row(row: String, man: Manifest) -> Manifest {
             let b = cut(a.rest.clone(), "/");
             return Manifest { provs: man.provs.revl_push(Prov3 { key: b.s.clone(), rlm: b.rest.clone(), comp: a.s.clone() }), reqs: man.reqs.clone(), routes: man.routes.clone(), hands: man.hands.clone(), mnames: add_mname(man.mnames.clone(), a.s.clone()), repl: man.repl.clone(), halted: man.halted, svcs: man.svcs.clone(), svcsKnown: man.svcsKnown, svcOps: man.svcOps.clone(), bad: String::from("") };
         }
+        if bare_ident(&row, 0i64) {
+            return Manifest { provs: man.provs.clone(), reqs: man.reqs.clone(), routes: man.routes.clone(), hands: man.hands.clone(), mnames: add_mname(man.mnames.clone(), row.clone()), repl: man.repl.clone(), halted: man.halted, svcs: man.svcs.clone(), svcsKnown: man.svcsKnown, svcOps: man.svcOps.clone(), bad: String::from("") };
+        }
     }
     return man_bad(man.clone(), &((String::from("unrecognized manifest row `").revl_concat(&row)).revl_concat("`")));
 }
@@ -25866,12 +26129,24 @@ pub fn admit_ambient(src: String, manifest: String) -> String {
     if (rph.v != "") {
         return rph.v;
     }
+    let sps = stmt_parse_scan(ts.clone());
+    if (sps.v != "") {
+        return sps.v;
+    }
     let live = non_template_comps(&pg.comps, &spawn_templates(&pg.comps));
     let drop = dropped_names(pg.comps.clone(), 0i64, man.repl.clone());
     let keptProvs = split_provs(man.provs.clone(), drop.clone(), false, 0i64, vec![]);
     let keptReqs = keep_reqs(man.reqs.clone(), drop.clone(), 0i64, vec![]);
     let keptRoutes = keep_routes(man.routes.clone(), drop.clone(), 0i64, vec![]);
     let keptNames = keep_names(man.mnames.clone(), drop.clone(), 0i64, vec![]);
+    let pfold = program_name_folds(ts.clone(), pg.clone());
+    if (pfold != "") {
+        return pfold;
+    }
+    let rfold = running_name_folds(ts.clone(), pg.clone(), man.svcs.clone(), keptNames.clone());
+    if (rfold != "") {
+        return rfold;
+    }
     let lost = lost_provs(split_provs(man.provs.clone(), drop.clone(), true, 0i64, vec![]), live_provs(live.clone(), 0i64, keptProvs.clone()), 0i64, vec![]);
     let nl = collect_nonlink(ts.clone(), pg.clone(), man.hands.clone(), withdrawal_refusals(&keptReqs, &lost, &pg.comps, 0i64), man.svcs.clone(), manifest_svcs_known(man.clone()), man.svcOps.clone());
     if nl.done {

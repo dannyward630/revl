@@ -315,7 +315,7 @@ for (const cname of spec.components as string[]) {
     // that never settles, and node then exits 13 with its own unredacted
     // warning. `process.exit(1)` below ends the process anyway.
     const timeout = new Promise<'timeout'>((resolve) => {
-      setTimeout(() => resolve('timeout'), 5000)
+      setTimeout(() => resolve('timeout'), teardownGraceMs())
     })
     for (const [label, booted] of [...fibers].reverse()) {
       let confirmed = false
@@ -405,18 +405,68 @@ for (const expr of (spec.probe || []) as string[]) {
 // DEFINED, AND ITS HANDLERS INSTALLED, BEFORE THE `UP` LINE IS PRINTED — see
 // the block above the print below for why the order is the contract.
 let stopping = false
+
+// The bound on the whole teardown, in ms, shared by every fiber's dispose as
+// the go runner shares one 5 s context. `REVL_TEARDOWN_GRACE` is a positive
+// finite number of seconds; unset, empty, zero, negative or unparseable is the
+// 5 s default, as does anything over a day (the go and rust runners' rule).
+function teardownGraceMs(raw: string | undefined = process.env.REVL_TEARDOWN_GRACE): number {
+  const seconds = raw === undefined ? NaN : Number(raw)
+  if (!Number.isFinite(seconds) || seconds <= 0) return 5000
+  if (seconds > 86400) return 5000
+  return seconds * 1000
+}
+
+// `log`, written synchronously and through the same scrub: the unconfirmed
+// path ends in `process.exit(1)`, and a piped stdout is async, so a plain
+// `console.log` line could be dropped by that exit.
+function logNow(channel: string, subject: string, detail: string): void {
+  fs.writeSync(
+    1,
+    `[${name}] ${channel.padEnd(6)}| ${redactText(String(subject)).padEnd(16)}| `
+      + `${redactText(detail)}`.trimEnd() + '\n',
+  )
+}
+
 async function teardown(): Promise<void> {
   if (stopping) return
   stopping = true
+  // A dispose that rejects, or does not settle before the shared deadline, is
+  // not confirmed: the unwind did not finish, so the run claims neither a
+  // residue verdict nor `DOWN` (issue #2339). The timer is left ref'd until
+  // the loop ends: an unref'd one lets the loop drain on a dispose that never
+  // settles, and node then exits 13 with its own unredacted warning.
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), teardownGraceMs())
+  })
+  const unconfirmed: string[] = []
   for (const [label, fiber] of [...fibers].reverse()) {
+    let reason: string | undefined
     try {
-      await fiber.dispose()
-    } catch {
-      /* best-effort */
+      const outcome = await Promise.race([
+        Promise.resolve(fiber.dispose()).then(() => 'done' as const),
+        deadline,
+      ])
+      if (outcome !== 'done') reason = 'timed out'
+    } catch (error) {
+      reason = error instanceof Error ? error.message : String(error)
     }
-    log('swap', label, 'dispose')
+    if (reason === undefined) {
+      logNow('swap', label, 'dispose')
+    } else {
+      logNow('swap', label, `dispose NOT confirmed: ${reason}`)
+      unconfirmed.push(label)
+    }
   }
+  clearTimeout(timer)
   if (server) server.close()
+  if (unconfirmed.length > 0) {
+    fatal(
+      'teardown incomplete: dispose not confirmed for ' +
+        unconfirmed.join(', '),
+    )
+  }
   if (once) {
     // no-residue proof (the cordis-ts mirror of the rust runner's once mode:
     // registry().len()==0 / reflect().services().len()==0, and of the py

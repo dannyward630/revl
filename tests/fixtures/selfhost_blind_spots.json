@@ -195,7 +195,7 @@
   },
   "rust": {
     "blind": {
-      "Named only in order to REFUSE loudly. A witnessed-extern acquisition registers the extern's DECLARED inverse transactionally rather than the site-spelled bracket, and a `spawn` acquisition binds a live-instance handle over a runtime ABI this port does not assemble; both select a `<<DEFER-*>>` marker instead. Mirrored so the refusal is precise, not so the lowering is (issue 1153).": [
+      "Named only in order to REFUSE loudly. A witnessed-extern acquisition registers the extern's DECLARED inverse transactionally rather than the site-spelled bracket, and a `spawn` acquisition binds a live-instance handle over a runtime ABI this port does not assemble; both select an `<<UNSUPPORTED-*>>` marker instead (`<<DEFER-*>>` before issue #2367). Mirrored so the refusal is precise, not so the lowering is (issue 1153).": [
         "class=witnessed",
         "kind=spawn"
       ],

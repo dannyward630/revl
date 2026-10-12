@@ -64,7 +64,9 @@ def _crashproof_ir(tier: str) -> dict:
 
 def test_go_sink_checks_the_sync_error():
     src = _load_emitter("go").emit(_crashproof_ir("go"), "crashrecovery", record=True)
-    assert "_ = w.f.Sync()" not in src
+    # the record's own fsync; the best-effort fsync after a cut lives in `cut`
+    write = src[src.index("func (w *revlWAL) write("):]
+    assert "_ = w.f.Sync()" not in write[:write.index("\n}\n")]
     assert "if err := w.f.Sync(); err != nil && !w.unsynced {" in src
     assert 'panic("revl: write-ahead log fsync failed: " + err.Error())' in src
     assert '"REVL_WAL_ALLOW_UNSYNCED"' in src
@@ -73,7 +75,9 @@ def test_go_sink_checks_the_sync_error():
 
 def test_rust_sink_checks_the_sync_error():
     src = _load_emitter("rust").emit(_crashproof_ir("rust"), record=True)
-    assert "let _ = self.file.sync_all()" not in src
+    # the record's own fsync; the best-effort fsync after a cut lives in `cut`
+    write = src[src.index("fn write(&mut self"):]
+    assert "let _ = self.file.sync_all()" not in write[:write.index("\n    }\n")]
     assert "if let Err(e) = self.file.sync_all() {" in src
     assert 'panic!("revl: write-ahead log fsync failed: {e}");' in src
     assert '"REVL_WAL_ALLOW_UNSYNCED"' in src
@@ -348,8 +352,8 @@ def test_wasm_run_stops_the_harness_on_a_failed_descriptor_fsync(
     assert rc == 1
     assert len(harnesses) == 1 and harnesses[0].killed
     assert FSYNC_FAILED in capsys.readouterr().err
-    assert "discharge" not in _records(wal)
-    assert "activation-complete" not in _records(wal)
+    # the descriptor whose fsync failed is cut back out of the file
+    assert _records(wal) == ["header"]
 
 
 def test_wasm_run_fails_when_the_commit_markers_are_not_durable(
@@ -362,8 +366,9 @@ def test_wasm_run_fails_when_the_commit_markers_are_not_durable(
     assert len(harnesses) == 1 and not harnesses[0].killed
     err = capsys.readouterr().err
     assert FSYNC_FAILED in err and "commit markers are not durable" in err
-    # the discharge marker's fsync is the one that failed; nothing follows it
-    assert _records(wal) == ["header", "discharge-descriptor", "discharge"]
+    # the discharge marker's fsync is the one that failed: it is cut back out
+    # of the file (issue #2345), as the py writer does, and nothing follows it
+    assert _records(wal) == ["header", "discharge-descriptor"]
 
 
 def test_wasm_drain_write_failure_is_a_durability_error():

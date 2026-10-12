@@ -104,7 +104,7 @@ RECIPES = {
     "frontend": Recipe(tools=("go",)),
     "frontend-cordis": Recipe(tools=("go",), paths=("backends/python/.venv/bin/python",),
                               hint=PY_HINT),
-    "conformance": Recipe(tools=("go",), node=22,
+    "conformance": Recipe(tools=("go", "cargo"), node=22,
                           paths=("backends/typescript/node_modules",
                                  "backends/python/.venv/bin/python"),
                           hint=f"{PY_HINT} and {TS_HINT}"),

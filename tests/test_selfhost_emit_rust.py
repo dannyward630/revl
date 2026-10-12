@@ -288,7 +288,7 @@ CORPUS = [
                              #   service, the fire-and-forget `emit`, and the
                              #   `if`/`else` guard whose arms `fail`. Before this
                              #   document every one of those arms emitted a
-                             #   `<<DEFER-comp-step>>` marker and the oracle
+                             #   `<<UNSUPPORTED-comp-step>>` marker and the oracle
                              #   agreed, because no corpus document had a
                              #   component body step that was not a provision.
     "bridge_types.rvl",      # item 391: the bridge's marshalling beyond the scalars:
@@ -332,7 +332,7 @@ CORPUS = [
     # `../emit_py_corpus/ui_transaction_unit.rvl` here. That document's fourth
     # case is a computer-use extern that DECLARES `compensate`, which the
     # reference registers at every crossing; `selfhost/emit_rust.rvl` refuses it
-    # with `<<DEFER-declared-compensate>>` (issue #1592, recorded blind in
+    # with `<<UNSUPPORTED-declared-compensate>>` (issue #1592, recorded blind in
     # `selfhost_blind_spots.json`). Adding the document would make this oracle
     # red, so the UI transaction unit stays unported on this tier and
     # `class=emission` stays a recorded blind spot.
@@ -767,7 +767,7 @@ def test_selfhosted_emitter_extern_section(emitted):
     # the extern-seeded `let` inference (the E0382 half of 275)
     assert "let moved = nudge(p.clone(), 1i64);" in src
     assert "return shout(up.clone());" in src
-    assert "<<DEFER" not in src and "<<EXTERN-NO-RS-BODY" not in src
+    assert "<<UNSUPPORTED" not in src and "EXTERN-NO-RS-BODY" not in src
 
 
 def test_selfhosted_emitter_component_bridge_scaffold(emitted):
@@ -791,7 +791,7 @@ def test_selfhosted_emitter_component_bridge_scaffold(emitted):
     assert '"greeting" => Some("Greeter"),' in src
     assert '"hello" => Some(hello()),' in src
     # no deferred-feature marker leaked into a covered-subset output
-    assert "<<DEFER" not in src and "<<NONE>>" not in src
+    assert "<<UNSUPPORTED" not in src and "<<NONE>>" not in src
 
 
 def test_selfhosted_emitter_effectful_component_scaffold(emitted):
@@ -836,7 +836,7 @@ def test_selfhosted_emitter_effectful_component_scaffold(emitted):
     assert "    config: AssistantConfig,\n    ctx: Arc<cordis::Context>,\n}" in cfe
     # no deferred-feature marker leaked into any covered-subset output
     for src in (req, eff, und, cfg, cfe):
-        assert "<<DEFER" not in src and "<<NONE>>" not in src
+        assert "<<UNSUPPORTED" not in src and "<<NONE>>" not in src
 
 
 # Issue #1734, the `tests` half: a document whose only Str builtin is inside an
@@ -1074,12 +1074,12 @@ def test_a_fault_test_section_is_a_reference_refusal_and_a_named_port_marker(
 # markers this section used to pin are CLOSED by issue 1153.
 # ---------------------------------------------------------------------------
 #
-# `<<DEFER-stream-host>>` and `<<DEFER-comp-step:stream-iter>>` stood in for the
+# `<<UNSUPPORTED-stream-host>>` and `<<UNSUPPORTED-comp-step:stream-iter>>` stood in for the
 # stream HOST RUNTIME and the iteration step: the reference lowered the whole
 # `Stream[T]` surface and the Path B port named what it did not carry, so a crate
 # agreeing with the oracle could never be agreeing vacuously. Issue 1153 ported
 # both, so the witness cannot stand any more ("the port no longer emits
-# `<<DEFER-stream-host>>`: the boundary has moved") — and it is not deleted
+# `<<UNSUPPORTED-stream-host>>`: the boundary has moved"), and it is not deleted
 # quietly, because the reason it existed is the reason it is now replaced by a
 # STRONGER claim rather than a weaker one: the port does not merely emit
 # something, it emits the reference's bytes. If either marker ever comes back,
@@ -1089,7 +1089,7 @@ def test_a_fault_test_section_is_a_reference_refusal_and_a_named_port_marker(
 def test_the_stream_surface_is_carried_byte_for_byte(emitted, reference):
     """The tree's own stream scenario agrees with the reference byte for byte —
     `Stream::subscribe(`, `Stream::contract(` and the `revl_stream_record` host
-    sink among the bytes — where the port used to emit the two DEFER markers
+    sink among the bytes, where the port used to emit the two markers
     above instead. The corpus document for the same surface, `comp_stream.rvl`,
     reaches only the EMITTER half of this oracle (the native frontend refuses it
     — see `NATIVE_GATE_GAPS` in tests/test_selfhost_compile.py), so this document
@@ -1103,7 +1103,7 @@ def test_the_stream_surface_is_carried_byte_for_byte(emitted, reference):
         assert token in want, f"the reference no longer emits {token}"
         assert token in got, f"the port dropped {token}"
     assert got == want
-    for marker in ("<<DEFER-stream-host>>", "<<DEFER-comp-step:stream-iter>>"):
+    for marker in ("<<UNSUPPORTED-stream-host>>", "<<UNSUPPORTED-comp-step:stream-iter>>"):
         assert marker not in got, f"{marker} is back: the boundary reopened"
 
 
@@ -1151,8 +1151,8 @@ def test_a_replay_declaration_the_reference_refuses_is_named_here_too(
     """§4.5: a provider-declared backlog, refused on this tier because the
     recovery surface that makes the claim worth anything is the WAL's.
 
-    The port carried markers for both ends of it already -- `<<DEFER-host-
-    replay>>` at the declaration and `<<DEFER-stream-replay>>` at the request --
+    The port carried markers for both ends of it already -- `<<UNSUPPORTED-host-
+    replay>>` at the declaration and `<<UNSUPPORTED-stream-replay>>` at the request --
     and neither could ever fire: both were spelled `value_bool(value_field(node,
     "replay"))`, and a replay declaration is a RECORD in the interchange IR
     (`{"count": 4}`, `{"cursor": "orders"}`), never a bool. So the port answered
@@ -1166,7 +1166,7 @@ def test_a_replay_declaration_the_reference_refuses_is_named_here_too(
         "the reference no longer refuses replay by name: this case has moved"
     )
     got = emitted["emit_rust_src"](ir)
-    assert "<<DEFER-host-replay>>" in got, "the provider's declaration"
+    assert "<<UNSUPPORTED-host-replay>>" in got, "the provider's declaration"
     assert "Stream::subscribe(" not in got, (
         "the port emitted a subscription for a document the reference refuses"
     )
@@ -1189,7 +1189,7 @@ def test_the_consumer_side_replay_request_is_named_on_its_own(
     ir, message = _refused_doc(tmp_path, source, reference)
     assert "not lowered" in message
     got = emitted["emit_rust_src"](ir)
-    assert "<<DEFER-stream-replay>>" in got, (
+    assert "<<UNSUPPORTED-stream-replay>>" in got, (
         "the `subscribe` request's own marker: `render_subscribe` read the "
         "declaration with `value_bool` and could never report it"
     )
@@ -1210,7 +1210,7 @@ def test_a_required_stream_coeffect_the_reference_refuses_is_named_here_too(
         "the reference no longer refuses the coeffect by name"
     )
     got = emitted["emit_rust_src"](ir)
-    assert "<<DEFER-required-stream:Stream[OrderCreated]>>" in got
+    assert "<<UNSUPPORTED-required-stream:Stream[OrderCreated]>>" in got
     assert "Box<dyn Stream[OrderCreated]>" not in got, (
         "the literal declared type is back in the requirement's type position"
     )
@@ -1224,7 +1224,7 @@ def test_the_required_stream_marker_is_scoped_to_the_stream_requirement(
     ir, _ = _refused_doc(tmp_path, _COEFFECT_DOC, reference)
     got = emitted["emit_rust_src"](ir)
     assert "Box<dyn Ship>" in got, "the service requirement is untouched"
-    assert "<<DEFER-required-stream:Ship>>" not in got
+    assert "<<UNSUPPORTED-required-stream:Ship>>" not in got
 
 
 # --------------------------------------------------------------------------
@@ -1394,3 +1394,97 @@ def test_a_host_identifier_collision_is_refused_by_name(reference):
     with pytest.raises(reference.EmitError,
                        match="both spell the Rust identifier"):
         reference.emit(ir)
+
+
+# issue #2353: documents the reference refuses for the whole tier, which the
+# port used to answer with output carrying no `<<UNSUPPORTED` marker. An extern
+# with no `@rs` body is named where the extern would be; a CALL to a
+# `deferred` emission is named once per component and call.
+NO_RS_BODY_REFUSALS = [
+    ("examples/evolve_loop.rvl", "host_propose"),
+    ("examples/placement/gate_provider.rvl", "host_gate_admit"),
+    ("tests/fixtures/model_reach_crossing/ok_extern_block_value.rvl", "run_tool"),
+    ("tests/fixtures/model_reach_crossing/ok_extern_no_block.rvl", "run_tool"),
+    ("tests/fixtures/model_reach_crossing/ok_helper_no_block.rvl", "run_tool"),
+    ("tests/fixtures/service_typed_params/ok_param_no_approval.rvl", "charge"),
+    ("tests/fixtures/emit_wasm_refusals/ui_transaction_unit.rvl", "read_pane"),
+]
+DEFERRED_EMISSION_REFUSALS = [
+    "tests/fixtures/deferred_reach/ok_emit_step.rvl",
+    "tests/fixtures/deferred_reach/ok_emit_tail.rvl",
+    "tests/fixtures/deferred_reach/ok_plain_value_in_fn_body.rvl",
+] + [f"tests/fixtures/emit_{t}_refusals/deferred_emission_call.rvl"
+     for t in ("go", "java", "rust", "ts", "wasm")]
+
+
+@pytest.mark.parametrize("rel, extern", NO_RS_BODY_REFUSALS,
+                         ids=[rel for rel, _ in NO_RS_BODY_REFUSALS])
+def test_an_extern_with_no_rs_body_is_a_named_refusal(emitted, reference, rel, extern):
+    ir = compile_files([str(ROOT / rel)])
+    with pytest.raises(reference.EmitError,
+                       match=f"extern `{extern}` has no @rs body"):
+        reference.emit(ir)
+    got = emitted["emit_rust_src"](ir)
+    assert f"<<UNSUPPORTED-EXTERN-NO-RS-BODY:{extern}>>" in got
+
+
+@pytest.mark.parametrize("rel", DEFERRED_EMISSION_REFUSALS)
+def test_a_called_deferred_emission_is_a_named_refusal(emitted, reference, rel):
+    ir = compile_files([str(ROOT / rel)])
+    with pytest.raises(reference.EmitError,
+                       match="Agent: `deferred` emission `deliver` needs a session owner"):
+        reference.emit(ir)
+    assert "<<UNSUPPORTED-DEFERRED-EMISSION:Agent.deliver>>" in emitted["emit_rust_src"](ir)
+
+
+def test_a_declared_but_uncalled_deferred_emission_is_not_named(emitted, reference,
+                                                                tmp_path):
+    """The refusal is call-site keyed on the reference: the same extern with
+    nothing calling it emits, and the port agrees byte for byte."""
+    src = (ROOT / "tests" / "fixtures" / "emit_rust_refusals"
+           / "deferred_emission_call.rvl").read_text()
+    doc = tmp_path / "uncalled.rvl"
+    doc.write_text(src.replace("{ emit deliver(sink, msg) }", "{ return }"))
+    ir = compile_files([str(doc)])
+    got = emitted["emit_rust_src"](ir)
+    assert "<<UNSUPPORTED" not in got
+    assert got == reference.emit(ir)
+
+
+# issue #2367: the remaining reference refusals this port answered without an
+# `<<UNSUPPORTED` marker. A `validated` crossing is named by declaration, a
+# namespaced key whose host spelling another key already holds by key, and a
+# required `Stream[T]` coeffect by its requirement.
+REFUSAL_FIXTURES = ROOT / "tests" / "fixtures"
+NAMED_REFUSALS = [
+    *[(f"emit_{t}_refusals/validated_emission_operation.rvl",
+       "needs the response-validation", "<<UNSUPPORTED-VALIDATED:Model.complete>>")
+      for t in ("go", "java", "rust", "ts", "wasm")],
+    *[(f"emit_{t}_refusals/host_identifier_collision.rvl",
+       "both spell the", "<<UNSUPPORTED-HOST-KEY-COLLISION:acme::greeter>>")
+      for t in ("go", "java", "py", "rust", "ts")],
+    ("emit_rust_refusals/required_stream_coeffect.rvl",
+     "a required `Stream\\[T\\]` coeffect", "<<UNSUPPORTED-required-stream:Stream[OrderCreated]>>"),
+]
+
+
+@pytest.mark.parametrize("rel, refusal, marker", NAMED_REFUSALS,
+                         ids=[rel for rel, _, _ in NAMED_REFUSALS])
+def test_a_reference_refusal_is_named_by_the_port(emitted, reference, rel, refusal, marker):
+    ir = compile_files([str(REFUSAL_FIXTURES / rel)])
+    with pytest.raises(reference.EmitError, match=refusal):
+        reference.emit(ir)
+    assert marker in emitted["emit_rust_src"](ir)
+
+
+def test_an_unvalidated_operation_is_not_named(emitted, reference, tmp_path):
+    """The document without `validated` emits on the reference, and the port
+    agrees byte for byte: the modifier alone carries the refusal."""
+    src = (REFUSAL_FIXTURES / "emit_rust_refusals"
+           / "validated_emission_operation.rvl").read_text()
+    doc = tmp_path / "unvalidated.rvl"
+    doc.write_text(src.replace("emission validated fn", "emission fn"))
+    ir = compile_files([str(doc)])
+    got = emitted["emit_rust_src"](ir)
+    assert "<<UNSUPPORTED" not in got
+    assert got == reference.emit(ir)
