@@ -154,6 +154,10 @@
 
 ["function", "issue-2345-record-mode-emission-journal", "_emit_v3_go_journalled_emission", 11, 11]
 
+["function", "issue-2345-record-mode-emission-journal", "_is_emission_method", 2, 2]
+
+["function", "issue-2345-record-mode-emission-journal", "_journal_service_comp", 1, 1]
+
 ["function", "issue-2345-record-mode-emission-journal", "_journal_service_emit", 3, 3]
 
 ["function", "issue-2345-record-mode-emission-journal", "_service_emission", 15, 15]

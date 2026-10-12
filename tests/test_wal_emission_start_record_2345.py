@@ -899,5 +899,22 @@ def test_go_service_emission_runs_journalled_end_to_end(tmp_path):
     # the service crossing starts first, and its body's crossing nests inside
     assert starts["log.write"]["seq"] < starts["note"]["seq"]
     for start in starts.values():
-        assert {"record": "emission-complete", "seq": start["seq"]} in records
+        assert {"record": "emission-complete", "seq": start["seq"]} in records, records
     assert wal_core.unresolved_crossings(records) == []
+
+
+def test_compiled_sinks_cut_before_the_fsync_failure_stops_the_run():
+    """The runtime cut tests fault the write; `/dev/null` cannot show a cut
+    after a failed fsync. So pin, per sink, that the fsync-failure arm runs
+    the same cut before it stops the run."""
+    go = _load_emitter("go").emit(_crashproof_ir("go"), "crashrecovery", record=True)
+    go = go[go.index("if err := w.f.Sync(); err != nil && !w.unsynced {"):]
+    _in_order(go, "w.cut(start)", 'panic("revl: write-ahead log fsync failed: "')
+    rust = _rust_source(_crashproof_ir("rust"))
+    rust = rust[rust.index("if let Err(e) = self.file.sync_all() {"):]
+    _in_order(rust, "if !self.unsynced {", "self.cut(start);",
+              'panic!("revl: write-ahead log fsync failed: {e}");')
+    java = _load_emitter("java").emit(_crashproof_ir("java"), "revl", record=True)
+    java = java[java.index("revlWalChannel.force(true);"):]
+    _in_order(java, "if (!revlWalUnsynced) {", "revlWalCut(start);",
+              'throw new java.io.UncheckedIOException("revl: write-ahead log fsync failed", sync);')

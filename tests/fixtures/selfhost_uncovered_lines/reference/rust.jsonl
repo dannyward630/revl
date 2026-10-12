@@ -118,17 +118,19 @@
 
 ["function", "issue-2009-host-map-journal-arm-no-rust-corpus-document", "_node_writes_host_map", 5, 5]
 
-["reason", "issue-2345-record-mode-emission-journal", "Issue #2345: record-mode emission journalling. In `--record` the go, rust and java sinks wrap each `extern emission fn` and each `emit` or `compensate` through a service `emission` method so its start record is durable before the body runs. These helpers run only under `emit(ir, record=True)`; the byte-agreement oracle drives the default `emit(ir)`, and the self-host port carries no WAL sink, so no corpus document reaches them. Pinned by tests/test_wal_emission_start_record_2345.py."]
+["reason", "issue-2345-record-mode-emission-journal", "Issue #2345: record-mode emission journalling. In `--record` the go, rust and java sinks wrap each `extern emission fn` and each `emit` or `compensate` through a service `emission` method so its start record is durable before the body runs. These helpers run only under `emit(ir, record=True)`; the byte-agreement oracle drives the default `emit(ir)`, and the self-host port carries no WAL sink, so no corpus document reaches them. Pinned by tests/test_wal_emission_start_record_2345.py. Plus, issue #2345: the record-mode statements that journal an emission (an `extern emission fn` wrapper, a service emission or compensation site, or the WAL sink they need), which run only under `emit(ir, record=True)`; the oracle drives the default `emit(ir)` and the self-host port carries no WAL sink."]
 
 ["function", "issue-2345-record-mode-emission-journal", "_has_emission_externs", 1, 1]
 
 ["function", "issue-2345-record-mode-emission-journal", "_has_service_emits", 7, 7]
 
+["function", "issue-2345-record-mode-emission-journal", "_journal_service_comp", 1, 1]
+
 ["function", "issue-2345-record-mode-emission-journal", "_journal_service_emit", 9, 9]
 
 ["function", "issue-2345-record-mode-emission-journal", "_journalled_emission", 2, 2]
 
-["function", "issue-2345-record-mode-emission-journal", "_service_emission", 15, 15]
+["function", "issue-2345-record-mode-emission-journal", "_service_emission", 7, 7]
 
 ["reason", "item-421-f5-a-document-that-declares-a", "Item 421 F5: a document that declares a `Secret[T]` AND returns a `Result` from a provided method serializes the Err half through this funnel rather than `_result_to_json`, because the failure text is the one thing crossing the seam that has to be scrubbed. No corpus document does both: the rust byte-agreement corpus reaches the bridge (service.rvl, services_multi.rvl) but holds no document declaring a `Secret[T]` at all, and the port (selfhost/emit_rust.rvl) carries no `_SECRET_MODE` and emits no funnel call, so a secret-bearing bridge document could not be a byte-identical corpus case. The reference half is pinned by tests/test_rust_seam_failure_scrub.py::test_secret_mode_emits_the_funnel_and_the_shared_marker."]
 

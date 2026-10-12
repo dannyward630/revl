@@ -45,7 +45,9 @@ component, step, origin or arguments), then runs the host body, then writes
 `emission-complete` with the original `seq`. An `emit` through a required
 service or an instance provision (the Python `_ServiceProxy` path) is
 journalled the same way at its call site, and so is a `compensate` call
-through a service method the service table marks `emission`, when it runs. A
+through a service method the service table marks `emission`, when it runs.
+A crossing inside a computer-use (UI) scope registers its compensation
+through that scope and is not journalled this way yet. A
 body that panics or throws writes `emission-failed`, as Python's
 `_call_within` does. Its `error.type` is the exception's class on java,
 `panic` on go, and `panic` or `early-return` (a `?` that left the body) on
@@ -61,7 +63,8 @@ durable one. They fsync the file again after the cut so a power loss cannot
 bring the record back, unless that fsync fails as well; on a target that
 refused the first fsync it does, and the run has stopped either way. The
 compiled sinks also cut a record whose write failed part way, so no torn
-record is left behind.
+record is left behind; the Python WAL and the wasm drain cut only after a
+failed fsync.
 
 `revl run app.rvl --wal run.wal --require-settled-wal` refuses before activation
 when the existing WAL has an emission without completion, an approved deferred
