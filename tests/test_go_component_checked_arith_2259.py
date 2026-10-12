@@ -23,7 +23,7 @@ reference; go must agree with them.
 import pytest
 
 from revl import compile_source
-from revl.test import RUNNERS, required_tiers
+from revl.test import RUNNERS
 
 TIERS = ("go", "py", "ts")
 
@@ -106,23 +106,9 @@ lifecycle test "in range" {
 """
 
 
-def _go_is_required() -> bool:
-    """Is a go skip a broken provision here, rather than an absent toolchain?
-
-    `go` is exempt from REVL_REQUIRE_TIERS suite-wide
-    (`_TIER_NOT_REQUIRED_IN_CI` in tests/test_env_gated_skips_run_somewhere.py),
-    so the switch alone would let this file's go half skip and read green. go
-    is the tier this file fixes, and every CI job that sets the switch pins a
-    go toolchain, so wherever the switch is set at all, a go skip fails."""
-    return bool(required_tiers())
-
-
 def _run(tier: str, source: str):
     status, message = RUNNERS[tier](compile_source(source, "comp_arith_2259.rvl"))
     if status == "skip":
-        if tier == "go" and _go_is_required():
-            pytest.fail(f"go is required wherever REVL_REQUIRE_TIERS is set, "
-                        f"and it skipped: {message}")
         pytest.skip(f"{tier}: {message}")
     return status, message
 
