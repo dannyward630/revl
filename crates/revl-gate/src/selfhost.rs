@@ -19184,11 +19184,21 @@ fn tk_check_arms(arms: Vec<ArmN>, i: i64, expected: String, env: Vec<Bind>, wher
     }
     let a = (arms)[(i) as usize].clone();
     let inner = if (a.bind == "") { env.clone() } else { tenv_put(&env, a.bind.clone(), String::from("")) };
-    let r = tk_check(a.body.clone(), expected.clone(), inner, where__);
+    let r = if a.isBlk { tk_check(a.blkTail.clone(), expected.clone(), tk_arm_lets_unknown(a.clone(), inner.clone()), where__) } else { tk_check(a.body.clone(), expected.clone(), inner.clone(), where__) };
     if (r.v != "") {
         return r;
     }
     return tk_check_arms(arms.clone(), (i).checked_add(1i64).expect("revl: Int overflow"), expected.clone(), env.clone(), where__);
+}
+
+fn tk_arm_lets_unknown(a: ArmN, env: Vec<Bind>) -> Vec<Bind> {
+    let mut out = env;
+    let mut k = 0i64;
+    while (k < a.blk.revl_length()) {
+        out = tenv_put(&out, (a.blk)[(k) as usize].name.clone(), String::from(""));
+        k = (k).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return out;
 }
 
 fn tk_check_list(items: Vec<Expr>, i: i64, expected: String, env: Vec<Bind>) -> TInf {

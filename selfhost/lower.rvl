@@ -13926,9 +13926,21 @@ fn tk_check_arms(arms: List[ArmN], i: Int, expected: Str, env: List[Bind],
   if (i >= arms.length()) { return tk_ok(expected) }
   let a = arms[i]
   let inner = a.bind == "" ? env : tenv_put(env, a.bind, "")
-  let r = tk_check(a.body, expected, inner, where_)
+  let r = a.isBlk ? tk_check(a.blkTail, expected, tk_arm_lets_unknown(a, inner), where_)
+                  : tk_check(a.body, expected, inner, where_)
   if (r.v != "") { return r }
   return tk_check_arms(arms, i + 1, expected, env, where_)
+}
+
+// A block arm's value is its tail; the names its lets bind are left unknown.
+fn tk_arm_lets_unknown(a: ArmN, env: List[Bind]) -> List[Bind] {
+  var out = env
+  var k = 0
+  while (k < a.blk.length()) {
+    out = tenv_put(out, a.blk[k].name, "")
+    k += 1
+  }
+  return out
 }
 
 // Each ELEMENT is checked against the element type, which names the offending

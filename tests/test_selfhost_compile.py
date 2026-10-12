@@ -2838,6 +2838,10 @@ _L = "type L[T] = { h: T, t: Opt[L[T]] }\n"
 _IF_LIT = "if (c) { b } else { { v: \"s\" } }"
 _IF_S = "if (c) { b } else { s }"
 _MATCH_LIT = "match o { Some(n) => b, None => { v: \"s\" } }"
+_BLK_B = "match o { Some(n) => { let z = 1\n b }, None => b }"
+_BLK_S = "match o { Some(n) => { let z = 1\n s }, None => b }"
+_BLK_TEST = ("  let o: Opt[Int] = Some(1)\n  let b: Box[Int] = { v: 1 }\n"
+             "  let s: Box[Str] = { v: \"s\" }\n")
 
 
 def _box_fn(params, body, ret="Int"):
@@ -2894,6 +2898,16 @@ _ISSUE_2403_REFUSED = {
     "match_let_records": _BOX + _box_fn(
         "o: Opt[Int], b: Box[Int], s: Box[Str]",
         "  let r: Box[Int] = match o { Some(n) => b, None => s }\n  return 1"),
+    # a block arm is checked through its tail, and a test or prop body still
+    # refuses the block arm itself where the types agree
+    "block_arm_let": _BOX + _box_fn(
+        "o: Opt[Int], b: Box[Int], s: Box[Str]", "  let r: Box[Int] = " + _BLK_S + "\n  return 1"),
+    "block_arm_return": _BOX + _box_fn(
+        "o: Opt[Int], b: Box[Int], s: Box[Str]", "  return " + _BLK_S, "Box[Int]"),
+    "block_arm_in_test": _BOX + _test_doc(_BLK_TEST + "  let r: Box[Int] = " + _BLK_S),
+    "block_arm_in_prop": _BOX + _prop_doc(_BLK_TEST + "  let r: Box[Int] = " + _BLK_S),
+    "block_arm_unlowerable_in_test": _BOX + _test_doc(_BLK_TEST + "  let r: Box[Int] = " + _BLK_B),
+    "block_arm_unlowerable_in_prop": _BOX + _prop_doc(_BLK_TEST + "  let r: Box[Int] = " + _BLK_B),
     # a recursive generic record is compared by type argument, never expanded
     "recursive_record": _L + (
         "fn h(l: L[Int]) -> Int {\n  return 1\n}\n" + _box_fn("l: L[Str]", "  return h(l)")),
@@ -2935,6 +2949,12 @@ _ISSUE_2403_COMPILED = {
     "if_widening": _BOX + _box_fn(
         "c: Bool, b: Box[Int], d: Box[Float]", "  let r = if (c) { b } else { d }\n  return 1"),
     "match_argument": _BOX + _G + _box_fn("o: Opt[Int], b: Box[Int]", "  return g(" + _MATCH_LIT + ")"),
+    "block_arm_let": _BOX + _box_fn(
+        "o: Opt[Int], b: Box[Int]", "  let r: Box[Int] = " + _BLK_B + "\n  return r.v"),
+    "block_arm_return": _BOX + _box_fn("o: Opt[Int], b: Box[Int]", "  return " + _BLK_B, "Box[Int]"),
+    "block_arm_reads_its_let": _BOX + _box_fn(
+        "o: Opt[Int], b: Box[Int]",
+        "  let r: Box[Int] = match o { Some(n) => { let z = b\n z }, None => b }\n  return r.v"),
     "match_let_literal": _BOX + _box_fn(
         "o: Opt[Int], b: Box[Int]",
         "  let r: Box[Int] = match o { Some(n) => b, None => { v: 1 } }\n  return r.v"),
