@@ -391,12 +391,13 @@ fn covers_variant(ctx: Ctx, patterns: List[Str]) -> Bool {
 // -------------------------------------------------------------------- types
 // `_split_v3_types`: split `A, B` on top-level commas (bridged to str.split_top).
 // `_java_v3_type`: IR v3 surface type -> Java type. `boxed` picks the reference-
-// wrapper form for a type-ARGUMENT position (only long/double/boolean box in the
-// v3 table — `int`/`String`/etc. pass through, matching the reference's inline
-// dict, which is intentionally narrower than the v1/v2 `_BOXED`).
+// wrapper form for a type-ARGUMENT position (long/int/double/boolean box in the
+// v3 table, `_V3_BOXED` — `String`/`byte[]`/etc. pass through, and `void` is not
+// a type argument at all, which is the reference's gap too).
 fn box(java_type: Str, boxed: Bool) -> Str {
   if (!boxed) { return java_type }
   if (java_type == "long") { return "java.lang.Long" }
+  if (java_type == "int") { return "java.lang.Integer" }
   if (java_type == "double") { return "java.lang.Double" }
   if (java_type == "boolean") { return "java.lang.Boolean" }
   return java_type
@@ -428,6 +429,9 @@ fn java_v3_type(tv: Any, boxed: Bool) -> Str {
   if (name.startsWith("(")) { return "<<UNSUPPORTED-fn-type>>" }
   let tm = type_map(name)
   if (tm != "") { return box(tm, boxed) }
+  // `Any` has no `type_map` entry; it is the open type, `Object` in every
+  // position (issue #2303).
+  if (name == "Any") { return "Object" }
   if (name.indexOf("[") >= 0) {
     let lb = name.indexOf("[")
     let base = name.slice(0, lb)
@@ -445,9 +449,11 @@ fn java_v3_type(tv: Any, boxed: Bool) -> Str {
     if (base == "Result" && args.length() == 2) {
       return `RevlResult<${java_v3_type(args[0], true)}, ${java_v3_type(args[1], true)}>`
     }
-    var objs = []
-    for (a of args) { objs = objs.push("Object") }
-    return `${base}<${objs.join(", ")}>`
+    // A user generic type applies its arguments boxed (`Bx<java.lang.Long>`),
+    // matching the type parameters `emit_v3_types` declares (issue #2303).
+    var applied = []
+    for (a of args) { applied = applied.push(java_v3_type(a, true)) }
+    return `${base}<${applied.join(", ")}>`
   }
   // A user type name (`_ident`) — mapped to its emitted class/interface name.
   return mangle(name)
@@ -1299,6 +1305,15 @@ fn v3_types_need_value_helpers(types: Any) -> Bool {
   return false
 }
 
+// `_v3_type_params`: `<T, U>` for a generic type declaration, empty for a plain
+// one (issue #2303).
+fn type_params(spec: Any) -> Str {
+  var names = []
+  for (p of value_list(value_field(spec, "params"))) { names = names.push(mangle(value_str(p))) }
+  if (names.length() == 0) { return "" }
+  return `<${names.join(", ")}>`
+}
+
 // `_emit_v3_types`: a user `record` type as a `public static final class` (public
 // final fields + a canonical ctor + the structural `equals`/`hashCode` above), a
 // `variant` type as a `public sealed interface … permits …` with one
@@ -1310,7 +1325,7 @@ fn emit_v3_types(types: Any) -> List[Str] {
     let spec = value_field(types, name)
     let kind = value_str(value_field(spec, "kind"))
     if (kind == "record") {
-      out = out.push(`public static final class ${mn} {`)
+      out = out.push(`public static final class ${mn}${type_params(spec)} {`)
       let fields = value_field(spec, "fields")
       let fnames = value_keys(fields)
       for (f of fnames) {

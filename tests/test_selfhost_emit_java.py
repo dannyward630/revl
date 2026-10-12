@@ -139,6 +139,7 @@ CORPUS = [
     "calls.rvl",     # free-function calls
     "strings.rvl",   # string `+`, `${..}` interpolation, literals
     "lists.rvl",     # list literal, index, nested list types
+    "boxed_generics.rvl",  # Int32/Any type arguments, generic record parameters (#2303)
     "maps.rvl",      # the empty map literal and the Map/List generic type lowering
     # slice 2 (item 210) — the v3 typed-core
     "records.rvl",   # record decls, out-of-order literals, field access, nesting

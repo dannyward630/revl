@@ -104,9 +104,9 @@
 
 ["function", "selfhost-emit-java-rvl-java-lit-only-null", "java_lit", 2, 2]
 
-["reason", "selfhost-emit-java-rvl-java-v3-type-residual", "selfhost/emit_java.rvl::java_v3_type: Residual null/empty type defaults require malformed type metadata; function types are explicitly refused; Result boxing is deferred. Unknown generic-head Object boxing cannot arise for a validated supported type."]
+["reason", "selfhost-emit-java-rvl-java-v3-type-residual", "selfhost/emit_java.rvl::java_v3_type: Residual null/empty type defaults require malformed type metadata; function types are explicitly refused; Result boxing is deferred."]
 
-["function", "selfhost-emit-java-rvl-java-v3-type-residual", "java_v3_type", 9, 9]
+["function", "selfhost-emit-java-rvl-java-v3-type-residual", "java_v3_type", 4, 4]
 
 ["reason", "selfhost-emit-java-rvl-let-keyword-only-defer", "selfhost/emit_java.rvl::let_keyword: Only <<DEFER-map-local-unpinned>> remains, the preexisting boundary for unannotated VALUE Map.empty inference. Annotated value Maps and inferred host Map.new are separate and covered."]
 

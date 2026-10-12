@@ -1,0 +1,11 @@
+// issue #2303: a primitive or `Any` type argument is spelled as a Java
+// reference type, and a generic record declares and applies its parameters.
+type Bx[T] = { v: T }
+type Pair[A, B] = { first: A, second: B }
+fn ints(xs: List[Int32]) -> List[Int32] { return xs }
+fn anys(xs: List[Any]) -> List[Any] { return xs }
+fn table(d: Map[Str, Int32]) -> Map[Str, Int32] { return d }
+fn maybe(x: Opt[Int32]) -> Opt[Int32] { return x }
+fn boxes(bs: List[Bx[Int]]) -> List[Bx[Int]] { return bs }
+fn by_name(m: Map[Str, Bx[Str]]) -> Map[Str, Bx[Str]] { return m }
+fn pair(p: Pair[Str, Int]) -> Int { return p.second }
