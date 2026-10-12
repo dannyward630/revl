@@ -12,6 +12,9 @@ WHAT IS EMITTED NOW. `Int32` boxes to `java.lang.Integer`, `Any` is `Object`,
 and a generic record is `Bx<T>` with each use applying its arguments boxed
 (`Bx<java.lang.Long>`).
 
+The run tests exercise signatures with empty and `Any` lists only: the checker
+accepts no Int32 literal, so no non-empty `List[Int32]` is built here.
+
 The compile and run tests need a JDK and skip without one. A skip is not a
 pass: CI's `backend-java` job provisions a JDK.
 """
