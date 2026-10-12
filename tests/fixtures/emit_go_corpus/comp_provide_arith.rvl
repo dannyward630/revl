@@ -2,7 +2,8 @@
 // `operands`, as a top-level fn's does. Int `+ - *` trap through the checked
 // helpers, `/` is true division through `revlDiv` (Int, Int32 and Float
 // operands), a Float `%` is `math.Mod`, and an Int operand of Float arithmetic
-// widens to float64. An Int `%` keeps Go's truncated remainder.
+// widens to float64. An Int `%` keeps Go's truncated remainder. Int32 `+ - *`
+// and unary minus trap through the I32 helpers (issue #2262).
 fn pick(n: Int) -> Int { return n }
 
 service Arith {
@@ -17,6 +18,10 @@ service Arith {
   fn scale(x: Float, k: Int) -> Float
   fn shift(k: Int, x: Float) -> Float
   fn blend(a: Int, b: Int) -> Float
+  fn narrow_sum(a: Int32, b: Int32) -> Int32
+  fn narrow_diff(a: Int32, b: Int32) -> Int32
+  fn narrow_prod(a: Int32, b: Int32) -> Int32
+  fn narrow_neg(a: Int32) -> Int32
 }
 
 component Calc provides arith: Arith {
@@ -32,5 +37,9 @@ component Calc provides arith: Arith {
     fn scale(x, k) = x * k + x - k
     fn shift(k, x) = k + x
     fn blend(a, b) = a / b + 0.5
+    fn narrow_sum(a, b) = a + b
+    fn narrow_diff(a, b) = a - b
+    fn narrow_prod(a, b) = a * b
+    fn narrow_neg(a) = -a
   }
 }

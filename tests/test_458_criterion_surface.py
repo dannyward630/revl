@@ -45,7 +45,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
-from revl import compile_files, compile_source  # noqa: E402
+from revl import compile_source  # noqa: E402
+from _compiled_ir import compiled_ir  # noqa: E402
 from revl.errors import RevlError  # noqa: E402
 
 
@@ -237,7 +238,7 @@ def lower_to_ir():
     """`selfhost/lower.rvl::lower_to_ir`, compiled by revl, emitted through the
     python backend and executed — the same harness the byte-agreement gate uses
     (tests/test_selfhost_lower_ir.py)."""
-    ir = compile_files([str(ROOT / "selfhost" / "lower.rvl")])
+    ir = compiled_ir(ROOT / "selfhost" / "lower.rvl")
     spec = importlib.util.spec_from_file_location(
         "pyemit_458", ROOT / "backends" / "python" / "emit.py")
     module = importlib.util.module_from_spec(spec)
