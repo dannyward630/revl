@@ -18788,6 +18788,24 @@ fn sp_nullish_mix(ts: List[Token], i: Int) -> Str {
   return ""
 }
 
+// Whether the optional access `?.name` or `?.name(args)` at `i` is followed by
+// a plain `.`, a call or an index (`parser.py`'s postfix loop, which reads the
+// call into the access and then admits only another `?.`).
+fn sp_after_optional(ts: List[Token], i: Int) -> Bool {
+  var j = i + 2
+  if (atk(ts, j, "(")) {
+    var d = 0
+    var going = true
+    while (going && (j < ts.length())) {
+      if (atk(ts, j, "(")) { d += 1 }
+      if (atk(ts, j, ")")) { d -= 1 }
+      j += 1
+      if (d == 0) { going = false }
+    }
+  }
+  return atk(ts, j, ".") || atk(ts, j, "(") || atk(ts, j, "[")
+}
+
 // The reversibility class of a computer-use capability token (`ui_family.py`
 // `REVERSIBILITY` through `verb_of`: parameters stripped, a ladder rung read
 // as its verb), or "" outside the family.
@@ -18965,7 +18983,7 @@ fn stmt_parse_scan(ts: List[Token]) -> Verd {
                            : "`??` cannot be mixed with `&&` without parentheses"
       return mk_verd(tagged("BAD", msg), ln)
     }
-    if ((k == "?.") && (atk(ts, i + 2, ".") || atk(ts, i + 2, "(") || atk(ts, i + 2, "["))) {
+    if ((k == "?.") && sp_after_optional(ts, i)) {
       return mk_verd(tagged("BAD",
         "an optional access `?.` can only be followed by another `?.` — a plain `.field`, call, or index after `?.` would not short-circuit"),
         ln)

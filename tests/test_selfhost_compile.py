@@ -1885,3 +1885,65 @@ def test_native_tiers_rename_a_predeclared_arrow_parameter_in_the_signature(
         assert got == want, "native %s diverged from the reference" % tier
         line = next(l for l in got.splitlines() if declared in l)
         assert line.count(renamed) >= 2, (tier, line)
+
+
+# Issue #2359: every examples/rejections/ program the reference refuses at
+# PARSE time. The self-host front end read statement bodies and type
+# declarations too loosely to see the statement-level rules, so the native
+# gate admitted 11 of them and the used-module admission 15, and emitted code.
+def _reference_parse_refusals():
+    from revl.parser import parse_text
+    out = []
+    for path in sorted((ROOT / "examples" / "rejections").glob("*.rvl")):
+        text = path.read_text(encoding="utf-8")
+        try:
+            parse_text(text, str(path))
+        except RevlError:
+            out.append(path.name)
+    return out
+
+
+_PARSE_REFUSED = _reference_parse_refusals()
+
+
+def test_the_rejection_corpus_has_parse_refusals():
+    assert len(_PARSE_REFUSED) >= 30
+
+
+@pytest.mark.parametrize("name", _PARSE_REFUSED)
+def test_the_native_gate_refuses_every_reference_parse_refusal(compile_rvl, name):
+    """The document path (`admit_src`, through `compile_to`) and the used-module
+    path (`ad_module_refusal`) both refuse what the reference parser refuses."""
+    text = (ROOT / "examples" / "rejections" / name).read_text(encoding="utf-8")
+    got = compile_rvl["compile_to"](text, "py")
+    assert got.startswith("REFUSED|"), got[:120]
+    assert compile_rvl["ad_module_refusal"](text) != ""
+
+
+def _reference_parseable_examples():
+    from revl.parser import parse_text
+    out = []
+    corpora = [ROOT / "examples", ROOT / "stdlib"] + sorted(
+        (ROOT / "tests" / "fixtures").glob("emit_*_corpus"))
+    for base in corpora:
+        for path in sorted(base.rglob("*.rvl")):
+            text = path.read_text(encoding="utf-8")
+            try:
+                parse_text(text, str(path))
+            except RevlError:
+                continue
+            out.append((path.relative_to(ROOT).as_posix(), text))
+    return out
+
+
+def test_the_statement_parse_rules_refuse_nothing_the_reference_parses(compile_rvl):
+    """Issue #2359, the positive control: the statement-level parse rules
+    refuse no program of examples/, stdlib/ or the emit corpora that the
+    reference parses (optional calls `a?.m()`, `??` inside parentheses,
+    classified externs, lifecycle words used as names, and so on)."""
+    docs = _reference_parseable_examples()
+    assert len(docs) > 300
+    lex = compile_rvl["lex_src"]
+    scan = compile_rvl["stmt_parse_scan"]
+    refused = {rel: v["v"] for rel, text in docs if (v := scan(lex(text)))["v"] != ""}
+    assert refused == {}
