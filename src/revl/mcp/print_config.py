@@ -168,9 +168,10 @@ def run(args, *, out: TextIO | None = None, err: TextIO | None = None,
     if found is None:
         tried = ", ".join(str(p) for p in options)
         setup = backends_root() / "python" / "setup.sh"
-        print(f"error: no interpreter can import both revl and cordis without "
-              f"this shell's PYTHONPATH (tried {tried}). Fix: sh {setup}, then "
-              f"run this again", file=err)
+        print(f"error: no interpreter can import both revl and cordis with no "
+              f"PYTHON* environment (PYTHONPATH, PYTHONHOME), which is how a "
+              f"client starts the server (tried {tried}). Fix: sh {setup}, "
+              f"then run this again", file=err)
         return 1
     python, env = found
     roots = list(getattr(args, "root", None) or []) or [os.getcwd()]

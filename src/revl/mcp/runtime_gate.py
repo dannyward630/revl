@@ -40,7 +40,6 @@ from pathlib import Path
 
 from .._paths import backends_root, venv_python as _venv_python
 from . import remedy
-from .print_config import PROBE
 
 #: Verbs that need a live composition, which only the runtime can boot.
 RUNTIME_VERBS = frozenset({
@@ -95,13 +94,20 @@ def venv_python() -> Path:
     return _venv_python(backends_root() / "python" / ".venv")
 
 
+#: What `reexec` can rely on: it runs the venv with this process's whole
+#: environment, PYTHONPATH included, so the probe inherits it too. (The client
+#: config block starts the server with an empty environment and probes with
+#: `-E`, see `print_config.PROBE`.)
+GATE_PROBE = ("-P", "-c", "import cordis, revl")
+
+
 def venv_has_cordis(python: Path) -> bool:
     """Whether *python* exists and can import cordis (and revl, to serve)."""
     if not python.is_file():
         return False
     try:
         probe = subprocess.run(
-            [str(python), *PROBE],
+            [str(python), *GATE_PROBE],
             capture_output=True, timeout=30, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return False

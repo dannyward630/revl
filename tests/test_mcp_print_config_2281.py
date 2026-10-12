@@ -116,9 +116,32 @@ def test_the_probe_ignores_the_shells_pythonpath(tmp_path):
     assert subprocess.run(plain, env=env, capture_output=True).returncode == 0
 
 
-def test_the_probe_argv_is_defined_once():
-    assert runtime_gate.PROBE is print_config.PROBE
-    assert print_config.probe_argv(Path("/p"))[1:] == list(print_config.PROBE)
+def test_the_gate_probe_inherits_the_environment_reexec_uses(tmp_path, monkeypatch):
+    """`reexec` runs the venv with this process's environment, so a venv that
+    reaches revl and cordis through PYTHONPATH qualifies for the gate. Only the
+    client config probe drops it."""
+    stubs = _stub_cordis(tmp_path)
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(stubs), str(ROOT / "src")]))
+    assert "-E" not in runtime_gate.GATE_PROBE
+    assert runtime_gate.venv_has_cordis(Path(sys.executable))
+    bare = subprocess.run([sys.executable, *print_config.PROBE],
+                          env={}, capture_output=True).returncode == 0
+    assert print_config.runs_ok(print_config.probe_argv(Path(sys.executable))) == bare
+
+
+def test_doctor_runtime_row_probes_like_the_gate(tmp_path):
+    class Seen(doctor.Prober):
+        argvs = []
+
+        def module_available(self, name):
+            return False
+
+        def run(self, argv, timeout=doctor.PROBE_TIMEOUT, stdin=""):
+            self.argvs.append(list(argv))
+            return ProbeResult(found=True, returncode=1)
+
+    doctor.check_mcp_runtime(Seen(), tmp_path)
+    assert Seen.argvs and Seen.argvs[0][1:] == list(runtime_gate.GATE_PROBE)
 
 
 # -------------------------------------------------------------- resolution
