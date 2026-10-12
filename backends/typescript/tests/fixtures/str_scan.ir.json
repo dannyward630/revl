@@ -386,6 +386,600 @@
           }
         }
       ]
+    },
+    {
+      "name": "count_marks",
+      "params": [
+        {
+          "name": "text",
+          "type": "Str"
+        }
+      ],
+      "returns": "Int",
+      "public": true,
+      "body": [
+        {
+          "step": "let",
+          "name": "n",
+          "value": {
+            "kind": "lit",
+            "value": 0
+          },
+          "mutable": true
+        },
+        {
+          "step": "let",
+          "name": "i",
+          "value": {
+            "kind": "lit",
+            "value": 0
+          },
+          "mutable": true
+        },
+        {
+          "step": "while",
+          "cond": {
+            "kind": "bin",
+            "op": "<",
+            "left": {
+              "kind": "var",
+              "name": "i"
+            },
+            "right": {
+              "kind": "builtin",
+              "method": "length",
+              "target": {
+                "kind": "var",
+                "name": "text"
+              },
+              "args": []
+            }
+          },
+          "body": [
+            {
+              "step": "let",
+              "name": "c",
+              "value": {
+                "kind": "builtin",
+                "method": "charAt",
+                "target": {
+                  "kind": "var",
+                  "name": "text"
+                },
+                "args": [
+                  {
+                    "kind": "var",
+                    "name": "i"
+                  }
+                ]
+              },
+              "mutable": false
+            },
+            {
+              "step": "if",
+              "cond": {
+                "kind": "bin",
+                "op": "||",
+                "left": {
+                  "kind": "bin",
+                  "op": "==",
+                  "left": {
+                    "kind": "var",
+                    "name": "c"
+                  },
+                  "right": {
+                    "kind": "builtin",
+                    "method": "charAt",
+                    "target": {
+                      "kind": "lit",
+                      "value": "<"
+                    },
+                    "args": [
+                      {
+                        "kind": "lit",
+                        "value": 0
+                      }
+                    ]
+                  }
+                },
+                "right": {
+                  "kind": "bin",
+                  "op": "==",
+                  "left": {
+                    "kind": "var",
+                    "name": "c"
+                  },
+                  "right": {
+                    "kind": "builtin",
+                    "method": "charAt",
+                    "target": {
+                      "kind": "lit",
+                      "value": ">"
+                    },
+                    "args": [
+                      {
+                        "kind": "lit",
+                        "value": 0
+                      }
+                    ]
+                  }
+                }
+              },
+              "then": [
+                {
+                  "step": "assign",
+                  "name": "n",
+                  "value": {
+                    "kind": "bin",
+                    "op": "+",
+                    "left": {
+                      "kind": "var",
+                      "name": "n"
+                    },
+                    "right": {
+                      "kind": "lit",
+                      "value": 1
+                    },
+                    "operands": "Int"
+                  }
+                }
+              ],
+              "else": null
+            },
+            {
+              "step": "assign",
+              "name": "i",
+              "value": {
+                "kind": "bin",
+                "op": "+",
+                "left": {
+                  "kind": "var",
+                  "name": "i"
+                },
+                "right": {
+                  "kind": "lit",
+                  "value": 1
+                },
+                "operands": "Int"
+              }
+            }
+          ]
+        },
+        {
+          "step": "return",
+          "expr": {
+            "kind": "var",
+            "name": "n"
+          }
+        }
+      ]
+    },
+    {
+      "name": "agree_three",
+      "params": [
+        {
+          "name": "a",
+          "type": "Str"
+        },
+        {
+          "name": "b",
+          "type": "Str"
+        },
+        {
+          "name": "c",
+          "type": "Str"
+        }
+      ],
+      "returns": "Int",
+      "public": true,
+      "body": [
+        {
+          "step": "let",
+          "name": "n",
+          "value": {
+            "kind": "lit",
+            "value": 0
+          },
+          "mutable": true
+        },
+        {
+          "step": "let",
+          "name": "i",
+          "value": {
+            "kind": "lit",
+            "value": 0
+          },
+          "mutable": true
+        },
+        {
+          "step": "while",
+          "cond": {
+            "kind": "bin",
+            "op": "&&",
+            "left": {
+              "kind": "bin",
+              "op": "&&",
+              "left": {
+                "kind": "bin",
+                "op": "<",
+                "left": {
+                  "kind": "var",
+                  "name": "i"
+                },
+                "right": {
+                  "kind": "builtin",
+                  "method": "length",
+                  "target": {
+                    "kind": "var",
+                    "name": "a"
+                  },
+                  "args": []
+                }
+              },
+              "right": {
+                "kind": "bin",
+                "op": "<",
+                "left": {
+                  "kind": "var",
+                  "name": "i"
+                },
+                "right": {
+                  "kind": "builtin",
+                  "method": "length",
+                  "target": {
+                    "kind": "var",
+                    "name": "b"
+                  },
+                  "args": []
+                }
+              }
+            },
+            "right": {
+              "kind": "bin",
+              "op": "<",
+              "left": {
+                "kind": "var",
+                "name": "i"
+              },
+              "right": {
+                "kind": "builtin",
+                "method": "length",
+                "target": {
+                  "kind": "var",
+                  "name": "c"
+                },
+                "args": []
+              }
+            }
+          },
+          "body": [
+            {
+              "step": "if",
+              "cond": {
+                "kind": "bin",
+                "op": "==",
+                "left": {
+                  "kind": "builtin",
+                  "method": "charAt",
+                  "target": {
+                    "kind": "var",
+                    "name": "a"
+                  },
+                  "args": [
+                    {
+                      "kind": "var",
+                      "name": "i"
+                    }
+                  ]
+                },
+                "right": {
+                  "kind": "builtin",
+                  "method": "charAt",
+                  "target": {
+                    "kind": "var",
+                    "name": "b"
+                  },
+                  "args": [
+                    {
+                      "kind": "var",
+                      "name": "i"
+                    }
+                  ]
+                }
+              },
+              "then": [
+                {
+                  "step": "assign",
+                  "name": "n",
+                  "value": {
+                    "kind": "bin",
+                    "op": "+",
+                    "left": {
+                      "kind": "var",
+                      "name": "n"
+                    },
+                    "right": {
+                      "kind": "lit",
+                      "value": 1
+                    },
+                    "operands": "Int"
+                  }
+                }
+              ],
+              "else": null
+            },
+            {
+              "step": "if",
+              "cond": {
+                "kind": "bin",
+                "op": "==",
+                "left": {
+                  "kind": "builtin",
+                  "method": "charAt",
+                  "target": {
+                    "kind": "var",
+                    "name": "b"
+                  },
+                  "args": [
+                    {
+                      "kind": "var",
+                      "name": "i"
+                    }
+                  ]
+                },
+                "right": {
+                  "kind": "builtin",
+                  "method": "charAt",
+                  "target": {
+                    "kind": "var",
+                    "name": "c"
+                  },
+                  "args": [
+                    {
+                      "kind": "var",
+                      "name": "i"
+                    }
+                  ]
+                }
+              },
+              "then": [
+                {
+                  "step": "assign",
+                  "name": "n",
+                  "value": {
+                    "kind": "bin",
+                    "op": "+",
+                    "left": {
+                      "kind": "var",
+                      "name": "n"
+                    },
+                    "right": {
+                      "kind": "lit",
+                      "value": 1
+                    },
+                    "operands": "Int"
+                  }
+                }
+              ],
+              "else": null
+            },
+            {
+              "step": "if",
+              "cond": {
+                "kind": "bin",
+                "op": "==",
+                "left": {
+                  "kind": "builtin",
+                  "method": "charAt",
+                  "target": {
+                    "kind": "var",
+                    "name": "c"
+                  },
+                  "args": [
+                    {
+                      "kind": "var",
+                      "name": "i"
+                    }
+                  ]
+                },
+                "right": {
+                  "kind": "builtin",
+                  "method": "charAt",
+                  "target": {
+                    "kind": "var",
+                    "name": "a"
+                  },
+                  "args": [
+                    {
+                      "kind": "var",
+                      "name": "i"
+                    }
+                  ]
+                }
+              },
+              "then": [
+                {
+                  "step": "assign",
+                  "name": "n",
+                  "value": {
+                    "kind": "bin",
+                    "op": "+",
+                    "left": {
+                      "kind": "var",
+                      "name": "n"
+                    },
+                    "right": {
+                      "kind": "lit",
+                      "value": 1
+                    },
+                    "operands": "Int"
+                  }
+                }
+              ],
+              "else": null
+            },
+            {
+              "step": "assign",
+              "name": "i",
+              "value": {
+                "kind": "bin",
+                "op": "+",
+                "left": {
+                  "kind": "var",
+                  "name": "i"
+                },
+                "right": {
+                  "kind": "lit",
+                  "value": 1
+                },
+                "operands": "Int"
+              }
+            }
+          ]
+        },
+        {
+          "step": "return",
+          "expr": {
+            "kind": "var",
+            "name": "n"
+          }
+        }
+      ]
+    },
+    {
+      "name": "len_of",
+      "params": [
+        {
+          "name": "s",
+          "type": "Str"
+        }
+      ],
+      "returns": "Int",
+      "public": true,
+      "body": [
+        {
+          "step": "return",
+          "expr": {
+            "kind": "builtin",
+            "method": "length",
+            "target": {
+              "kind": "var",
+              "name": "s"
+            },
+            "args": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "char_at",
+      "params": [
+        {
+          "name": "s",
+          "type": "Str"
+        },
+        {
+          "name": "i",
+          "type": "Int"
+        }
+      ],
+      "returns": "Str",
+      "public": true,
+      "body": [
+        {
+          "step": "return",
+          "expr": {
+            "kind": "builtin",
+            "method": "charAt",
+            "target": {
+              "kind": "var",
+              "name": "s"
+            },
+            "args": [
+              {
+                "kind": "var",
+                "name": "i"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "code_at",
+      "params": [
+        {
+          "name": "s",
+          "type": "Str"
+        },
+        {
+          "name": "i",
+          "type": "Int"
+        }
+      ],
+      "returns": "Int",
+      "public": true,
+      "body": [
+        {
+          "step": "return",
+          "expr": {
+            "kind": "builtin",
+            "method": "charCodeAt",
+            "target": {
+              "kind": "var",
+              "name": "s"
+            },
+            "args": [
+              {
+                "kind": "var",
+                "name": "i"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "slice_of",
+      "params": [
+        {
+          "name": "s",
+          "type": "Str"
+        },
+        {
+          "name": "a",
+          "type": "Int"
+        },
+        {
+          "name": "b",
+          "type": "Int"
+        }
+      ],
+      "returns": "Str",
+      "public": true,
+      "body": [
+        {
+          "step": "return",
+          "expr": {
+            "kind": "builtin",
+            "method": "slice",
+            "target": {
+              "kind": "var",
+              "name": "s"
+            },
+            "args": [
+              {
+                "kind": "var",
+                "name": "a"
+              },
+              {
+                "kind": "var",
+                "name": "b"
+              }
+            ]
+          }
+        }
+      ]
     }
   ]
 }

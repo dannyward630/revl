@@ -1,0 +1,9 @@
+// issue #2285: `Int.to_char`, the reverse of `codepoint_at`, and the blessed
+// per-tier primitive behind `stdlib/str.rvl`'s `str_char`. A CR (13) and a NUL
+// (0) had no spelling in pure revl before it. `crlf` pins the receiver as a
+// literal and `ch` as a parameter, so both render shapes are byte-checked.
+fn ch(n: Int) -> Str { return n.to_char() }
+
+fn crlf() -> Str { return 13.to_char().concat(10.to_char()) }
+
+fn width(n: Int) -> Int { return ch(n).length() }

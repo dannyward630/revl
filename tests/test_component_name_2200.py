@@ -219,3 +219,60 @@ def test_a_known_component_still_boots(tmp_path):
                          capture_output=True, text=True, timeout=300)
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.count("state=Active") == 2, run.stdout + run.stderr
+
+
+# ------------------------------------------------ (d) unsupported proxy fatal
+
+def test_the_runner_does_not_log_past_an_unsupported_proxy_service():
+    """Source assertion (runs everywhere): the `None` arm of the proxy lookup
+    goes through `fatal_boot` instead of logging `UNSUPPORTED service` and
+    carrying on (#2335)."""
+    src = _MAIN_RS.read_text(encoding="utf-8")
+    assert "UNSUPPORTED service" not in src, (
+        "the runner still logs an unsupported proxy service and continues")
+    lookup = src.index("_revl_proxy_plugin(key, service")
+    tail = src[lookup:]
+    end = tail.find("// 2. this process's own components")
+    arm = tail[:end if end != -1 else 1500]
+    assert "fatal_boot(" in arm, (
+        "the unsupported-proxy arm does not go through fatal_boot: the run "
+        "would print UP with part of the composition missing")
+
+
+@needs_cordis_rs
+def test_an_unsupported_proxy_service_exits_nonzero_before_up(tmp_path):
+    """Runtime proof, where a cordis-rs toolchain is present: a spec whose
+    `proxies` names a service the generated module has no proxy component for
+    must exit nonzero with one FATAL line naming the service and the key, no
+    `UP`, and dispose the proxy that booted before it. Before #2335 it logged
+    `UNSUPPORTED service`, said `UP` and exited 0. The `Database` proxy sorts
+    before the ghost key, so it is the fiber the failure has to tear down."""
+    binary = _built_runner()
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({
+        "name": "ghostproxy2335",
+        "backend": "rust",
+        "components": [],
+        "config": {},
+        "provides": [],
+        "proxies": {
+            "a_db": {"socket": str(tmp_path / "a.sock"), "service": "Database"},
+            "z_ghost": {"socket": str(tmp_path / "z.sock"),
+                        "service": "GhostSvc2335"},
+        },
+        "placements": {},
+        "probe": [],
+        "once": True,
+    }), encoding="utf-8")
+    run = subprocess.run([str(binary), str(spec)], capture_output=True,
+                         text=True, timeout=300, stdin=subprocess.DEVNULL)
+
+    out = f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}"
+    assert run.returncode != 0, f"an unsupported proxy exited 0\n{out}"
+    fatal = [line for line in run.stderr.splitlines() if "FATAL" in line]
+    assert len(fatal) == 1, out
+    assert "GhostSvc2335" in fatal[0] and "z_ghost" in fatal[0], out
+    for claim in ("UP", "NO-RESIDUE", "DOWN"):
+        assert f"] {claim}" not in run.stdout, out
+    assert "UNSUPPORTED" not in run.stdout + run.stderr, out
+    assert "a_db-proxy" in run.stdout and "dispose" in run.stdout, out

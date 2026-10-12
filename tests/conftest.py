@@ -230,6 +230,20 @@ def pytest_configure(config):
     # marker here keeps it a known marker there, where it has no effect.
     config.addinivalue_line(
         "markers", "timeout(seconds): per-test limit for pytest-timeout")
+    # Issue #2192: tests/_compiled_ir.py keeps one compile of a self-host
+    # document per key; with the cache provider on (it is off under
+    # `-p no:cacheprovider`), it also keeps a copy under the pytest cache dir,
+    # which the next session and every xdist worker of this one reuse.
+    # The compiler's own sources are hashed now, at session start: the key
+    # names the code this process runs, not what a later edit leaves on disk.
+    import _compiled_ir  # noqa: PLC0415
+    cache = getattr(config, "cache", None)
+    _compiled_ir.configure(
+        cache.mkdir("revl-compiled-ir") if cache is not None else None)
+    # find_spec locates the package without importing it.
+    spec = importlib.util.find_spec("revl")
+    if spec is not None and spec.origin:
+        _compiled_ir.pin_package(Path(spec.origin).parent)
 
 
 _ROOT = Path(__file__).resolve().parents[1]

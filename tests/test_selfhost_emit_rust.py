@@ -336,6 +336,7 @@ CORPUS = [
     # `selfhost_blind_spots.json`). Adding the document would make this oracle
     # red, so the UI transaction unit stays unported on this tier and
     # `class=emission` stays a recorded blind spot.
+    "to_char.rvl",  # Int.to_char, the primitive behind str_char (issue #2285)
 ]
 
 
