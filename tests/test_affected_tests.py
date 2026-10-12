@@ -1639,3 +1639,14 @@ def test_the_corpus_inputs_follow_imports_into_tools(tmp_path):
     (tmp_path / "tests" / "test_not_run.py").write_text("", encoding="utf-8")
     assert at.ci_backend_corpus_inputs(tmp_path) == frozenset(
         {"tests/test_a.py", "tools/helper.py"})
+
+
+def test_the_corpus_inputs_are_empty_without_a_workflow_and_keep_a_deleted_test(
+        tmp_path):
+    assert at.ci_backend_corpus_inputs(tmp_path) == frozenset()
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / ".github" / "workflows" / "ci.yml").write_text(
+        "jobs:\n  backend-go:\n    steps:\n"
+        "      - run: pytest tests/test_gone.py\n", encoding="utf-8")
+    assert at.ci_backend_corpus_inputs(tmp_path) == frozenset(
+        {"tests/test_gone.py"})

@@ -1343,6 +1343,7 @@ def select(changed, root) -> dict:
         return _full("no changed files detected -> full (fail safe)")
 
     reach = compile_reachable(root)
+    ci_inputs = ci_backend_corpus_inputs(root)
 
     pytest_nodes: set[str] = set()
     backends: set[str] = set()
@@ -1419,7 +1420,7 @@ def select(changed, root) -> dict:
         # `backend-*` job runs and of the modules those import. It runs on a
         # pull request only when something selects it, so a change to one of
         # those files that breaks a corpus guard went red on main instead.
-        in_ci_corpus = f in ci_backend_corpus_inputs(root)
+        in_ci_corpus = f in ci_inputs
         if in_ci_corpus:
             pytest_nodes.add("tests/test_ci_backend_gate.py")
             reasons.append(f"{f} (read by the backend-job corpus)")
@@ -2175,8 +2176,11 @@ def ci_backend_corpus_inputs(root: Path) -> frozenset:
     tests/test_ci_backend_gate.py scans that text, so a change to any of these
     files can turn it red (issue #2333): `select` re-runs it for each."""
     jobs = _ci_backend_job_text(root)
-    return frozenset(p.relative_to(root).as_posix()
-                     for p in _ci_backend_root_test_paths(root, jobs))
+    # The tests the job steps name count whether or not the file still exists:
+    # deleting one reds the guard's anti-vacuity check.
+    named = set(re.findall(r"tests/[A-Za-z0-9_]+\.py", jobs))
+    return frozenset(named | {p.relative_to(root).as_posix()
+                              for p in _ci_backend_root_test_paths(root, jobs)})
 
 
 def _ci_backend_job_text(root: Path) -> str:
