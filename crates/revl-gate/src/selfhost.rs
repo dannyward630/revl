@@ -737,6 +737,13 @@ pub struct CBody {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SgR {
+    i: i64,
+    why: String,
+    line: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Cut {
     s: String,
     rest: String,
@@ -23417,6 +23424,774 @@ fn sp_frame_kind(ts: &[Token], i: i64, outer: String, decl: String, async_fn: bo
     return outer;
 }
 
+fn sg_ok(i: i64) -> SgR {
+    return SgR { i: i, why: String::from(""), line: 0i64 };
+}
+
+fn sg_err(why: String, line: i64) -> SgR {
+    return SgR { i: (0i64).checked_sub(1i64).expect("revl: Int overflow"), why: why.clone(), line: line };
+}
+
+fn sg_unk() -> SgR {
+    return SgR { i: (0i64).checked_sub(2i64).expect("revl: Int overflow"), why: String::from(""), line: 0i64 };
+}
+
+fn sg_expected(ts: &[Token], j: i64, wanted: &str) -> SgR {
+    let t = tkc(ts, j);
+    let found = if (t.kind == "eof") { String::from("end of file") } else { (String::from("'").revl_concat(&t.text)).revl_concat("'") };
+    return sg_err(((String::from("expected ").revl_concat(&wanted)).revl_concat(", found ")).revl_concat(&found), t.line);
+}
+
+fn sg_expr_head(t: Token) -> bool {
+    let k = t.kind;
+    if ((((k == "int") || (k == "float")) || (k == "string")) || (k == "template")) {
+        return true;
+    }
+    if ((((k == "ident") || (k == "(")) || (k == "[")) || (k == "{")) {
+        return true;
+    }
+    if (((k == "!") || (k == "-")) || (k == "~")) {
+        return true;
+    }
+    if (k != "kw") {
+        return false;
+    }
+    return contains__m2(&(vec![String::from("true"), String::from("false"), String::from("null"), String::from("hole"), String::from("config"), String::from("match"), String::from("if"), String::from("emit"), String::from("try"), String::from("realm"), String::from("intercept"), String::from("isolate"), String::from("in"), String::from("with")]), &t.text);
+}
+
+fn sg_record_key(t: Token) -> bool {
+    if (t.kind == "ident") {
+        return true;
+    }
+    if (t.kind != "kw") {
+        return false;
+    }
+    return contains__m2(&(vec![String::from("realm"), String::from("intercept"), String::from("isolate"), String::from("in"), String::from("with"), String::from("component"), String::from("config"), String::from("requires")]), &t.text);
+}
+
+fn sg_update_ahead(ts: &[Token], i: i64) -> bool {
+    let mut d = 1i64;
+    let mut j = (i).checked_add(1i64).expect("revl: Int overflow");
+    while (j < ts.revl_length()) {
+        let k = (ts)[(j) as usize].kind.clone();
+        if (((k == "{") || (k == "(")) || (k == "[")) {
+            d = (d).checked_add(1i64).expect("revl: Int overflow");
+        }
+        if (((k == "}") || (k == ")")) || (k == "]")) {
+            d = (d).checked_sub(1i64).expect("revl: Int overflow");
+            if (d == 0i64) {
+                return false;
+            }
+        }
+        if ((k == "|") && (d == 1i64)) {
+            return true;
+        }
+        if (k == "eof") {
+            return false;
+        }
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return false;
+}
+
+fn sg_expr(ts: Vec<Token>, i: i64) -> SgR {
+    let r = expr_at(ts.clone(), i);
+    if (!is_bad(r.e.clone())) {
+        return sg_ok(r.i);
+    }
+    let t = tkc(&ts, i);
+    if (!sg_expr_head(t.clone())) {
+        return sg_expected(&ts, i, "an expression");
+    }
+    if (((((t.kind == "{") && (!atk(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "}"))) && (!sg_update_ahead(&ts, i))) && (!sg_record_key(tkc(&ts, (i).checked_add(1i64).expect("revl: Int overflow"))))) && (!atk(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "string"))) {
+        return sg_expected(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "ident");
+    }
+    return sg_unk();
+}
+
+fn sg_name(ts: &[Token], j: i64) -> bool {
+    let t = tkc(ts, j);
+    if (t.kind == "ident") {
+        return true;
+    }
+    if (t.kind != "kw") {
+        return false;
+    }
+    let w = t.text;
+    return (((((w == "realm") || (w == "intercept")) || (w == "isolate")) || (w == "in")) || (w == "with"));
+}
+
+fn sg_key_end(ts: &[Token], i: i64) -> i64 {
+    if (!atk(ts, i, "ident")) {
+        return (0i64).checked_sub(1i64).expect("revl: Int overflow");
+    }
+    if (atk(ts, (i).checked_add(1i64).expect("revl: Int overflow"), ":") && atk(ts, (i).checked_add(2i64).expect("revl: Int overflow"), ":")) {
+        if (!atk(ts, (i).checked_add(3i64).expect("revl: Int overflow"), "ident")) {
+            return (0i64).checked_sub(1i64).expect("revl: Int overflow");
+        }
+        return (i).checked_add(4i64).expect("revl: Int overflow");
+    }
+    return (i).checked_add(1i64).expect("revl: Int overflow");
+}
+
+fn sg_group_end(ts: &[Token], i: i64) -> i64 {
+    let mut d = 0i64;
+    let mut j = i;
+    while (j < ts.revl_length()) {
+        let k = (ts)[(j) as usize].kind.clone();
+        if (((k == "(") || (k == "[")) || (k == "{")) {
+            d = (d).checked_add(1i64).expect("revl: Int overflow");
+        }
+        if (((k == ")") || (k == "]")) || (k == "}")) {
+            d = (d).checked_sub(1i64).expect("revl: Int overflow");
+            if (d == 0i64) {
+                return (j).checked_add(1i64).expect("revl: Int overflow");
+            }
+        }
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return (0i64).checked_sub(1i64).expect("revl: Int overflow");
+}
+
+fn sg_group(ts: &[Token], i: i64) -> SgR {
+    let e = sg_group_end(ts, i);
+    return if (e < 0i64) { sg_unk() } else { sg_ok(e) };
+}
+
+fn sg_stmt_only(t: Token) -> bool {
+    if (t.kind != "kw") {
+        return false;
+    }
+    return contains__m2(&(vec![String::from("let"), String::from("var"), String::from("effect"), String::from("subscribe"), String::from("return"), String::from("while"), String::from("for"), String::from("assert"), String::from("break"), String::from("continue"), String::from("fail"), String::from("await"), String::from("verified"), String::from("every"), String::from("after")]), &t.text);
+}
+
+fn sg_header(ts: &[Token], i: i64) -> SgR {
+    let mut j = (i).checked_add(1i64).expect("revl: Int overflow");
+    while true {
+        let ke = sg_key_end(ts, j.clone());
+        if (ke < 0i64) {
+            return sg_expected(ts, j.clone(), "a requirement or provision key");
+        }
+        if (!atk(ts, ke, ":")) {
+            return sg_expected(ts, ke, ":");
+        }
+        if (at_word(ts, (ke).checked_add(1i64).expect("revl: Int overflow"), "Stream") && atk(ts, (ke).checked_add(2i64).expect("revl: Int overflow"), "[")) {
+            return sg_unk();
+        }
+        if (!atk(ts, (ke).checked_add(1i64).expect("revl: Int overflow"), "ident")) {
+            return sg_expected(ts, (ke).checked_add(1i64).expect("revl: Int overflow"), "a service name after `:`");
+        }
+        j = (ke).checked_add(2i64).expect("revl: Int overflow");
+        if (at_word(ts, j.clone(), "replay") || at_word(ts, j.clone(), "carrying")) {
+            return sg_unk();
+        }
+        if (!atk(ts, j.clone(), ",")) {
+            return sg_ok(j.clone());
+        }
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return sg_unk();
+}
+
+fn sg_arm(ts: Vec<Token>, i: i64, in_method: bool, in_async: bool, loops: i64) -> SgR {
+    if (!atk(&ts, i, "{")) {
+        return sg_stmt(ts.clone(), i, in_method, in_async, loops);
+    }
+    let mut j = (i).checked_add(1i64).expect("revl: Int overflow");
+    while true {
+        while atk(&ts, j.clone(), ";") {
+            j = (j).checked_add(1i64).expect("revl: Int overflow");
+        }
+        if atk(&ts, j.clone(), "}") {
+            if ((!in_method) && (j == (i).checked_add(1i64).expect("revl: Int overflow"))) {
+                return sg_err(String::from("component `if` guard cannot be empty"), tkc(&ts, i).line);
+            }
+            return sg_ok((j).checked_add(1i64).expect("revl: Int overflow"));
+        }
+        if atk(&ts, j.clone(), "eof") {
+            return sg_unk();
+        }
+        let s = sg_stmt(ts.clone(), j.clone(), in_method, in_async, loops);
+        if (s.i < 0i64) {
+            return s;
+        }
+        j = s.i;
+    }
+    return sg_unk();
+}
+
+fn sg_cond(ts: Vec<Token>, i: i64) -> SgR {
+    if (!atk(&ts, i, "(")) {
+        return sg_expected(&ts, i, "(");
+    }
+    let c = sg_expr(ts.clone(), (i).checked_add(1i64).expect("revl: Int overflow"));
+    if (c.i < 0i64) {
+        return c;
+    }
+    if (!atk(&ts, c.i, ")")) {
+        return sg_expected(&ts, c.i, ")");
+    }
+    return sg_ok((c.i).checked_add(1i64).expect("revl: Int overflow"));
+}
+
+fn sg_if(ts: Vec<Token>, i: i64, in_method: bool, in_async: bool, loops: i64) -> SgR {
+    let c = sg_cond(ts.clone(), (i).checked_add(1i64).expect("revl: Int overflow"));
+    if (c.i < 0i64) {
+        return c;
+    }
+    let th = sg_arm(ts.clone(), c.i, in_method, in_async, loops);
+    if (th.i < 0i64) {
+        return th;
+    }
+    if (in_method && at_word(&ts, th.i, "elif")) {
+        return sg_err(String::from("revl has no `elif`"), tkc(&ts, th.i).line);
+    }
+    if (!atw(&ts, th.i, "else")) {
+        return th;
+    }
+    if atw(&ts, (th.i).checked_add(1i64).expect("revl: Int overflow"), "if") {
+        return sg_if(ts.clone(), (th.i).checked_add(1i64).expect("revl: Int overflow"), in_method, in_async, loops);
+    }
+    return sg_arm(ts.clone(), (th.i).checked_add(1i64).expect("revl: Int overflow"), in_method, in_async, loops);
+}
+
+fn sg_loop(ts: Vec<Token>, i: i64, in_async: bool, loops: i64) -> SgR {
+    if atw(&ts, i, "while") {
+        let c = sg_cond(ts.clone(), (i).checked_add(1i64).expect("revl: Int overflow"));
+        if (c.i < 0i64) {
+            return c;
+        }
+        return sg_arm(ts.clone(), c.i, true, in_async, (loops).checked_add(1i64).expect("revl: Int overflow"));
+    }
+    if (!atk(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "(")) {
+        return sg_expected(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "(");
+    }
+    let ln = tkc(&ts, (i).checked_add(1i64).expect("revl: Int overflow")).line;
+    if (atw(&ts, (i).checked_add(2i64).expect("revl: Int overflow"), "let") || atw(&ts, (i).checked_add(2i64).expect("revl: Int overflow"), "var")) {
+        return sg_err(String::from("revl has no C-style `for (init; cond; step)` loop"), ln);
+    }
+    if (!atk(&ts, (i).checked_add(2i64).expect("revl: Int overflow"), "ident")) {
+        return sg_expected(&ts, (i).checked_add(2i64).expect("revl: Int overflow"), "ident");
+    }
+    if (atk(&ts, (i).checked_add(3i64).expect("revl: Int overflow"), "=") || atk(&ts, (i).checked_add(3i64).expect("revl: Int overflow"), ";")) {
+        return sg_err(String::from("revl has no C-style `for (init; cond; step)` loop"), ln);
+    }
+    if atw(&ts, (i).checked_add(3i64).expect("revl: Int overflow"), "in") {
+        return sg_err(String::from("revl iterates elements with `for (x of xs)`, not `for (x in xs)`"), ln);
+    }
+    if (!atw(&ts, (i).checked_add(3i64).expect("revl: Int overflow"), "of")) {
+        return sg_expected(&ts, (i).checked_add(3i64).expect("revl: Int overflow"), "of");
+    }
+    let it = sg_expr(ts.clone(), (i).checked_add(4i64).expect("revl: Int overflow"));
+    if (it.i < 0i64) {
+        return it;
+    }
+    if (!atk(&ts, it.i, ")")) {
+        return sg_expected(&ts, it.i, ")");
+    }
+    return sg_arm(ts.clone(), (it.i).checked_add(1i64).expect("revl: Int overflow"), true, in_async, (loops).checked_add(1i64).expect("revl: Int overflow"));
+}
+
+fn sg_acting(ts: &[Token], j: i64) -> SgR {
+    if (at_word(ts, j, "acting") && atk(ts, (j).checked_add(1i64).expect("revl: Int overflow"), "{")) {
+        return sg_group(ts, (j).checked_add(1i64).expect("revl: Int overflow"));
+    }
+    return sg_ok(j);
+}
+
+fn sg_emit(ts: Vec<Token>, i: i64) -> SgR {
+    let e = sg_expr(ts.clone(), i);
+    if (e.i < 0i64) {
+        return e;
+    }
+    let mut j = e.i;
+    if atw(&ts, j, "compensate") {
+        let c = sg_expr(ts.clone(), (j).checked_add(1i64).expect("revl: Int overflow"));
+        if (c.i < 0i64) {
+            return c;
+        }
+        j = c.i;
+    }
+    if atw(&ts, j, "with") {
+        let w = sg_expr(ts.clone(), (j).checked_add(1i64).expect("revl: Int overflow"));
+        if (w.i < 0i64) {
+            return w;
+        }
+        j = w.i;
+    }
+    return sg_acting(&ts, j);
+}
+
+fn sg_effect(ts: Vec<Token>, i: i64) -> SgR {
+    let mut j = (i).checked_add(1i64).expect("revl: Int overflow");
+    if atw(&ts, j.clone(), "await") {
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+        if atk(&ts, j.clone(), "{") {
+            return sg_unk();
+        }
+    }
+    if atw(&ts, j.clone(), "spawn") {
+        return sg_unk();
+    }
+    if (at_word(&ts, j.clone(), "lease") && atk(&ts, (j).checked_add(1i64).expect("revl: Int overflow"), "ident")) {
+        return sg_unk();
+    }
+    if ((at_word(&ts, j.clone(), "shared") || at_word(&ts, j.clone(), "transfer")) && atk(&ts, (j).checked_add(1i64).expect("revl: Int overflow"), "ident")) {
+        if at_word(&ts, j.clone(), "transfer") {
+            return sg_unk();
+        }
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+    }
+    if atk(&ts, j.clone(), "{") {
+        let g = sg_group(&ts, j.clone());
+        if (g.i < 0i64) {
+            return g;
+        }
+        j = g.i;
+    } else {
+        let a = sg_expr(ts.clone(), j);
+        if (a.i < 0i64) {
+            return a;
+        }
+        j = a.i;
+    }
+    if at_word(&ts, j, "replay") {
+        return sg_unk();
+    }
+    if (!atw(&ts, j, "undo")) {
+        return sg_ok(j);
+    }
+    return sg_expr(ts.clone(), (j).checked_add(1i64).expect("revl: Int overflow"));
+}
+
+fn sg_let(ts: Vec<Token>, i: i64, in_method: bool) -> SgR {
+    let mutable = atw(&ts, i, "var");
+    let ln = tkc(&ts, i).line;
+    if (!atk(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "ident")) {
+        return sg_expected(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "ident");
+    }
+    let bind = tkc(&ts, (i).checked_add(1i64).expect("revl: Int overflow")).text;
+    let mut j = (i).checked_add(2i64).expect("revl: Int overflow");
+    let mut declared = false;
+    if atk(&ts, j.clone(), ":") {
+        let te = pt_type_end(ts.clone(), (j).checked_add(1i64).expect("revl: Int overflow"));
+        if (te < 0i64) {
+            return sg_unk();
+        }
+        j = te;
+        declared = true;
+    }
+    if (!atk(&ts, j, "=")) {
+        return sg_expected(&ts, j, "=");
+    }
+    j = (j).checked_add(1i64).expect("revl: Int overflow");
+    if (!mutable) {
+        if (atw(&ts, j, "verified") || atw(&ts, j, "subscribe")) {
+            return sg_unk();
+        }
+        if (atw(&ts, j, "await") && at_word(&ts, (j).checked_add(1i64).expect("revl: Int overflow"), "approval")) {
+            return sg_unk();
+        }
+        if atw(&ts, j, "effect") {
+            return if declared { sg_unk() } else { sg_effect(ts.clone(), j) };
+        }
+    }
+    if (!in_method) {
+        return sg_err((((String::from("`").revl_concat(&if mutable { String::from("var") } else { String::from("let") })).revl_concat(" ")).revl_concat(&bind)).revl_concat(" = …` binds a plain value, which a component activation body has no use for"), ln);
+    }
+    let v = sg_expr(ts.clone(), j);
+    if (v.i < 0i64) {
+        return v;
+    }
+    return sg_acting(&ts, v.i);
+}
+
+fn sg_prelude(ts: Vec<Token>, i: i64) -> SgR {
+    let ke = sg_key_end(&ts, (i).checked_add(1i64).expect("revl: Int overflow"));
+    if (ke < 0i64) {
+        return sg_unk();
+    }
+    if atw(&ts, i, "isolate") {
+        if (!atw(&ts, ke, "in")) {
+            return sg_unk();
+        }
+        if (atw(&ts, (ke).checked_add(1i64).expect("revl: Int overflow"), "realm") && atk(&ts, (ke).checked_add(2i64).expect("revl: Int overflow"), "(")) {
+            return sg_group(&ts, (ke).checked_add(2i64).expect("revl: Int overflow"));
+        }
+        if (at_word(&ts, (ke).checked_add(1i64).expect("revl: Int overflow"), "realms") && atk(&ts, (ke).checked_add(2i64).expect("revl: Int overflow"), "(")) {
+            let r = sg_group_end(&ts, (ke).checked_add(2i64).expect("revl: Int overflow"));
+            if (r < 0i64) {
+                return sg_unk();
+            }
+            if (at_word(&ts, r, "strategy") && atk(&ts, (r).checked_add(1i64).expect("revl: Int overflow"), "(")) {
+                return sg_group(&ts, (r).checked_add(1i64).expect("revl: Int overflow"));
+            }
+            return sg_ok(r);
+        }
+        return sg_unk();
+    }
+    if atw(&ts, i, "intercept") {
+        if ((!atw(&ts, ke, "with")) || (!atk(&ts, (ke).checked_add(1i64).expect("revl: Int overflow"), "{"))) {
+            return sg_unk();
+        }
+        return sg_group(&ts, (ke).checked_add(1i64).expect("revl: Int overflow"));
+    }
+    if (!atk(&ts, ke, ":")) {
+        return sg_unk();
+    }
+    let te = pt_type_end(ts.clone(), (ke).checked_add(1i64).expect("revl: Int overflow"));
+    return if (te < 0i64) { sg_unk() } else { sg_ok(te) };
+}
+
+fn sg_method_params(ts: Vec<Token>, i: i64) -> SgR {
+    if (!atk(&ts, i, "(")) {
+        return sg_expected(&ts, i, "(");
+    }
+    let mut j = (i).checked_add(1i64).expect("revl: Int overflow");
+    while (!atk(&ts, j.clone(), ")")) {
+        if (!sg_name(&ts, j.clone())) {
+            return sg_expected(&ts, j.clone(), "ident");
+        }
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+        if atk(&ts, j.clone(), ":") {
+            let te = pt_type_end(ts.clone(), (j).checked_add(1i64).expect("revl: Int overflow"));
+            if (te < 0i64) {
+                return sg_unk();
+            }
+            j = te;
+        }
+        if atk(&ts, j, ",") {
+            j = (j).checked_add(1i64).expect("revl: Int overflow");
+        }
+    }
+    return sg_ok((j).checked_add(1i64).expect("revl: Int overflow"));
+}
+
+fn sg_provide(ts: Vec<Token>, i: i64) -> SgR {
+    let ke = sg_key_end(&ts, (i).checked_add(1i64).expect("revl: Int overflow"));
+    if (ke < 0i64) {
+        return sg_expected(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "a provision key");
+    }
+    if (!atk(&ts, ke, "{")) {
+        return sg_expected(&ts, ke, "{");
+    }
+    let mut j = (ke).checked_add(1i64).expect("revl: Int overflow");
+    while (!atk(&ts, j.clone(), "}")) {
+        if atk(&ts, j.clone(), "eof") {
+            return sg_unk();
+        }
+        let mut isa = false;
+        if atw(&ts, j.clone(), "async") {
+            isa = true;
+            j = (j).checked_add(1i64).expect("revl: Int overflow");
+        }
+        if atw(&ts, j.clone(), "emission") {
+            return sg_expected(&ts, j.clone(), "fn");
+        }
+        if (!atw(&ts, j.clone(), "fn")) {
+            return sg_expected(&ts, j.clone(), "fn");
+        }
+        if (!atk(&ts, (j).checked_add(1i64).expect("revl: Int overflow"), "ident")) {
+            return sg_expected(&ts, (j).checked_add(1i64).expect("revl: Int overflow"), "ident");
+        }
+        let ps = sg_method_params(ts.clone(), (j).checked_add(2i64).expect("revl: Int overflow"));
+        if (ps.i < 0i64) {
+            return ps;
+        }
+        j = ps.i;
+        if atk(&ts, j, "arrow") {
+            let te = pt_type_end(ts.clone(), (j).checked_add(1i64).expect("revl: Int overflow"));
+            if (te < 0i64) {
+                return sg_unk();
+            }
+            j = te;
+        }
+        if atk(&ts, j, "=") {
+            if (atk(&ts, (j).checked_add(1i64).expect("revl: Int overflow"), "{") && sg_stmt_only(tkc(&ts, (j).checked_add(2i64).expect("revl: Int overflow")))) {
+                return sg_err(String::from("a body written with `=` takes a single expression, not statements"), tkc(&ts, j).line);
+            }
+            let e = sg_expr(ts.clone(), (j).checked_add(1i64).expect("revl: Int overflow"));
+            if (e.i < 0i64) {
+                return e;
+            }
+            j = e.i;
+        } else {
+            if (!atk(&ts, j, "{")) {
+                return sg_expected(&ts, j, "{");
+            }
+            j = (j).checked_add(1i64).expect("revl: Int overflow");
+            while (!atk(&ts, j, "}")) {
+                if atk(&ts, j, ";") {
+                    j = (j).checked_add(1i64).expect("revl: Int overflow");
+                } else {
+                    if atk(&ts, j, "eof") {
+                        return sg_unk();
+                    }
+                    let s = sg_stmt(ts.clone(), j, true, isa, 0i64);
+                    if (s.i < 0i64) {
+                        return s;
+                    }
+                    j = s.i;
+                }
+            }
+            j = (j).checked_add(1i64).expect("revl: Int overflow");
+        }
+    }
+    return sg_ok((j).checked_add(1i64).expect("revl: Int overflow"));
+}
+
+fn sg_stmt(ts: Vec<Token>, i: i64, in_method: bool, in_async: bool, loops: i64) -> SgR {
+    let t = tkc(&ts, i);
+    let ln = t.line;
+    if (in_method && (t.kind == "ident")) {
+        if atk(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "=") {
+            return sg_expr(ts.clone(), (i).checked_add(2i64).expect("revl: Int overflow"));
+        }
+        let n = tkc(&ts, (i).checked_add(1i64).expect("revl: Int overflow")).kind;
+        if ((((((n == "+") || (n == "-")) || (n == "*")) || (n == "/")) || (n == "%")) && atk(&ts, (i).checked_add(2i64).expect("revl: Int overflow"), "=")) {
+            return sg_expr(ts.clone(), (i).checked_add(3i64).expect("revl: Int overflow"));
+        }
+    }
+    if (atw(&ts, i, "let") || atw(&ts, i, "var")) {
+        return sg_let(ts.clone(), i, in_method);
+    }
+    if atw(&ts, i, "verified") {
+        if (!atw(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "effect")) {
+            return sg_unk();
+        }
+        return sg_effect(ts.clone(), (i).checked_add(1i64).expect("revl: Int overflow"));
+    }
+    if atw(&ts, i, "effect") {
+        return sg_effect(ts.clone(), i);
+    }
+    if atw(&ts, i, "subscribe") {
+        return sg_err(String::from("a `subscribe` must be bound to a subscription handle: `let sub = subscribe <stream> undo sub.close()`"), ln);
+    }
+    if (at_word(&ts, i, "on") && atk(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "ident")) {
+        return sg_unk();
+    }
+    if (atw(&ts, i, "every") || atw(&ts, i, "after")) {
+        if in_method {
+            return sg_err((String::from("`").revl_concat(&t.text)).revl_concat("` is only allowed in a component activation body"), ln);
+        }
+        return sg_unk();
+    }
+    if atw(&ts, i, "fail") {
+        if in_method {
+            return sg_err(String::from("`fail` is only allowed in a component activation body (A8)"), ln);
+        }
+        return sg_expr(ts.clone(), (i).checked_add(1i64).expect("revl: Int overflow"));
+    }
+    if atw(&ts, i, "if") {
+        return sg_if(ts.clone(), i, in_method, in_async, loops);
+    }
+    if (in_method && (atw(&ts, i, "while") || atw(&ts, i, "for"))) {
+        return sg_loop(ts.clone(), i, in_async, loops);
+    }
+    if atw(&ts, i, "emit") {
+        return sg_emit(ts.clone(), (i).checked_add(1i64).expect("revl: Int overflow"));
+    }
+    if atw(&ts, i, "await") {
+        if (in_method && (!in_async)) {
+            return sg_err(String::from("`await` is only allowed in a component body"), ln);
+        }
+        if ((!in_method) && atw(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "emit")) {
+            return sg_emit(ts.clone(), (i).checked_add(2i64).expect("revl: Int overflow"));
+        }
+        return sg_expr(ts.clone(), (i).checked_add(1i64).expect("revl: Int overflow"));
+    }
+    if atw(&ts, i, "return") {
+        if (!in_method) {
+            return sg_err(String::from("`return` is only allowed inside a provide method body"), ln);
+        }
+        if atk(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "}") {
+            return sg_ok((i).checked_add(1i64).expect("revl: Int overflow"));
+        }
+        return sg_expr(ts.clone(), (i).checked_add(1i64).expect("revl: Int overflow"));
+    }
+    let route = (at_word(&ts, i, "route") && at_word(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "model"));
+    if ((((atw(&ts, i, "isolate") || atw(&ts, i, "intercept")) || atw(&ts, i, "handoff")) || atw(&ts, i, "provide")) || route) {
+        if in_method {
+            return sg_err((String::from("`").revl_concat(&if route { String::from("route model") } else { t.text })).revl_concat("` is not allowed inside a method body"), ln);
+        }
+        if route {
+            return sg_unk();
+        }
+        if atw(&ts, i, "provide") {
+            return sg_provide(ts.clone(), i);
+        }
+        return sg_prelude(ts.clone(), i);
+    }
+    if (atw(&ts, i, "break") || atw(&ts, i, "continue")) {
+        if (in_method && (loops > 0i64)) {
+            return sg_ok((i).checked_add(1i64).expect("revl: Int overflow"));
+        }
+        return sg_err((String::from("`").revl_concat(&t.text)).revl_concat("` is not valid here: activation and provide-method bodies have no loops"), ln);
+    }
+    let found = if (t.kind == "eof") { String::from("end of file") } else { (String::from("'").revl_concat(&t.text)).revl_concat("'") };
+    return sg_err(((String::from("expected a statement (`let`, `effect`, `emit`, `fail`, `if`").revl_concat(&if in_method { String::from(", `return`") } else { String::from(", `provide`") })).revl_concat("), found ")).revl_concat(&found), ln);
+}
+
+fn sg_component(ts: Vec<Token>, i: i64) -> SgR {
+    if (!atk(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "ident")) {
+        return sg_expected(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "ident");
+    }
+    let mut j = (i).checked_add(2i64).expect("revl: Int overflow");
+    while (atw(&ts, j.clone(), "requires") || atw(&ts, j.clone(), "provides")) {
+        let h = sg_header(&ts, j.clone());
+        if (h.i < 0i64) {
+            return h;
+        }
+        j = h.i;
+    }
+    if at_word(&ts, j, "liveness") {
+        return sg_unk();
+    }
+    if (!atk(&ts, j, "{")) {
+        return sg_expected(&ts, j, "{");
+    }
+    j = (j).checked_add(1i64).expect("revl: Int overflow");
+    while true {
+        while atk(&ts, j, ";") {
+            j = (j).checked_add(1i64).expect("revl: Int overflow");
+        }
+        if atk(&ts, j, "}") {
+            return sg_ok((j).checked_add(1i64).expect("revl: Int overflow"));
+        }
+        if ((atk(&ts, j, "eof") || atw(&ts, j, "requires")) || atw(&ts, j, "provides")) {
+            return sg_unk();
+        }
+        if atw(&ts, j, "config") {
+            if (!atk(&ts, (j).checked_add(1i64).expect("revl: Int overflow"), "{")) {
+                return sg_unk();
+            }
+            let g = sg_group(&ts, (j).checked_add(1i64).expect("revl: Int overflow"));
+            if (g.i < 0i64) {
+                return g;
+            }
+            j = g.i;
+        } else {
+            let s = sg_stmt(ts.clone(), j, false, false, 0i64);
+            if (s.i < 0i64) {
+                return s;
+            }
+            j = s.i;
+        }
+    }
+    return sg_unk();
+}
+
+fn sg_extern_fn(ts: &[Token], i: i64) -> bool {
+    let mut j = (i).checked_sub(1i64).expect("revl: Int overflow");
+    while (j >= 0i64) {
+        let k = (ts)[(j) as usize].kind.clone();
+        if atw(ts, j.clone(), "extern") {
+            return true;
+        }
+        if (k == "]") {
+            let mut d = 0i64;
+            let mut going = true;
+            while (going && (j >= 0i64)) {
+                if atk(ts, j.clone(), "]") {
+                    d = (d).checked_add(1i64).expect("revl: Int overflow");
+                }
+                if atk(ts, j.clone(), "[") {
+                    d = (d).checked_sub(1i64).expect("revl: Int overflow");
+                }
+                if (d == 0i64) {
+                    going = false;
+                } else {
+                    j = (j).checked_sub(1i64).expect("revl: Int overflow");
+                }
+            }
+        } else {
+            if ((k != "kw") && (k != "ident")) {
+                return false;
+            }
+        }
+        j = (j).checked_sub(1i64).expect("revl: Int overflow");
+    }
+    return false;
+}
+
+fn sg_fn(ts: Vec<Token>, i: i64) -> SgR {
+    if (!atk(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "ident")) {
+        return sg_unk();
+    }
+    let mut j = (i).checked_add(2i64).expect("revl: Int overflow");
+    if atk(&ts, j.clone(), "[") {
+        j = sg_group_end(&ts, j.clone());
+        if (j < 0i64) {
+            return sg_unk();
+        }
+    }
+    if (!atk(&ts, j, "(")) {
+        return sg_unk();
+    }
+    j = (j).checked_add(1i64).expect("revl: Int overflow");
+    let mut seen_default = false;
+    while (!atk(&ts, j, ")")) {
+        if (!sg_name(&ts, j)) {
+            return sg_expected(&ts, j, "ident");
+        }
+        let pname = tkc(&ts, j).text;
+        let pline = tkc(&ts, j).line;
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+        if (!atk(&ts, j, ":")) {
+            return sg_expected(&ts, j, ":");
+        }
+        let te = pt_type_end(ts.clone(), (j).checked_add(1i64).expect("revl: Int overflow"));
+        if (te < 0i64) {
+            return sg_unk();
+        }
+        j = te;
+        if atk(&ts, j, "=") {
+            let d = sg_expr(ts.clone(), (j).checked_add(1i64).expect("revl: Int overflow"));
+            if (d.i < 0i64) {
+                return d;
+            }
+            j = d.i;
+            seen_default = true;
+        } else {
+            if seen_default {
+                return sg_err((String::from("parameter `").revl_concat(&pname)).revl_concat("` has no default but follows a defaulted parameter"), pline);
+            }
+        }
+        if atk(&ts, j, ",") {
+            j = (j).checked_add(1i64).expect("revl: Int overflow");
+        }
+    }
+    return sg_ok((j).checked_add(1i64).expect("revl: Int overflow"));
+}
+
+fn sg_scan(ts: Vec<Token>) -> Verd {
+    let mut depth = 0i64;
+    let mut i = 0i64;
+    while (i < ts.revl_length()) {
+        let k = (ts)[(i) as usize].kind.clone();
+        if (depth == 0i64) {
+            let mut r = sg_ok(0i64);
+            if atw(&ts, i, "component") {
+                r = sg_component(ts.clone(), i);
+            }
+            if (atw(&ts, i, "fn") && (!sg_extern_fn(&ts, i))) {
+                r = sg_fn(ts.clone(), i);
+            }
+            if (r.i == (0i64).checked_sub(1i64).expect("revl: Int overflow")) {
+                return mk_verd(tagged("BAD", &r.why), r.line);
+            }
+        }
+        if (((k == "{") || (k == "[")) || (k == "(")) {
+            depth = (depth).checked_add(1i64).expect("revl: Int overflow");
+        }
+        if (((k == "}") || (k == "]")) || (k == ")")) {
+            depth = (depth).checked_sub(1i64).expect("revl: Int overflow");
+        }
+        i = (i).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return no_verd();
+}
+
 fn stmt_parse_scan(ts: Vec<Token>) -> Verd {
     let tv = pt_types_scan(ts.clone());
     if (tv.v != "") {
@@ -23546,7 +24321,7 @@ fn stmt_parse_scan(ts: Vec<Token>) -> Verd {
         }
         i = (i).checked_add(1i64).expect("revl: Int overflow");
     }
-    return no_verd();
+    return sg_scan(ts.clone());
 }
 
 pub fn parse_refusal(src: String) -> String {

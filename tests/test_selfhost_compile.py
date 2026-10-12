@@ -2347,3 +2347,125 @@ def test_the_statement_parse_rules_read_only_statement_bodies(compile_rvl, text)
     from revl.parser import parse_text
     parse_text(text, "x.rvl")
     assert compile_rvl["parse_refusal"](text) == ""
+
+
+# Issue #2359, the statement grammar. Outside examples/rejections/, model
+# attempts under bench/results/ that the reference refuses at parse time: a
+# bare call in a provide method body, a stray `undo` line, a `provides key {`
+# header with no service, an untyped `fn` parameter, a plain `let` in an
+# activation body, a `'` string in a host body. Before the statement grammar
+# was read, the document path admitted 9 of them and the used-module path 21.
+def _bench_parse_refusals():
+    from revl.parser import parse_text
+    out = []
+    for path in sorted((ROOT / "bench" / "results").rglob("*.rvl")):
+        text = path.read_text(encoding="utf-8")
+        try:
+            parse_text(text, str(path))
+        except RevlError:
+            out.append(path.relative_to(ROOT).as_posix())
+    return out
+
+
+_BENCH_PARSE_REFUSED = _bench_parse_refusals()
+
+
+def test_the_bench_results_have_parse_refusals():
+    assert len(_BENCH_PARSE_REFUSED) >= 30
+
+
+@pytest.mark.parametrize("rel", _BENCH_PARSE_REFUSED)
+def test_the_native_gate_refuses_every_bench_parse_refusal(compile_rvl, rel):
+    text = (ROOT / rel).read_text(encoding="utf-8")
+    got = compile_rvl["compile_to"](text, "py")
+    assert got.startswith("REFUSED|"), got[:120]
+    assert compile_rvl["ad_module_refusal"](text) != ""
+
+
+_SVC = "service K { fn put(k: Str) -> Int }\n"
+
+_STMT_GRAMMAR_REFUSED = {
+    "bare_call_in_method": _SVC + (
+        "component C requires kv: K provides s: K {\n"
+        "  provide s {\n    fn put(k: Str) -> Int {\n      kv.put(k)\n"
+        "      return 1\n    }\n  }\n}\n"),
+    "stray_undo_line": _SVC + (
+        "component C requires kv: K provides s: K {\n"
+        "  provide s {\n    fn put(k: Str) -> Int {\n"
+        "      let r = kv.put(k)\n      undo kv.put(k)\n      return r\n"
+        "    }\n  }\n}\n"),
+    "header_provision_without_service": _SVC + (
+        "component C requires kv: K provides s {\n"
+        "  provide s { fn put(k: Str) -> Int = 1 }\n}\n"),
+    "untyped_fn_parameter": "fn add(a, b) -> Int { return 1 }\n",
+    "plain_let_in_activation_body": _SVC + (
+        "component C requires kv: K {\n  let n = 1\n}\n"),
+    "statement_after_method_equals": _SVC + (
+        "component C requires kv: K provides s: K {\n"
+        "  provide s { fn put(k: Str) -> Int = let n = 1 }\n}\n"),
+    "statement_in_record_undo": _SVC + (
+        "component C requires kv: K {\n"
+        "  let h = effect { kv.put(\"a\") }\n    undo { emit kv.put(\"b\") }\n}\n"),
+    "match_statement_in_method": _SVC + (
+        "component C requires kv: K provides s: K {\n"
+        "  provide s {\n    fn put(k: Str) -> Int {\n"
+        "      match k { _ => 1 }\n      return 1\n    }\n  }\n}\n"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_STMT_GRAMMAR_REFUSED))
+def test_the_statement_grammar_refuses_what_the_reference_refuses(compile_rvl, name):
+    from revl.parser import parse_text
+    text = _STMT_GRAMMAR_REFUSED[name]
+    with pytest.raises(RevlError):
+        parse_text(text, "x.rvl")
+    assert compile_rvl["parse_refusal"](text) != ""
+    assert compile_rvl["compile_to"](text, "py").startswith("REFUSED|")
+
+
+_STMT_GRAMMAR_READ = {
+    "if_and_match_tails": _SVC + (
+        "component C requires kv: K provides s: K {\n"
+        "  provide s {\n    fn put(k: Str) -> Int {\n"
+        "      let o = Some(1)\n"
+        "      let x = match o { Some(v) => { let z = v + 1; z }, None => 0 }\n"
+        "      if (x > 1) { return x }\n"
+        "      return if (x > 0) { 1 } else { 2 }\n    }\n  }\n}\n"),
+    "method_loops_and_assignment": _SVC + (
+        "component C requires kv: K provides s: K {\n"
+        "  provide s {\n    fn put(k: Str) -> Int {\n      var n = 0\n"
+        "      while (n < 3) { n += 1\n if (n == 2) { break } }\n"
+        "      for (c of [1, 2]) { n = n + c }\n      return n\n"
+        "    }\n  }\n}\n"),
+    "activation_steps": _SVC + (
+        "component C requires kv: K provides s: K {\n"
+        "  isolate kv in realm(\"r\")\n"
+        "  let h = effect kv.put(\"a\") undo kv.put(\"b\")\n"
+        "  emit kv.put(\"c\")\n  if (true) { fail \"no\" }\n"
+        "  provide s { fn put(k) = 1 }\n}\n"),
+    "defaulted_parameters": "fn f(a: Int, b: Int = 2) -> Int { return a + b }\n",
+    "extern_parameters": "extern pure fn g(a: Int) -> Int = @py { return a }\n",
+}
+
+
+@pytest.mark.parametrize("name", sorted(_STMT_GRAMMAR_READ))
+def test_the_statement_grammar_refuses_nothing_the_reference_reads(compile_rvl, name):
+    from revl.parser import parse_text
+    text = _STMT_GRAMMAR_READ[name]
+    parse_text(text, "x.rvl")
+    scan = compile_rvl["stmt_parse_scan"](compile_rvl["lex_src"](text))
+    assert scan["v"] == ""
+
+
+def test_a_host_body_the_self_host_lexer_closes_elsewhere_is_refused(compile_rvl):
+    """`'` is a string in a ts host body, so `/'/g` opens one the reference
+    lexer reads to the end of the text, while the self-host lexer, which skips
+    only `"` strings, closed the body at its brace and admitted the module."""
+    from revl.parser import parse_text
+    text = ("extern pure fn q(s: Str) -> Str\n"
+            "  = @ts { return s.replace(/'/g, \"x\") }\n"
+            "  = @py { return s }\n")
+    with pytest.raises(RevlError):
+        parse_text(text, "x.rvl")
+    assert compile_rvl["ad_module_refusal"](text) != ""
+    assert compile_rvl["compile_to"](text, "py").startswith("REFUSED|")

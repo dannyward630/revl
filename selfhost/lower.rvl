@@ -19122,6 +19122,576 @@ fn sp_frame_kind(ts: List[Token], i: Int, outer: Str, decl: Str, async_fn: Bool)
   return outer
 }
 
+// ------------------------------------------------ the statement grammar
+// Issue #2359, continued. The rules above read single tokens; the reference
+// reads a component and a top-level `fn` header by its statement grammar
+// (`parser.py::component`, `stmt`, `provide`, `fn_decl`), so a bare call in a
+// provide method, a `let` of a plain value in an activation body, a header
+// `provides x {` with no service, or an untyped `fn` parameter is a parse
+// error there. `sg_*` is that grammar, ported: a statement is read from its
+// head token, and every expression in it by `parser.rvl::expr_at`, the
+// self-host's twin of `pure_expr`, so a statement ends exactly where the
+// reference's does (an `if`/`match` expression and its braces included).
+//
+// A form this reader does not model (a timer, a stream handler, a spawn, a
+// lease, a `replay` declaration, an effect block's setup, ...) is UNKNOWN:
+// the rest of that declaration is left unread and nothing is refused, so the
+// reader can only refuse what it read the way the reference reads it.
+
+// One step: `i` is the index past what was read, or -1 for a refusal (`why`,
+// at `line`), or -2 for a form left unread.
+type SgR = { i: Int, why: Str, line: Int }
+
+fn sg_ok(i: Int) -> SgR { return { i: i, why: "", line: 0 } }
+
+fn sg_err(why: Str, line: Int) -> SgR { return { i: 0 - 1, why: why, line: line } }
+
+fn sg_unk() -> SgR { return { i: 0 - 2, why: "", line: 0 } }
+
+// `parser.py::expect`'s message for the token at `j`.
+fn sg_expected(ts: List[Token], j: Int, wanted: Str) -> SgR {
+  let t = tkc(ts, j)
+  let found = t.kind == "eof" ? "end of file" : "'".concat(t.text).concat("'")
+  return sg_err("expected ".concat(wanted).concat(", found ").concat(found), t.line)
+}
+
+// Whether `t` can begin a `pure_expr` (`_unary` and `_primary`'s heads).
+fn sg_expr_head(t: Token) -> Bool {
+  let k = t.kind
+  if ((k == "int") || (k == "float") || (k == "string") || (k == "template")) { return true }
+  if ((k == "ident") || (k == "(") || (k == "[") || (k == "{")) { return true }
+  if ((k == "!") || (k == "-") || (k == "~")) { return true }
+  if (k != "kw") { return false }
+  return contains(["true", "false", "null", "hole", "config", "match", "if", "emit", "try",
+    "realm", "intercept", "isolate", "in", "with"], t.text)
+}
+
+// Whether `t` can name a record field (`_record_key_name`).
+fn sg_record_key(t: Token) -> Bool {
+  if (t.kind == "ident") { return true }
+  if (t.kind != "kw") { return false }
+  return contains(["realm", "intercept", "isolate", "in", "with", "component", "config",
+    "requires"], t.text)
+}
+
+// `_record_update_ahead`: a depth-1 `|` before the `}` matching the `{` at `i`.
+fn sg_update_ahead(ts: List[Token], i: Int) -> Bool {
+  var d = 1
+  var j = i + 1
+  while (j < ts.length()) {
+    let k = ts[j].kind
+    if ((k == "{") || (k == "(") || (k == "[")) { d += 1 }
+    if ((k == "}") || (k == ")") || (k == "]")) {
+      d -= 1
+      if (d == 0) { return false }
+    }
+    if ((k == "|") && (d == 1)) { return true }
+    if (k == "eof") { return false }
+    j += 1
+  }
+  return false
+}
+
+// One `pure_expr` at `i`, read by `expr_at`. Where `expr_at` fails, the
+// reference is known to fail only when no expression can start at `i`, or
+// when a record literal there opens with no field name; any other failure
+// is a form `expr_at` may not read (`endorse[…](…)`, say), left unread.
+fn sg_expr(ts: List[Token], i: Int) -> SgR {
+  let r = expr_at(ts, i)
+  if (!is_bad(r.e)) { return sg_ok(r.i) }
+  let t = tkc(ts, i)
+  if (!sg_expr_head(t)) { return sg_expected(ts, i, "an expression") }
+  if ((t.kind == "{") && !atk(ts, i + 1, "}") && !sg_update_ahead(ts, i)
+      && !sg_record_key(tkc(ts, i + 1)) && !atk(ts, i + 1, "string")) {
+    return sg_expected(ts, i + 1, "ident")
+  }
+  return sg_unk()
+}
+
+// A NAME (`parser.py::_name`): an identifier or a contextual cordis noun.
+fn sg_name(ts: List[Token], j: Int) -> Bool {
+  let t = tkc(ts, j)
+  if (t.kind == "ident") { return true }
+  if (t.kind != "kw") { return false }
+  let w = t.text
+  return (w == "realm") || (w == "intercept") || (w == "isolate") || (w == "in") || (w == "with")
+}
+
+// The index past the provision key at `i` (`ns::key` or `key`), or -1.
+fn sg_key_end(ts: List[Token], i: Int) -> Int {
+  if (!atk(ts, i, "ident")) { return 0 - 1 }
+  if (atk(ts, i + 1, ":") && atk(ts, i + 2, ":")) {
+    if (!atk(ts, i + 3, "ident")) { return 0 - 1 }
+    return i + 4
+  }
+  return i + 1
+}
+
+// The index past the bracket group opened at `i` (`(`, `[` or `{`), or -1.
+fn sg_group_end(ts: List[Token], i: Int) -> Int {
+  var d = 0
+  var j = i
+  while (j < ts.length()) {
+    let k = ts[j].kind
+    if ((k == "(") || (k == "[") || (k == "{")) { d += 1 }
+    if ((k == ")") || (k == "]") || (k == "}")) {
+      d -= 1
+      if (d == 0) { return j + 1 }
+    }
+    j += 1
+  }
+  return 0 - 1
+}
+
+fn sg_group(ts: List[Token], i: Int) -> SgR {
+  let e = sg_group_end(ts, i)
+  return e < 0 ? sg_unk() : sg_ok(e)
+}
+
+// The keywords that can only open a statement (`_STMT_ONLY_KWS`).
+fn sg_stmt_only(t: Token) -> Bool {
+  if (t.kind != "kw") { return false }
+  return contains(["let", "var", "effect", "subscribe", "return", "while", "for",
+    "assert", "break", "continue", "fail", "await", "verified", "every", "after"], t.text)
+}
+
+// `requires`/`provides` and its `key: Service` rows (`_header_clause`).
+fn sg_header(ts: List[Token], i: Int) -> SgR {
+  var j = i + 1
+  while (true) {
+    let ke = sg_key_end(ts, j)
+    if (ke < 0) { return sg_expected(ts, j, "a requirement or provision key") }
+    if (!atk(ts, ke, ":")) { return sg_expected(ts, ke, ":") }
+    if (at_word(ts, ke + 1, "Stream") && atk(ts, ke + 2, "[")) { return sg_unk() }
+    if (!atk(ts, ke + 1, "ident")) { return sg_expected(ts, ke + 1, "a service name after `:`") }
+    j = ke + 2
+    if (at_word(ts, j, "replay") || at_word(ts, j, "carrying")) { return sg_unk() }
+    if (!atk(ts, j, ",")) { return sg_ok(j) }
+    j += 1
+  }
+  return sg_unk()
+}
+
+// A `{ stmt* }` block or a single statement, in the grammar `in_method` names.
+fn sg_arm(ts: List[Token], i: Int, in_method: Bool, in_async: Bool, loops: Int) -> SgR {
+  if (!atk(ts, i, "{")) { return sg_stmt(ts, i, in_method, in_async, loops) }
+  var j = i + 1
+  while (true) {
+    while (atk(ts, j, ";")) { j += 1 }
+    if (atk(ts, j, "}")) {
+      if (!in_method && (j == i + 1)) {
+        return sg_err("component `if` guard cannot be empty", tkc(ts, i).line)
+      }
+      return sg_ok(j + 1)
+    }
+    if (atk(ts, j, "eof")) { return sg_unk() }
+    let s = sg_stmt(ts, j, in_method, in_async, loops)
+    if (s.i < 0) { return s }
+    j = s.i
+  }
+  return sg_unk()
+}
+
+// `( <cond> )` at `i`, the index past the `)`.
+fn sg_cond(ts: List[Token], i: Int) -> SgR {
+  if (!atk(ts, i, "(")) { return sg_expected(ts, i, "(") }
+  let c = sg_expr(ts, i + 1)
+  if (c.i < 0) { return c }
+  if (!atk(ts, c.i, ")")) { return sg_expected(ts, c.i, ")") }
+  return sg_ok(c.i + 1)
+}
+
+// `if (c) arm [else (if … | arm)]`: `_method_if` in a method, `component_if`
+// in an activation body.
+fn sg_if(ts: List[Token], i: Int, in_method: Bool, in_async: Bool, loops: Int) -> SgR {
+  let c = sg_cond(ts, i + 1)
+  if (c.i < 0) { return c }
+  let th = sg_arm(ts, c.i, in_method, in_async, loops)
+  if (th.i < 0) { return th }
+  if (in_method && at_word(ts, th.i, "elif")) {
+    return sg_err("revl has no `elif`", tkc(ts, th.i).line)
+  }
+  if (!atw(ts, th.i, "else")) { return th }
+  if (atw(ts, th.i + 1, "if")) { return sg_if(ts, th.i + 1, in_method, in_async, loops) }
+  return sg_arm(ts, th.i + 1, in_method, in_async, loops)
+}
+
+// `while (c) arm` and `for (x of xs) arm` in a provide method.
+fn sg_loop(ts: List[Token], i: Int, in_async: Bool, loops: Int) -> SgR {
+  if (atw(ts, i, "while")) {
+    let c = sg_cond(ts, i + 1)
+    if (c.i < 0) { return c }
+    return sg_arm(ts, c.i, true, in_async, loops + 1)
+  }
+  if (!atk(ts, i + 1, "(")) { return sg_expected(ts, i + 1, "(") }
+  let ln = tkc(ts, i + 1).line
+  if (atw(ts, i + 2, "let") || atw(ts, i + 2, "var")) {
+    return sg_err("revl has no C-style `for (init; cond; step)` loop", ln)
+  }
+  if (!atk(ts, i + 2, "ident")) { return sg_expected(ts, i + 2, "ident") }
+  if (atk(ts, i + 3, "=") || atk(ts, i + 3, ";")) {
+    return sg_err("revl has no C-style `for (init; cond; step)` loop", ln)
+  }
+  if (atw(ts, i + 3, "in")) {
+    return sg_err("revl iterates elements with `for (x of xs)`, not `for (x in xs)`", ln)
+  }
+  if (!atw(ts, i + 3, "of")) { return sg_expected(ts, i + 3, "of") }
+  let it = sg_expr(ts, i + 4)
+  if (it.i < 0) { return it }
+  if (!atk(ts, it.i, ")")) { return sg_expected(ts, it.i, ")") }
+  return sg_arm(ts, it.i + 1, true, in_async, loops + 1)
+}
+
+// The trailing `acting { … }` clause at `j`, if any (`_at_acting_clause`).
+fn sg_acting(ts: List[Token], j: Int) -> SgR {
+  if (at_word(ts, j, "acting") && atk(ts, j + 1, "{")) { return sg_group(ts, j + 1) }
+  return sg_ok(j)
+}
+
+// The body of an `emit` step, past the keyword (`_emit_stmt`).
+fn sg_emit(ts: List[Token], i: Int) -> SgR {
+  let e = sg_expr(ts, i)
+  if (e.i < 0) { return e }
+  var j = e.i
+  if (atw(ts, j, "compensate")) {
+    let c = sg_expr(ts, j + 1)
+    if (c.i < 0) { return c }
+    j = c.i
+  }
+  if (atw(ts, j, "with")) {
+    let w = sg_expr(ts, j + 1)
+    if (w.i < 0) { return w }
+    j = w.i
+  }
+  return sg_acting(ts, j)
+}
+
+// `effect …` at `i` (`effect_form`). The block form's setup is fn-grammar
+// code, stepped over by its braces; an undo-less acquisition that is not a
+// bare name is `effect_no_undo_scan`'s refusal, so it is not repeated here.
+fn sg_effect(ts: List[Token], i: Int) -> SgR {
+  var j = i + 1
+  if (atw(ts, j, "await")) {
+    j += 1
+    if (atk(ts, j, "{")) { return sg_unk() }
+  }
+  if (atw(ts, j, "spawn")) { return sg_unk() }
+  if (at_word(ts, j, "lease") && atk(ts, j + 1, "ident")) { return sg_unk() }
+  if ((at_word(ts, j, "shared") || at_word(ts, j, "transfer")) && atk(ts, j + 1, "ident")) {
+    if (at_word(ts, j, "transfer")) { return sg_unk() }
+    j += 1
+  }
+  if (atk(ts, j, "{")) {
+    let g = sg_group(ts, j)
+    if (g.i < 0) { return g }
+    j = g.i
+  } else {
+    let a = sg_expr(ts, j)
+    if (a.i < 0) { return a }
+    j = a.i
+  }
+  if (at_word(ts, j, "replay")) { return sg_unk() }
+  if (!atw(ts, j, "undo")) { return sg_ok(j) }
+  return sg_expr(ts, j + 1)
+}
+
+// `let`/`var` at `i`.
+fn sg_let(ts: List[Token], i: Int, in_method: Bool) -> SgR {
+  let mutable = atw(ts, i, "var")
+  let ln = tkc(ts, i).line
+  if (!atk(ts, i + 1, "ident")) { return sg_expected(ts, i + 1, "ident") }
+  let bind = tkc(ts, i + 1).text
+  var j = i + 2
+  var declared = false
+  if (atk(ts, j, ":")) {
+    let te = pt_type_end(ts, j + 1)
+    if (te < 0) { return sg_unk() }
+    j = te
+    declared = true
+  }
+  if (!atk(ts, j, "=")) { return sg_expected(ts, j, "=") }
+  j += 1
+  if (!mutable) {
+    if (atw(ts, j, "verified") || atw(ts, j, "subscribe")) { return sg_unk() }
+    if (atw(ts, j, "await") && at_word(ts, j + 1, "approval")) { return sg_unk() }
+    if (atw(ts, j, "effect")) { return declared ? sg_unk() : sg_effect(ts, j) }
+  }
+  if (!in_method) {
+    return sg_err("`".concat(mutable ? "var" : "let").concat(" ").concat(bind)
+      .concat(" = …` binds a plain value, which a component activation body has no use for"), ln)
+  }
+  let v = sg_expr(ts, j)
+  if (v.i < 0) { return v }
+  return sg_acting(ts, v.i)
+}
+
+// `isolate`/`intercept`/`handoff` in an activation body, stepped over by
+// their shapes.
+fn sg_prelude(ts: List[Token], i: Int) -> SgR {
+  let ke = sg_key_end(ts, i + 1)
+  if (ke < 0) { return sg_unk() }
+  if (atw(ts, i, "isolate")) {
+    if (!atw(ts, ke, "in")) { return sg_unk() }
+    if (atw(ts, ke + 1, "realm") && atk(ts, ke + 2, "(")) { return sg_group(ts, ke + 2) }
+    if (at_word(ts, ke + 1, "realms") && atk(ts, ke + 2, "(")) {
+      let r = sg_group_end(ts, ke + 2)
+      if (r < 0) { return sg_unk() }
+      if (at_word(ts, r, "strategy") && atk(ts, r + 1, "(")) { return sg_group(ts, r + 1) }
+      return sg_ok(r)
+    }
+    return sg_unk()
+  }
+  if (atw(ts, i, "intercept")) {
+    if (!atw(ts, ke, "with") || !atk(ts, ke + 1, "{")) { return sg_unk() }
+    return sg_group(ts, ke + 1)
+  }
+  if (!atk(ts, ke, ":")) { return sg_unk() }
+  let te = pt_type_end(ts, ke + 1)
+  return te < 0 ? sg_unk() : sg_ok(te)
+}
+
+// One provide method's parameter list, its `(` at `i` (`provide`): names,
+// each with an optional `: Type`.
+fn sg_method_params(ts: List[Token], i: Int) -> SgR {
+  if (!atk(ts, i, "(")) { return sg_expected(ts, i, "(") }
+  var j = i + 1
+  while (!atk(ts, j, ")")) {
+    if (!sg_name(ts, j)) { return sg_expected(ts, j, "ident") }
+    j += 1
+    if (atk(ts, j, ":")) {
+      let te = pt_type_end(ts, j + 1)
+      if (te < 0) { return sg_unk() }
+      j = te
+    }
+    if (atk(ts, j, ",")) { j += 1 }
+  }
+  return sg_ok(j + 1)
+}
+
+// `provide <key> { [async] fn m(…) [-> T] (= e | { stmt* }) … }` at `i`.
+fn sg_provide(ts: List[Token], i: Int) -> SgR {
+  let ke = sg_key_end(ts, i + 1)
+  if (ke < 0) { return sg_expected(ts, i + 1, "a provision key") }
+  if (!atk(ts, ke, "{")) { return sg_expected(ts, ke, "{") }
+  var j = ke + 1
+  while (!atk(ts, j, "}")) {
+    if (atk(ts, j, "eof")) { return sg_unk() }
+    var isa = false
+    if (atw(ts, j, "async")) {
+      isa = true
+      j += 1
+    }
+    if (atw(ts, j, "emission")) { return sg_expected(ts, j, "fn") }
+    if (!atw(ts, j, "fn")) { return sg_expected(ts, j, "fn") }
+    if (!atk(ts, j + 1, "ident")) { return sg_expected(ts, j + 1, "ident") }
+    let ps = sg_method_params(ts, j + 2)
+    if (ps.i < 0) { return ps }
+    j = ps.i
+    if (atk(ts, j, "arrow")) {
+      let te = pt_type_end(ts, j + 1)
+      if (te < 0) { return sg_unk() }
+      j = te
+    }
+    if (atk(ts, j, "=")) {
+      if (atk(ts, j + 1, "{") && sg_stmt_only(tkc(ts, j + 2))) {
+        return sg_err("a body written with `=` takes a single expression, not statements",
+          tkc(ts, j).line)
+      }
+      let e = sg_expr(ts, j + 1)
+      if (e.i < 0) { return e }
+      j = e.i
+    } else {
+      if (!atk(ts, j, "{")) { return sg_expected(ts, j, "{") }
+      j += 1
+      while (!atk(ts, j, "}")) {
+        if (atk(ts, j, ";")) { j += 1 }
+        else {
+          if (atk(ts, j, "eof")) { return sg_unk() }
+          let s = sg_stmt(ts, j, true, isa, 0)
+          if (s.i < 0) { return s }
+          j = s.i
+        }
+      }
+      j += 1
+    }
+  }
+  return sg_ok(j + 1)
+}
+
+// One statement at `i` (`parser.py::stmt`): a provide method's when
+// `in_method`, else an activation body's. `loops` is the method loop depth.
+fn sg_stmt(ts: List[Token], i: Int, in_method: Bool, in_async: Bool, loops: Int) -> SgR {
+  let t = tkc(ts, i)
+  let ln = t.line
+  if (in_method && (t.kind == "ident")) {
+    if (atk(ts, i + 1, "=")) { return sg_expr(ts, i + 2) }
+    let n = tkc(ts, i + 1).kind
+    if (((n == "+") || (n == "-") || (n == "*") || (n == "/") || (n == "%")) && atk(ts, i + 2, "=")) {
+      return sg_expr(ts, i + 3)
+    }
+  }
+  if (atw(ts, i, "let") || atw(ts, i, "var")) { return sg_let(ts, i, in_method) }
+  if (atw(ts, i, "verified")) {
+    if (!atw(ts, i + 1, "effect")) { return sg_unk() }
+    return sg_effect(ts, i + 1)
+  }
+  if (atw(ts, i, "effect")) { return sg_effect(ts, i) }
+  if (atw(ts, i, "subscribe")) {
+    return sg_err("a `subscribe` must be bound to a subscription handle: `let sub = subscribe <stream> undo sub.close()`", ln)
+  }
+  if (at_word(ts, i, "on") && atk(ts, i + 1, "ident")) { return sg_unk() }
+  if (atw(ts, i, "every") || atw(ts, i, "after")) {
+    if (in_method) {
+      return sg_err("`".concat(t.text).concat("` is only allowed in a component activation body"), ln)
+    }
+    return sg_unk()
+  }
+  if (atw(ts, i, "fail")) {
+    if (in_method) { return sg_err("`fail` is only allowed in a component activation body (A8)", ln) }
+    return sg_expr(ts, i + 1)
+  }
+  if (atw(ts, i, "if")) { return sg_if(ts, i, in_method, in_async, loops) }
+  if (in_method && (atw(ts, i, "while") || atw(ts, i, "for"))) { return sg_loop(ts, i, in_async, loops) }
+  if (atw(ts, i, "emit")) { return sg_emit(ts, i + 1) }
+  if (atw(ts, i, "await")) {
+    if (in_method && !in_async) { return sg_err("`await` is only allowed in a component body", ln) }
+    if (!in_method && atw(ts, i + 1, "emit")) { return sg_emit(ts, i + 2) }
+    return sg_expr(ts, i + 1)
+  }
+  if (atw(ts, i, "return")) {
+    if (!in_method) { return sg_err("`return` is only allowed inside a provide method body", ln) }
+    if (atk(ts, i + 1, "}")) { return sg_ok(i + 1) }
+    return sg_expr(ts, i + 1)
+  }
+  let route = at_word(ts, i, "route") && at_word(ts, i + 1, "model")
+  if (atw(ts, i, "isolate") || atw(ts, i, "intercept") || atw(ts, i, "handoff")
+      || atw(ts, i, "provide") || route) {
+    if (in_method) {
+      return sg_err("`".concat(route ? "route model" : t.text).concat("` is not allowed inside a method body"), ln)
+    }
+    if (route) { return sg_unk() }
+    if (atw(ts, i, "provide")) { return sg_provide(ts, i) }
+    return sg_prelude(ts, i)
+  }
+  if (atw(ts, i, "break") || atw(ts, i, "continue")) {
+    if (in_method && (loops > 0)) { return sg_ok(i + 1) }
+    return sg_err("`".concat(t.text).concat("` is not valid here: activation and provide-method bodies have no loops"), ln)
+  }
+  let found = t.kind == "eof" ? "end of file" : "'".concat(t.text).concat("'")
+  return sg_err("expected a statement (`let`, `effect`, `emit`, `fail`, `if`"
+    .concat(in_method ? ", `return`" : ", `provide`").concat("), found ").concat(found), ln)
+}
+
+// `[boot] component <Name> <header> { … }` at `i` (`parser.py::component`).
+fn sg_component(ts: List[Token], i: Int) -> SgR {
+  if (!atk(ts, i + 1, "ident")) { return sg_expected(ts, i + 1, "ident") }
+  var j = i + 2
+  while (atw(ts, j, "requires") || atw(ts, j, "provides")) {
+    let h = sg_header(ts, j)
+    if (h.i < 0) { return h }
+    j = h.i
+  }
+  if (at_word(ts, j, "liveness")) { return sg_unk() }
+  if (!atk(ts, j, "{")) { return sg_expected(ts, j, "{") }
+  j += 1
+  while (true) {
+    while (atk(ts, j, ";")) { j += 1 }
+    if (atk(ts, j, "}")) { return sg_ok(j + 1) }
+    if (atk(ts, j, "eof") || atw(ts, j, "requires") || atw(ts, j, "provides")) { return sg_unk() }
+    if (atw(ts, j, "config")) {
+      if (!atk(ts, j + 1, "{")) { return sg_unk() }
+      let g = sg_group(ts, j + 1)
+      if (g.i < 0) { return g }
+      j = g.i
+    } else {
+      let s = sg_stmt(ts, j, false, false, 0)
+      if (s.i < 0) { return s }
+      j = s.i
+    }
+  }
+  return sg_unk()
+}
+
+// Whether the `fn` at `i` is an extern's: walking back over the extern's
+// modifiers (keywords, names and `[…]` capability groups) reaches `extern`.
+fn sg_extern_fn(ts: List[Token], i: Int) -> Bool {
+  var j = i - 1
+  while (j >= 0) {
+    let k = ts[j].kind
+    if (atw(ts, j, "extern")) { return true }
+    if (k == "]") {
+      var d = 0
+      var going = true
+      while (going && (j >= 0)) {
+        if (atk(ts, j, "]")) { d += 1 }
+        if (atk(ts, j, "[")) { d -= 1 }
+        if (d == 0) { going = false } else { j -= 1 }
+      }
+    } else {
+      if ((k != "kw") && (k != "ident")) { return false }
+    }
+    j -= 1
+  }
+  return false
+}
+
+// A top-level `fn` header at `i` (`fn_decl`): the name, an optional `[T]`
+// list, and `(name: Type [= default], …)`, every parameter typed and every
+// one after a default defaulted. The body is the fn grammar's, not read here.
+fn sg_fn(ts: List[Token], i: Int) -> SgR {
+  if (!atk(ts, i + 1, "ident")) { return sg_unk() }
+  var j = i + 2
+  if (atk(ts, j, "[")) {
+    j = sg_group_end(ts, j)
+    if (j < 0) { return sg_unk() }
+  }
+  if (!atk(ts, j, "(")) { return sg_unk() }
+  j += 1
+  var seen_default = false
+  while (!atk(ts, j, ")")) {
+    if (!sg_name(ts, j)) { return sg_expected(ts, j, "ident") }
+    let pname = tkc(ts, j).text
+    let pline = tkc(ts, j).line
+    j += 1
+    if (!atk(ts, j, ":")) { return sg_expected(ts, j, ":") }
+    let te = pt_type_end(ts, j + 1)
+    if (te < 0) { return sg_unk() }
+    j = te
+    if (atk(ts, j, "=")) {
+      let d = sg_expr(ts, j + 1)
+      if (d.i < 0) { return d }
+      j = d.i
+      seen_default = true
+    } else {
+      if (seen_default) {
+        return sg_err("parameter `".concat(pname).concat("` has no default but follows a defaulted parameter"), pline)
+      }
+    }
+    if (atk(ts, j, ",")) { j += 1 }
+  }
+  return sg_ok(j + 1)
+}
+
+// The first component or top-level `fn` header of `ts` that the reference's
+// statement grammar refuses, as a verdict.
+fn sg_scan(ts: List[Token]) -> Verd {
+  var depth = 0
+  var i = 0
+  while (i < ts.length()) {
+    let k = ts[i].kind
+    if (depth == 0) {
+      var r = sg_ok(0)
+      if (atw(ts, i, "component")) { r = sg_component(ts, i) }
+      if (atw(ts, i, "fn") && !sg_extern_fn(ts, i)) { r = sg_fn(ts, i) }
+      if (r.i == 0 - 1) { return mk_verd(tagged("BAD", r.why), r.line) }
+    }
+    if ((k == "{") || (k == "[") || (k == "(")) { depth += 1 }
+    if ((k == "}") || (k == "]") || (k == ")")) { depth -= 1 }
+    i += 1
+  }
+  return no_verd()
+}
+
 // The first statement-level parse error of `ts` the reference parser raises
 // and `parse_prog` does not, as a verdict.
 fn stmt_parse_scan(ts: List[Token]) -> Verd {
@@ -19239,7 +19809,7 @@ fn stmt_parse_scan(ts: List[Token]) -> Verd {
     }
     i += 1
   }
-  return no_verd()
+  return sg_scan(ts)
 }
 
 // The whole PARSE stage of the native gate over `src`, the refusals the

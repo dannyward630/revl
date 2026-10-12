@@ -1332,6 +1332,38 @@ fn rl_opaque_end(s: Str, i: Int) -> Int {
   return i
 }
 
+// Issue #2359: why `s` does not lex as the reference lexer reads it, or "".
+// The self-host lexer balances a host body on `"` strings alone, so a body
+// whose `'` string or block comment holds an unmatched brace (`@ts { … /'/g …
+// }`) closes where the reference's `_match_brace` does not, and the reference
+// reports an unterminated body. Each comment, string, template and host body
+// is stepped over as `lex` steps over it, and the first that does not close,
+// or a host body the self-host lexer closes elsewhere, is refused on its line.
+fn rl_lex_refusal(s: Str) -> Str {
+  let n = s.length()
+  var i = 0
+  var line = 1
+  while (i < n) {
+    let past = rl_opaque_end(s, i)
+    if (past < 0) {
+      return "line ".concat(line.to_str())
+        .concat(": an unterminated string, template or host body (the reference lexer reads it to the end of the text)")
+    }
+    // a host body the self-host lexer would close at another brace than the
+    // reference does carries other host text, so it is refused, not emitted
+    if ((past > i + 1) && (s.slice(i, i + 1) == "@") && (ul_host_body_end(s, i) != past)) {
+      return "line ".concat(line.to_str())
+        .concat(": a host body whose braces sit in host strings or comments the self-host lexer does not skip")
+    }
+    let stop = past > i ? past : i + 1
+    while (i < stop) {
+      if (s.slice(i, i + 1).charCodeAt(0) == 10) { line += 1 }
+      i += 1
+    }
+  }
+  return ""
+}
+
 // The next token at or after `i`: whitespace and `//` comments skipped.
 fn rl_skip_trivia(s: Str, i: Int) -> Int {
   var j = ul_skip_ws(s, i)
@@ -2023,6 +2055,8 @@ fn ad_module_refusal(source: Str) -> Str {
   let ts = lex_src(source)
   let lexed = ad_lex_refusal(ts)
   if (lexed != "") { return lexed }
+  let unread = rl_lex_refusal(source)
+  if (unread != "") { return unread }
   var program = source
   var depth = 0
   var i = 0
@@ -2368,6 +2402,8 @@ pub fn compile_to_at(source: Str, tier: Str, path: Str) -> Str {
   if (!supported_tier(tier)) { return "UNKNOWN_TIER|".concat(tier) }
   let verdict = admit_src(source)
   if (verdict != "") { return "REFUSED|".concat(tc_import_first(source, path, verdict)) }
+  let unlexed = rl_lex_refusal(source)
+  if (unlexed != "") { return "REFUSED|BAD|".concat(unlexed) }
   // Issue #2332: every used module reads whole, or nothing is linked.
   let unread = ad_used_modules_refusal(source, path)
   if (unread != "") { return unread }
