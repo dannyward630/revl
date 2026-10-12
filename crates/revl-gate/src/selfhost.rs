@@ -22851,6 +22851,520 @@ fn collect_refusals(ts: Vec<Token>, pg: Prog) -> Vec<Verd> {
     return append_verds(nl.refs.clone(), link_refusals(pg.clone(), vec![], vec![], vec![], vec![]));
 }
 
+fn pt_decl_head(ts: &[Token], i: i64) -> bool {
+    let t = tkc(ts, i);
+    if (t.kind == "eof") {
+        return true;
+    }
+    if (t.kind == "kw") {
+        let w = t.text;
+        if ((((w == "type") || (w == "fn")) || (w == "extern")) || (w == "service")) {
+            return true;
+        }
+        return ((((w == "component") || (w == "use")) || (w == "test")) || (w == "pub"));
+    }
+    if (t.kind != "ident") {
+        return false;
+    }
+    if (t.text == "boot") {
+        return atw(ts, (i).checked_add(1i64).expect("revl: Int overflow"), "component");
+    }
+    if (t.text == "event") {
+        return atk(ts, (i).checked_add(1i64).expect("revl: Int overflow"), "ident");
+    }
+    if (((t.text == "prop") || (t.text == "lifecycle")) || (t.text == "fault")) {
+        return atw(ts, (i).checked_add(1i64).expect("revl: Int overflow"), "test");
+    }
+    if (t.text == "model") {
+        return (at_word(ts, (i).checked_add(1i64).expect("revl: Int overflow"), "role") || at_word(ts, (i).checked_add(1i64).expect("revl: Int overflow"), "council"));
+    }
+    if (t.text == "secret") {
+        return (atk(ts, (i).checked_add(1i64).expect("revl: Int overflow"), "ident") && at_word(ts, (i).checked_add(2i64).expect("revl: Int overflow"), "for"));
+    }
+    return false;
+}
+
+fn pt_type_end(ts: Vec<Token>, i: i64) -> i64 {
+    let r = type_at(ts.clone(), i);
+    if ((!r.ok) || (r.i <= i)) {
+        return (0i64).checked_sub(1i64).expect("revl: Int overflow");
+    }
+    return r.i;
+}
+
+fn pt_record_end(ts: Vec<Token>, i: i64) -> i64 {
+    let mut j = (i).checked_add(1i64).expect("revl: Int overflow");
+    while (!atk(&ts, j.clone(), "}")) {
+        if (!is_record_key(tkc(&ts, j.clone()))) {
+            return (0i64).checked_sub(1i64).expect("revl: Int overflow");
+        }
+        if (!atk(&ts, (j).checked_add(1i64).expect("revl: Int overflow"), ":")) {
+            return (0i64).checked_sub(1i64).expect("revl: Int overflow");
+        }
+        j = pt_type_end(ts.clone(), (j).checked_add(2i64).expect("revl: Int overflow"));
+        if (j < 0i64) {
+            return (0i64).checked_sub(1i64).expect("revl: Int overflow");
+        }
+        if atk(&ts, j, ",") {
+            j = (j).checked_add(1i64).expect("revl: Int overflow");
+        }
+    }
+    return (j).checked_add(1i64).expect("revl: Int overflow");
+}
+
+fn pt_type_rhs_end(ts: Vec<Token>, i: i64) -> i64 {
+    if atk(&ts, i, "{") {
+        return pt_record_end(ts.clone(), i);
+    }
+    if atk(&ts, i, "(") {
+        return pt_type_end(ts.clone(), i);
+    }
+    let mut j = i;
+    let mut first = true;
+    while true {
+        if (!atk(&ts, j, "ident")) {
+            return (0i64).checked_sub(1i64).expect("revl: Int overflow");
+        }
+        if (first && (atk(&ts, (j).checked_add(1i64).expect("revl: Int overflow"), "[") || atk(&ts, (j).checked_add(1i64).expect("revl: Int overflow"), "?"))) {
+            let e = pt_type_end(ts.clone(), j);
+            if ((e < 0i64) || atk(&ts, e, "|")) {
+                return (0i64).checked_sub(1i64).expect("revl: Int overflow");
+            }
+            return e;
+        }
+        first = false;
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+        if atk(&ts, j, "(") {
+            j = pt_type_end(ts.clone(), (j).checked_add(1i64).expect("revl: Int overflow"));
+            if ((j < 0i64) || (!atk(&ts, j, ")"))) {
+                return (0i64).checked_sub(1i64).expect("revl: Int overflow");
+            }
+            j = (j).checked_add(1i64).expect("revl: Int overflow");
+        }
+        if (!atk(&ts, j, "|")) {
+            return j;
+        }
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return (0i64).checked_sub(1i64).expect("revl: Int overflow");
+}
+
+fn pt_type_refusal(ts: Vec<Token>, i: i64) -> String {
+    let name = tkc(&ts, (i).checked_add(1i64).expect("revl: Int overflow"));
+    let at_line = (String::from("line ").revl_concat(&(tkc(&ts, i).line).to_string())).revl_concat(": ");
+    if (name.kind != "ident") {
+        return at_line.revl_concat("a `type` declaration has no name");
+    }
+    let mut j = (i).checked_add(2i64).expect("revl: Int overflow");
+    if atk(&ts, j.clone(), "[") {
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+        while (!atk(&ts, j.clone(), "]")) {
+            if (!atk(&ts, j.clone(), "ident")) {
+                return ((at_line.revl_concat("the type parameters of `")).revl_concat(&name.text)).revl_concat("` do not parse");
+            }
+            j = (j).checked_add(1i64).expect("revl: Int overflow");
+            if atk(&ts, j.clone(), ",") {
+                j = (j).checked_add(1i64).expect("revl: Int overflow");
+            }
+        }
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+    }
+    if (!atk(&ts, j.clone(), "=")) {
+        return ((at_line.revl_concat("expected `=` in the declaration of type `")).revl_concat(&name.text)).revl_concat("`");
+    }
+    let mut end = pt_type_rhs_end(ts.clone(), (j).checked_add(1i64).expect("revl: Int overflow"));
+    if (end < 0i64) {
+        return ((at_line.revl_concat("the declaration of type `")).revl_concat(&name.text)).revl_concat("` does not parse");
+    }
+    while atk(&ts, end, ";") {
+        end = (end).checked_add(1i64).expect("revl: Int overflow");
+    }
+    if (!pt_decl_head(&ts, end)) {
+        let t = tkc(&ts, end);
+        return (((((String::from("line ").revl_concat(&(t.line).to_string())).revl_concat(": expected a top-level declaration, found `")).revl_concat(&t.text)).revl_concat("` after type `")).revl_concat(&name.text)).revl_concat("`");
+    }
+    return String::from("");
+}
+
+fn pt_types_scan(ts: Vec<Token>) -> Verd {
+    let mut depth = 0i64;
+    let mut i = 0i64;
+    while (i < ts.revl_length()) {
+        let k = (ts)[(i) as usize].kind.clone();
+        if (((k == "{") || (k == "[")) || (k == "(")) {
+            depth = (depth).checked_add(1i64).expect("revl: Int overflow");
+        }
+        if (((k == "}") || (k == "]")) || (k == ")")) {
+            depth = (depth).checked_sub(1i64).expect("revl: Int overflow");
+        }
+        if ((depth == 0i64) && atw(&ts, i, "type")) {
+            let why = pt_type_refusal(ts.clone(), i);
+            if (why != "") {
+                return mk_verd(tagged("BAD", &why), (ts)[(i) as usize].line.clone());
+            }
+        }
+        i = (i).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return no_verd();
+}
+
+fn sp_stmt_head(ts: &[Token], i: i64) -> bool {
+    if (i == 0i64) {
+        return true;
+    }
+    let p = tkc(ts, (i).checked_sub(1i64).expect("revl: Int overflow"));
+    if (((p.kind == "{") || (p.kind == ";")) || (p.kind == "}")) {
+        return true;
+    }
+    if (p.line >= tkc(ts, i).line) {
+        return false;
+    }
+    let ops = vec![String::from(","), String::from("="), String::from("=="), String::from("!="), String::from("+"), String::from("-"), String::from("*"), String::from("/"), String::from("%"), String::from("<"), String::from(">"), String::from("<="), String::from(">="), String::from("&&"), String::from("||"), String::from("??"), String::from("?"), String::from(":"), String::from("."), String::from("?."), String::from("=>"), String::from("arrow"), String::from("("), String::from("["), String::from("|"), String::from("!"), String::from("&"), String::from("^")];
+    if contains__m2(&ops, &p.kind) {
+        return false;
+    }
+    if (p.kind == "kw") {
+        let w = p.text;
+        return (!((((((((((w == "undo") || (w == "compensate")) || (w == "return")) || (w == "in")) || (w == "with")) || (w == "effect")) || (w == "emit")) || (w == "await")) || (w == "else")) || (w == "of")));
+    }
+    return true;
+}
+
+fn sp_nullish_mix(ts: &[Token], i: i64) -> String {
+    let stops = vec![String::from(","), String::from(";"), String::from("="), String::from(":"), String::from("?"), String::from("=>"), String::from("arrow"), String::from("|"), String::from("kw"), String::from("eof")];
+    let mut d = 0i64;
+    let mut j = (i).checked_sub(1i64).expect("revl: Int overflow");
+    while (j >= 0i64) {
+        let k = (ts)[(j) as usize].kind.clone();
+        if (((k == ")") || (k == "]")) || (k == "}")) {
+            d = (d).checked_add(1i64).expect("revl: Int overflow");
+        } else {
+            if (((k == "(") || (k == "[")) || (k == "{")) {
+                if (d == 0i64) {
+                    j = (0i64).checked_sub(1i64).expect("revl: Int overflow");
+                } else {
+                    d = (d).checked_sub(1i64).expect("revl: Int overflow");
+                }
+            } else {
+                if (d == 0i64) {
+                    if ((k == "||") || (k == "&&")) {
+                        return k;
+                    }
+                    if contains__m2(&stops, &k) {
+                        j = (0i64).checked_sub(1i64).expect("revl: Int overflow");
+                    }
+                }
+            }
+        }
+        j = (j).checked_sub(1i64).expect("revl: Int overflow");
+    }
+    d = 0i64;
+    j = (i).checked_add(1i64).expect("revl: Int overflow");
+    while (j < ts.revl_length()) {
+        let k = (ts)[(j) as usize].kind.clone();
+        if (((k == "(") || (k == "[")) || (k == "{")) {
+            d = (d).checked_add(1i64).expect("revl: Int overflow");
+        } else {
+            if (((k == ")") || (k == "]")) || (k == "}")) {
+                if (d == 0i64) {
+                    j = ts.revl_length();
+                } else {
+                    d = (d).checked_sub(1i64).expect("revl: Int overflow");
+                }
+            } else {
+                if (d == 0i64) {
+                    if ((k == "||") || (k == "&&")) {
+                        return k;
+                    }
+                    if contains__m2(&stops, &k) {
+                        j = ts.revl_length();
+                    }
+                }
+            }
+        }
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return String::from("");
+}
+
+fn sp_after_optional(ts: &[Token], i: i64) -> bool {
+    let mut j = (i).checked_add(2i64).expect("revl: Int overflow");
+    if atk(ts, j.clone(), "(") {
+        let mut d = 0i64;
+        let mut going = true;
+        while (going && (j < ts.revl_length())) {
+            if atk(ts, j.clone(), "(") {
+                d = (d).checked_add(1i64).expect("revl: Int overflow");
+            }
+            if atk(ts, j.clone(), ")") {
+                d = (d).checked_sub(1i64).expect("revl: Int overflow");
+            }
+            j = (j).checked_add(1i64).expect("revl: Int overflow");
+            if (d == 0i64) {
+                going = false;
+            }
+        }
+    }
+    return ((atk(ts, j.clone(), ".") || atk(ts, j.clone(), "(")) || atk(ts, j.clone(), "["));
+}
+
+fn sp_ui_class(tok: &str) -> String {
+    let segs = tok.revl_split(".");
+    if (segs.revl_length() < 2i64) {
+        return String::from("");
+    }
+    let verb = ((segs)[(0i64) as usize].revl_concat(".")).revl_concat(&(segs)[(1i64) as usize]);
+    if ((verb == "screen.observe") || (verb == "ui.find")) {
+        return String::from("reversible");
+    }
+    if (verb == "ui.text") {
+        return String::from("compensatable");
+    }
+    if (verb == "ui.click") {
+        return String::from("unknown");
+    }
+    if (verb == "ui.download") {
+        return String::from("irreversible");
+    }
+    return String::from("");
+}
+
+fn sp_ui_teardown(ts: &[Token], i: i64) -> String {
+    let kind = tkc(ts, (i).checked_add(1i64).expect("revl: Int overflow")).text;
+    if (!atk(ts, (i).checked_add(2i64).expect("revl: Int overflow"), "[")) {
+        return String::from("");
+    }
+    let mut j = (i).checked_add(1i64).expect("revl: Int overflow");
+    let mut d = 0i64;
+    let mut comp = false;
+    let mut name = String::from("");
+    while (((j < ts.revl_length()) && (!atk(ts, j.clone(), "eof"))) && (!((d == 0i64) && atk(ts, j.clone(), "=")))) {
+        let k = (ts)[(j) as usize].kind.clone();
+        if ((k == "(") || (k == "[")) {
+            d = (d).checked_add(1i64).expect("revl: Int overflow");
+        }
+        if ((k == ")") || (k == "]")) {
+            d = (d).checked_sub(1i64).expect("revl: Int overflow");
+        }
+        if (atw(ts, j.clone(), "compensate") && (d == 0i64)) {
+            comp = true;
+        }
+        if (atw(ts, j.clone(), "fn") && (name == "")) {
+            name = tkc(ts, (j).checked_add(1i64).expect("revl: Int overflow")).text;
+        }
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+    }
+    let mut toks: Vec<String> = vec![];
+    let mut cur = String::from("");
+    let mut pd = 0i64;
+    let mut m = (i).checked_add(3i64).expect("revl: Int overflow");
+    while (((m < ts.revl_length()) && (!((pd == 0i64) && atk(ts, m.clone(), "]")))) && (!atk(ts, m.clone(), "eof"))) {
+        let k = (ts)[(m) as usize].kind.clone();
+        if (k == "(") {
+            pd = (pd).checked_add(1i64).expect("revl: Int overflow");
+        } else {
+            if (k == ")") {
+                pd = (pd).checked_sub(1i64).expect("revl: Int overflow");
+            } else {
+                if (pd == 0i64) {
+                    if (k == ",") {
+                        toks.push(cur.clone());
+                        cur = String::from("");
+                    } else {
+                        cur.push_str(&(ts)[(m) as usize].text);
+                    }
+                }
+            }
+        }
+        m = (m).checked_add(1i64).expect("revl: Int overflow");
+    }
+    if (cur != "") {
+        toks.push(cur.clone());
+    }
+    let mut t = 0i64;
+    while (t < toks.revl_length()) {
+        let cls = sp_ui_class(&(toks)[(t) as usize]);
+        let head = (((String::from("`").revl_concat(&kind)).revl_concat("[")).revl_concat(&(toks)[(t) as usize])).revl_concat("]` is ");
+        if (((cls == "irreversible") || (cls == "unknown")) && comp) {
+            return (((head.revl_concat(&cls)).revl_concat(", so extern `")).revl_concat(&name)).revl_concat("` may not declare `compensate`");
+        }
+        if ((cls == "compensatable") && (!comp)) {
+            return ((head.revl_concat("compensatable, so extern `")).revl_concat(&name)).revl_concat("` must declare `compensate`");
+        }
+        t = (t).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return String::from("");
+}
+
+fn sp_frame_kind(ts: &[Token], i: i64, outer: String, decl: String, async_fn: bool) -> String {
+    if (outer == "") {
+        return decl;
+    }
+    if (outer == "comp") {
+        if (atk(ts, (i).checked_sub(1i64).expect("revl: Int overflow"), "ident") && atw(ts, (i).checked_sub(2i64).expect("revl: Int overflow"), "provide")) {
+            return String::from("provide");
+        }
+        return String::from("block");
+    }
+    if (outer == "provide") {
+        return if async_fn { String::from("amethod") } else { String::from("method") };
+    }
+    return outer;
+}
+
+fn stmt_parse_scan(ts: Vec<Token>) -> Verd {
+    let tv = pt_types_scan(ts.clone());
+    if (tv.v != "") {
+        return tv;
+    }
+    let mut kinds: Vec<String> = vec![];
+    let mut pds: Vec<i64> = vec![];
+    let mut pd = 0i64;
+    let mut decl = String::from("other");
+    let mut comp_name = String::from("");
+    let mut async_fn = false;
+    let mut i = 0i64;
+    while (i < ts.revl_length()) {
+        let t = (ts)[(i) as usize].clone();
+        let k = t.kind;
+        let top = if (kinds.revl_length() == 0i64) { String::from("") } else { (kinds)[((kinds.revl_length()).checked_sub(1i64).expect("revl: Int overflow")) as usize].clone() };
+        let head = (((kinds.revl_length() > 0i64) && ((pds)[((pds.revl_length()).checked_sub(1i64).expect("revl: Int overflow")) as usize] == pd)) && sp_stmt_head(&ts, i));
+        if (kinds.revl_length() == 0i64) {
+            if atw(&ts, i, "component") {
+                decl = String::from("comp");
+                comp_name = tkc(&ts, (i).checked_add(1i64).expect("revl: Int overflow")).text;
+            }
+            if atw(&ts, i, "fn") {
+                decl = String::from("fn");
+            }
+            if atw(&ts, i, "test") {
+                decl = if at_word(&ts, (i).checked_sub(1i64).expect("revl: Int overflow"), "lifecycle") { String::from("ltest") } else { String::from("test") };
+                if (at_word(&ts, (i).checked_sub(1i64).expect("revl: Int overflow"), "prop") || at_word(&ts, (i).checked_sub(1i64).expect("revl: Int overflow"), "fault")) {
+                    decl = String::from("other");
+                }
+            }
+            if ((atw(&ts, i, "service") || atw(&ts, i, "type")) || atw(&ts, i, "extern")) {
+                decl = String::from("other");
+            }
+        }
+        if (k == "{") {
+            kinds.push(sp_frame_kind(&ts, i, top.clone(), decl.clone(), async_fn));
+            pds.push(pd);
+            if (top == "") {
+                decl = String::from("other");
+            }
+        }
+        if (k == "}") {
+            if (kinds.revl_length() > 0i64) {
+                kinds = kinds.revl_slice(0i64, (kinds.revl_length()).checked_sub(1i64).expect("revl: Int overflow"));
+                pds = pds.revl_slice(0i64, (pds.revl_length()).checked_sub(1i64).expect("revl: Int overflow"));
+            }
+        }
+        if ((k == "(") || (k == "[")) {
+            pd = (pd).checked_add(1i64).expect("revl: Int overflow");
+        }
+        if ((k == ")") || (k == "]")) {
+            pd = (pd).checked_sub(1i64).expect("revl: Int overflow");
+        }
+        if ((top == "provide") && atw(&ts, i, "fn")) {
+            async_fn = atw(&ts, (i).checked_sub(1i64).expect("revl: Int overflow"), "async");
+        }
+        let ln = t.line;
+        if (atw(&ts, i, "fail") && ((((top == "fn") || (top == "method")) || (top == "amethod")) || (top == "test"))) {
+            return mk_verd(tagged("BAD", "`fail` is only allowed in a component activation body (A8)"), ln);
+        }
+        if (atw(&ts, i, "await") && ((top == "method") || ((top == "provide") && (!async_fn)))) {
+            return mk_verd(tagged("A1", "`await` is only allowed in a component body"), ln);
+        }
+        if ((atw(&ts, i, "effect") && atw(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "await")) && atk(&ts, (i).checked_add(2i64).expect("revl: Int overflow"), "{")) {
+            return mk_verd(tagged("BAD", "`effect await { … }` — the block effect form does not take `await` (item 131)"), ln);
+        }
+        if (head && ((top == "test") || (top == "fn"))) {
+            let n = tkc(&ts, (i).checked_add(1i64).expect("revl: Int overflow"));
+            let mut word = String::from("");
+            if (((k == "ident") && (((t.text == "load") || (t.text == "unload")) || (t.text == "call"))) && (n.kind == "ident")) {
+                word = t.text;
+            }
+            if (((k == "ident") && (t.text == "advance")) && ((n.kind == "ident") || (n.kind == "int"))) {
+                word = String::from("advance");
+            }
+            if (((k == "ident") && (t.text == "abort")) && ((((n.kind == "}") || (n.kind == ";")) || (n.kind == "kw")) || (n.kind == "ident"))) {
+                word = String::from("abort");
+            }
+            if (atw(&ts, i, "assert") && at_word(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "no_residue")) {
+                word = String::from("assert no_residue");
+            }
+            if (word != "") {
+                return mk_verd(tagged("BAD", &((String::from("`").revl_concat(&word)).revl_concat("` is only allowed in a `lifecycle test` body"))), ln);
+            }
+        }
+        if ((head && (top == "ltest")) && at_word(&ts, i, "swap")) {
+            return mk_verd(tagged("BAD", "there is no `swap` statement"), ln);
+        }
+        if (head && (top == "comp")) {
+            if (atw(&ts, i, "requires") || atw(&ts, i, "provides")) {
+                return mk_verd(tagged("BAD", &(((String::from("`").revl_concat(&t.text)).revl_concat("` is part of the component header, not a statement in the body of ")).revl_concat(&comp_name))), ln);
+            }
+            if ((k == "ident") && (atk(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), ".") || atk(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "("))) {
+                return mk_verd(tagged("BAD", &((String::from("expected a statement (`let`, `effect`, `emit`, `fail`, `if`, `provide`), found '").revl_concat(&t.text)).revl_concat("'"))), ln);
+            }
+        }
+        if ((k == "??") && (sp_nullish_mix(&ts, i) != "")) {
+            let op = sp_nullish_mix(&ts, i);
+            let msg = if (op == "||") { String::from("`||` cannot be mixed with `??` without parentheses") } else { String::from("`??` cannot be mixed with `&&` without parentheses") };
+            return mk_verd(tagged("BAD", &msg), ln);
+        }
+        if ((k == "?.") && sp_after_optional(&ts, i)) {
+            return mk_verd(tagged("BAD", "an optional access `?.` can only be followed by another `?.` — a plain `.field`, call, or index after `?.` would not short-circuit"), ln);
+        }
+        if (((atw(&ts, i, "realm") && atk(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "(")) && (!atk(&ts, (i).checked_add(2i64).expect("revl: Int overflow"), "string"))) && (!atk(&ts, (i).checked_add(2i64).expect("revl: Int overflow"), "?"))) {
+            return mk_verd(tagged("BAD", "dynamic realm labels are not supported — a realm is a static string literal"), ln);
+        }
+        if atw(&ts, i, "extern") {
+            let c = tkc(&ts, (i).checked_add(1i64).expect("revl: Int overflow"));
+            let named = (((((c.text == "pure") || (c.text == "acquire")) || (c.text == "emission")) || (c.text == "witnessed")) || (c.text == "local"));
+            let shaped = (((c.kind == "kw") || at_word(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "witnessed")) || at_word(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "local"));
+            if ((!named) || (!shaped)) {
+                return mk_verd(tagged("G8", &ext_unclassified_msg()), ln);
+            }
+            let ui = sp_ui_teardown(&ts, i);
+            if (ui != "") {
+                return mk_verd(tagged("G4", &ui), ln);
+            }
+        }
+        i = (i).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return no_verd();
+}
+
+pub fn parse_refusal(src: String) -> String {
+    let ts = lex_src(src.clone());
+    let fgn = foreign_scan_ts(&ts);
+    if (fgn != "") {
+        return tagged("FOREIGN", &fgn);
+    }
+    if (nesting_depth(&ts) > nesting_limit()) {
+        return tagged("BAD", &too_deep_msg());
+    }
+    let cav = closure_assign_scan(&ts);
+    if (cav.v != "") {
+        return cav.v;
+    }
+    let pg = parse_prog_ts(ts.clone());
+    if (pg.bad != "") {
+        return tagged("BAD", &pg.bad);
+    }
+    let pps = first_parse_verd(verified_parse_scan(&ts), effect_no_undo_scan(&ts));
+    if (pps.v != "") {
+        return pps.v;
+    }
+    let rph = realm_placeholder_scan(&ts);
+    if (rph.v != "") {
+        return rph.v;
+    }
+    return stmt_parse_scan(ts.clone()).v;
+}
+
 pub fn admit_src(src: String) -> String {
     let ts = lex_src(src.clone());
     let fgn = foreign_scan_ts(&ts);
@@ -22875,6 +23389,10 @@ pub fn admit_src(src: String) -> String {
     let rph = realm_placeholder_scan(&ts);
     if (rph.v != "") {
         return rph.v;
+    }
+    let sps = stmt_parse_scan(ts.clone());
+    if (sps.v != "") {
+        return sps.v;
     }
     let refs = collect_refusals(ts.clone(), pg.clone());
     if (refs.revl_length() == 0i64) {
@@ -22911,6 +23429,10 @@ pub fn admit_all(src: String) -> String {
     let rph = realm_placeholder_scan(&ts);
     if (rph.v != "") {
         return fmt_all(&(vec![rph.clone()]));
+    }
+    let sps = stmt_parse_scan(ts.clone());
+    if (sps.v != "") {
+        return fmt_all(&(vec![sps.clone()]));
     }
     let refs = collect_refusals(ts.clone(), pg.clone());
     let fxe = fn_extern_scan(&ts);
