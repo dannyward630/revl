@@ -4604,8 +4604,9 @@ fn reserved_key_markers(ir: Any) -> List[Str] {
     for (table of ["requires", "provides"]) {
       for (k of value_keys(value_field(c, table))) {
         let host = host_key(k)
-        if (list_contains(reserved, host) || host.startsWith("_")) {
-          out = out.push(`<<UNSUPPORTED-RESERVED-SERVICE-KEY:${cname}.${k}>>`)
+        let mark = `<<UNSUPPORTED-RESERVED-SERVICE-KEY:${cname}.${k}>>`
+        if ((list_contains(reserved, host) || host.startsWith("_")) && !list_contains(out, mark)) {
+          out = out.push(mark)
         }
       }
     }

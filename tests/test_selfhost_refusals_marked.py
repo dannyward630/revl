@@ -102,4 +102,6 @@ def test_an_unqualified_key_carries_no_namespaced_marker(
     reference, port = namespaced_tiers[tier]
     ir = compile_files([str(ROOT / "tests" / "fixtures" / "emit_ts_corpus"
                             / "realm_intercept.rvl")])
-    assert "<<UNSUPPORTED-NAMESPACED-KEY:" not in port(ir)
+    got = port(ir)
+    assert "<<UNSUPPORTED-NAMESPACED-KEY:" not in got
+    assert got == reference.emit(ir)
