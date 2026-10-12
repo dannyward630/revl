@@ -1485,7 +1485,11 @@ fn basis_line(shape: &Shape<'_>, running: Option<String>) -> String {
 ///   declares. That is the only interaction the reference has between an
 ///   interface-only candidate and a running manifest
 ///   (`revl.admission._admit_service_replacement`), and the item-186 service
-///   block (`!services` + `:S,op,op` rows) is what makes it answerable;
+///   block (`!services` + `:S,op,op` rows) is what makes it answerable. The
+///   service names compare folded: a candidate service whose name differs
+///   from a running one only in letter case or underscores is refused by the
+///   reference (issue #2334), and the block enumerates every running service,
+///   so that comparison is exhaustive;
 /// * no component it declares may take the name of one the wire names. A
 ///   same-name component is a REPLACEMENT, whose handoff and unmet-consumer
 ///   reasoning is the fold's and the §5 relation's, not this surface's.
@@ -1520,6 +1524,16 @@ pub(crate) fn certify_into(source: &str, manifest: &str) -> Option<String> {
     // binds, and this gate does not resolve that.
     for name in shape.services.iter().chain(shape.aliases.iter()) {
         if declared.iter().any(|s| s.name == *name) {
+            return None;
+        }
+    }
+    // Services also compare folded: the reference refuses a candidate service
+    // whose name differs from a running one only in letter case or underscores,
+    // because an admission never withdraws a running service and the
+    // composition would hold the pair a single compile refuses (issue #2334).
+    for name in &shape.services {
+        let key = name_fold(name);
+        if declared.iter().any(|s| name_fold(s.name) == key) {
             return None;
         }
     }
