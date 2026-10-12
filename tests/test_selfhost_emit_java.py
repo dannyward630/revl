@@ -112,6 +112,7 @@ Deliberately OUT (excluded from the corpus, deferred to Java Path B slice 6+):
 """
 
 import importlib.util
+import re
 import subprocess
 import sys
 import types
@@ -612,3 +613,29 @@ def test_a_java_reference_refusal_is_named_by_the_port(emitted, reference, rel, 
     with pytest.raises(reference.EmitError):
         reference.emit(ir)
     assert marker in emitted["emit_java_src"](ir)
+
+
+# The reference refuses a deferred emission before it looks at host keys, so a
+# document with both must surface the DEFERRED marker first on the port.
+NAMESPACED_AND_DEFERRED = """extern emission deferred fn deliver(sink: Str, msg: Str)
+  = @py { return } = @ts { return; } = @rs { () } = @go { return } = @java { return; }
+service Ops { emission fn enqueue(sink: Str, msg: Str) }
+component Agent provides acme::ops: Ops {
+  provide acme::ops {
+    fn enqueue(sink, msg) { emit deliver(sink, msg) }
+  }
+}
+"""
+
+
+def test_a_deferred_call_is_named_before_a_namespaced_key(
+        emitted, reference, tmp_path):
+    path = tmp_path / "ns_and_deferred.rvl"
+    path.write_text(NAMESPACED_AND_DEFERRED)
+    ir = compile_files([str(path)])
+    with pytest.raises(reference.EmitError, match="deferred"):
+        reference.emit(ir)
+    got = emitted["emit_java_src"](ir)
+    markers = re.findall(r"<<UNSUPPORTED-[A-Z-]+:", got)
+    assert "<<UNSUPPORTED-NAMESPACED-KEY:" in markers, markers
+    assert markers[0] == "<<UNSUPPORTED-DEFERRED-EMISSION:", markers

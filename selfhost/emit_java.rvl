@@ -3749,12 +3749,12 @@ pub fn emit_java_src(ir: Any) -> Str {
   // silence (issue #1123).
   let test_markers = deferred_test_markers(ir)
   if (test_markers.length() > 0) { out = out.concat(test_markers) }
-  out = out.concat(namespaced_key_markers(ir))
   // The reference refusals the class body above cannot carry, one named marker
   // each (issue #2383): a deferred emission called from a component, a
   // `validated` crossing and a required `Stream[T]` coeffect.
   out = out.concat(deferred_emission_markers(ir)).concat(validated_markers(ir))
   out = out.concat(required_stream_markers(ir))
+  out = out.concat(namespaced_key_markers(ir))
   return rstrip(out.join(newline())).concat(newline())
 }
 
