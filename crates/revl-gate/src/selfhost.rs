@@ -23050,7 +23050,7 @@ fn sp_nullish_mix(ts: &[Token], i: i64) -> String {
                     if ((k == "||") || (k == "&&")) {
                         return k;
                     }
-                    if contains__m2(&stops, &k) {
+                    if (contains__m2(&stops, &k) || sp_stmt_head(ts, j.clone())) {
                         j = (0i64).checked_sub(1i64).expect("revl: Int overflow");
                     }
                 }
@@ -23073,6 +23073,9 @@ fn sp_nullish_mix(ts: &[Token], i: i64) -> String {
                 }
             } else {
                 if (d == 0i64) {
+                    if sp_stmt_head(ts, j) {
+                        return String::from("");
+                    }
                     if ((k == "||") || (k == "&&")) {
                         return k;
                     }
@@ -23201,7 +23204,11 @@ fn sp_frame_kind(ts: &[Token], i: i64, outer: String, decl: String, async_fn: bo
         return decl;
     }
     if (outer == "comp") {
-        if (atk(ts, (i).checked_sub(1i64).expect("revl: Int overflow"), "ident") && atw(ts, (i).checked_sub(2i64).expect("revl: Int overflow"), "provide")) {
+        let mut j = (i).checked_sub(1i64).expect("revl: Int overflow");
+        while (((atk(ts, j.clone(), "ident") && atk(ts, (j).checked_sub(1i64).expect("revl: Int overflow"), ":")) && atk(ts, (j).checked_sub(2i64).expect("revl: Int overflow"), ":")) && atk(ts, (j).checked_sub(3i64).expect("revl: Int overflow"), "ident")) {
+            j = (j).checked_sub(3i64).expect("revl: Int overflow");
+        }
+        if (atk(ts, j.clone(), "ident") && atw(ts, (j).checked_sub(1i64).expect("revl: Int overflow"), "provide")) {
             return String::from("provide");
         }
         return String::from("block");
@@ -23234,8 +23241,15 @@ fn stmt_parse_scan(ts: Vec<Token>) -> Verd {
                 decl = String::from("comp");
                 comp_name = tkc(&ts, (i).checked_add(1i64).expect("revl: Int overflow")).text;
             }
-            if atw(&ts, i, "fn") {
+            let ext = ((atw(&ts, (i).checked_sub(1i64).expect("revl: Int overflow"), "extern") || atw(&ts, (i).checked_sub(2i64).expect("revl: Int overflow"), "extern")) || atw(&ts, (i).checked_sub(3i64).expect("revl: Int overflow"), "extern"));
+            if (atw(&ts, i, "fn") && (!ext)) {
                 decl = String::from("fn");
+            }
+            if ((k == "=") && (pd == 0i64)) {
+                decl = String::from("other");
+            }
+            if ((atw(&ts, i, "use") || atw(&ts, i, "event")) || atw(&ts, i, "route")) {
+                decl = String::from("other");
             }
             if atw(&ts, i, "test") {
                 decl = if at_word(&ts, (i).checked_sub(1i64).expect("revl: Int overflow"), "lifecycle") { String::from("ltest") } else { String::from("test") };
@@ -23279,7 +23293,7 @@ fn stmt_parse_scan(ts: Vec<Token>) -> Verd {
         if ((atw(&ts, i, "effect") && atw(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "await")) && atk(&ts, (i).checked_add(2i64).expect("revl: Int overflow"), "{")) {
             return mk_verd(tagged("BAD", "`effect await { … }` — the block effect form does not take `await` (item 131)"), ln);
         }
-        if (head && ((top == "test") || (top == "fn"))) {
+        if (head && (top == "test")) {
             let n = tkc(&ts, (i).checked_add(1i64).expect("revl: Int overflow"));
             let mut word = String::from("");
             if (((k == "ident") && (((t.text == "load") || (t.text == "unload")) || (t.text == "call"))) && (n.kind == "ident")) {
@@ -23362,7 +23376,12 @@ pub fn parse_refusal(src: String) -> String {
     if (rph.v != "") {
         return rph.v;
     }
-    return stmt_parse_scan(ts.clone()).v;
+    let sv = stmt_parse_scan(ts.clone());
+    let bar = sv.v.revl_index_of("|");
+    if (((sv.v == "") || (sv.line <= 0i64)) || (bar < 0i64)) {
+        return sv.v;
+    }
+    return ((((sv.v.revl_slice(0i64, (bar).checked_add(1i64).expect("revl: Int overflow"))).revl_concat("line ")).revl_concat(&(sv.line).to_string())).revl_concat(": ")).revl_concat(&sv.v.revl_slice((bar).checked_add(1i64).expect("revl: Int overflow"), sv.v.revl_length()));
 }
 
 pub fn admit_src(src: String) -> String {

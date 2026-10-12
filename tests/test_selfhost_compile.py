@@ -1981,3 +1981,16 @@ def test_the_statement_parse_rules_refuse_nothing_the_reference_parses(compile_r
     scan = compile_rvl["stmt_parse_scan"]
     refused = {rel: v["v"] for rel, text in docs if (v := scan(lex(text)))["v"] != ""}
     assert refused == {}
+
+
+@pytest.mark.parametrize("text", [
+    'extern pure fn h() -> Int = @py { return 1 }\nuse "./m.rvl" { abort }\n',
+    'extern pure fn h() -> Int = @py { return 1 }\nuse "./m.rvl" { load call }\n',
+    "fn f(a: Opt[Int], w: Bool, z: Bool) -> Bool {\n  let v = a ?? 0\n  return w && z\n}\n",
+])
+def test_the_statement_parse_rules_read_only_statement_bodies(compile_rvl, text):
+    """An extern's `fn` opens no body, so the braces of a `use` list after it
+    are no fn body, and a `??` does not reach across a statement boundary."""
+    from revl.parser import parse_text
+    parse_text(text, "x.rvl")
+    assert compile_rvl["parse_refusal"](text) == ""
