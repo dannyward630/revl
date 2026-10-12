@@ -145,7 +145,7 @@ release also folds in the full agent story and the standing correctness debt.
   re-prompts a class (c) crossing rather than re-firing it, and refuses to
   resume a policy-recorded snapshot into a policy-less session.
 - **An agent-authored source that wires a service whose `emission` names no
-  token is now refused — by `revl_load` and `revl_swap`, not only by
+  token is now refused: by `revl_load` and `revl_swap`, not only by
   `revl_admit`.** A method that spells `emission` bare declares an effect and
   declines to say what it reaches, so nothing in the composition states that it
   stops short of the admission kernel, and the kernel-boundary fold can no
@@ -153,8 +153,8 @@ release also folds in the full agent story and the standing correctness debt.
   #1265 sequenced behind the composition half (PR #1292) and issue #2105 took:
   the refusal asks the declarations, not the token namespace, so a candidate
   that composes only pure services is unaffected. The repair on the operator's
-  side is one word — write `emission[<token>]`, naming the boundary the body
-  crosses — and every shipped service already does: `stdlib/server.rvl`'s
+  side is one word: write `emission[<token>]`, naming the boundary the body
+  crosses, and every shipped service already does: `stdlib/server.rvl`'s
   per-row `Server` included, whose synthesized externs now carry the shim's own
   boundary token rather than the row's label. First-party compiles are
   unchanged; only the untrusted-author profile the agent verbs ride is
@@ -346,8 +346,8 @@ but not seen. Every instance was closed. Representative fixes:
 - A network (TCP+mTLS) seam refuses replays. The peer allowlist pinned who may
   call and deliberately did not dedup, so an admitted peer's request could be
   captured and re-delivered and the provider dispatched it again. The reason
-  recorded for that — a replay ledger needs the per-boot secret a
-  cross-composition caller can never hold — was wrong: dedup needs an identity
+  recorded for that (a replay ledger needs the per-boot secret a
+  cross-composition caller can never hold) was wrong: dedup needs an identity
   to scope the key by, and mutual TLS has already proved one. Freshness is now
   keyed on the identity the handshake proved, read off the peer certificate and
   never off the payload a replayer controls, so it needs no shared secret, and a
@@ -356,7 +356,7 @@ but not seen. Every instance was closed. Representative fixes:
   Seams report `peer-bound` where they earned it.
 - The node bridge seals a correlation envelope. It had no `correlation`
   parameter at all, so a placement disarmed a provider's guard entirely rather
-  than refuse a caller that could not satisfy it — one node consumer left a py
+  than refuse a caller that could not satisfy it: one node consumer left a py
   provider unguarded. The ts bridge now seals the same HMAC over the same
   canonical bytes, proven against the real guard over a real seam.
 - A boundary policy rule now selects a directly emitted extern by the capability
@@ -381,8 +381,8 @@ but not seen. Every instance was closed. Representative fixes:
   when it declines. Author-written literal targets are recorded either way.
 - The TypeScript emitter escapes author text that reaches an emitted comment.
   A `config` field's default is rendered into a `/** default: ... */` doc line,
-  and the string escaping it went through is the one a string LITERAL needs —
-  a comment has no escape syntax at all, only sequences that end it. The doc
+  and the string escaping it went through is the one a string LITERAL needs.
+  A comment has no escape syntax at all, only sequences that end it. The doc
   line now goes through a comment escaper that breaks both of those (a line
   terminator, and `*/`), so a default can no longer close the comment and put
   the rest of itself in code position. Emitted string literals, identifiers and
