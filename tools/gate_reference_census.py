@@ -729,14 +729,15 @@ def make_admission_certify(tables):
         aliases = parsed["aliases"]
         # The reference refuses a duplicate service, method, alias and
         # component, and the native gate does not make all of those refusals, so
-        # the certifier carries them itself.
-        if len(set(services)) != len(services):
+        # the certifier carries them itself. Services and components compare
+        # folded: the reference also refuses two names of one kind that differ
+        # only in letter case or underscores (issues #2224 and #2275).
+        folded_services = [component_name_fold(name) for name in services]
+        if len(set(folded_services)) != len(folded_services):
             return False
         if len(set(aliases)) != len(aliases) \
                 or parsed["declared_aliases"] != len(aliases):
             return False
-        # Components compare folded: the reference also refuses two names that
-        # differ only in letter case or underscores (issue #2224).
         folded = [component_name_fold(name) for name in components]
         if len(set(folded)) != len(folded):
             return False

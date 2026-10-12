@@ -313,6 +313,10 @@ def _run_mcp(args) -> int:
     from ..mcp.server import serve
 
     if args.mcp_command == "serve":
+        if getattr(args, "print_config", False):
+            from ..mcp.print_config import run as print_config  # noqa: PLC0415
+
+            return print_config(args)
         _announce_or_reexec_runtime(args)
         # authoring trust: the operator's answer to "may the agent driving this
         # server author host code, and what filesystem may it name?". Default

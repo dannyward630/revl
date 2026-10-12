@@ -170,7 +170,7 @@ fn flagged(tag: Str, text: Str) -> Str { return flag(tag).concat(text) }
 fn strip_marks(s: Str) -> Str {
   var t = s.split(stdlib_mark()).join("")
   if (t.indexOf(flag_char()) < 0) { return t }
-  for (tag of ["a", "d", "m", "n", "s", "t"]) { t = t.split(flag(tag)).join("") }
+  for (tag of ["a", "d", "i", "m", "n", "s", "t"]) { t = t.split(flag(tag)).join("") }
   return t
 }
 fn replace_all(s: Str, needle: Str, repl: Str) -> Str { return s.split(needle).join(repl) }
@@ -3458,7 +3458,10 @@ fn emit_module(ir: Any, combined: Bool) -> Str {
     // front of each helper it rendered, never on the text: a Str literal that
     // spells `revlAdd(` or `math.Mod(` sets nothing (issue #2260).
     comp_strconv = has_text(marked_comp, flag("s"))
-    comp_ovf32 = has_text(marked_comp, flag("n"))
+    // a method body's Int32 `+ - *` and unary minus (issue #2262) carry the
+    // `i` mark; the combined path writes their helpers off the same flag as
+    // `to_int32`
+    comp_ovf32 = has_text(marked_comp, flag("n")) || has_text(marked_comp, flag("i"))
     comp_ovf = has_text(marked_comp, flag("a"))
     // `_COMP_NEEDS_FLOAT_DIV` / `_COMP_NEEDS_FLOAT_REM` (issue #2198)
     comp_fdiv = has_text(marked_comp, flag("d"))
@@ -4044,6 +4047,12 @@ fn comp_typed_arith(n: Any, left: Str, right: Str, env: CEnv) -> Str {
     if (op == "-") { h = "revlSub" }
     return flagged("a", `${h}(${l}, ${r})`)
   }
+  if (opnd == "Int32" && list_contains(["+", "-", "*"], op)) {
+    var h = "revlMulI32"
+    if (op == "+") { h = "revlAddI32" }
+    if (op == "-") { h = "revlSubI32" }
+    return flagged("i", `${h}(${l}, ${r})`)
+  }
   if (op == "/" && list_contains(["Int", "Int32", "Float"], opnd)) {
     return flagged("d", opnd == "Float" ? `revlDiv(${l}, ${r})` : `revlDiv(float64(${l}), float64(${r}))`)
   }
@@ -4083,6 +4092,7 @@ fn comp_expr_bare(n: Any, env: CEnv, expected: Str) -> Str {
     if (op == "!") { return `(!${operand})` }
     if (op == "~") { return `(^${operand})` }
     if (node_operands(n) == "Int") { return flagged("a", `revlSub(0, ${operand})`) }
+    if (node_operands(n) == "Int32") { return flagged("i", `revlSubI32(0, ${operand})`) }
     return `(-${operand})`
   }
   if (k == "if") {
@@ -4739,8 +4749,15 @@ fn emit_live_module(ir: Any, in_slice: Bool) -> Str {
   imports = imports.push(line(1, `"slices"`)).push("").push(line(1, `stc "github.com/0xdenny218/stc-go"`))
   var out = banner.push("import (").concat(imports).push(")").push("").push("var _ = fmt.Sprintf").push("").concat(host_runtime())
   if (stdlib) { out = out.concat(stdlib_preamble("strings")) }
-  // `_V3_OVERFLOW32_HELPER`: the narrow alone, not the pure tier's Int32 trio
-  if (has_text(marked, flag("n"))) {
+  // `_V3_OVERFLOW32_HELPER`, after `_V3_ARITH32_HELPER` when a method body's
+  // Int32 `+ - *` or unary minus set `_COMP_NEEDS_ARITH32` (issue #2262)
+  let arith32 = has_text(marked, flag("i"))
+  if (arith32 || has_text(marked, flag("n"))) {
+    if (arith32) {
+      out = out.push("func revlAddI32(a, b int32) int32 { return revlToI32(int64(a) + int64(b)) }")
+      out = out.push("func revlSubI32(a, b int32) int32 { return revlToI32(int64(a) - int64(b)) }")
+      out = out.push("func revlMulI32(a, b int32) int32 { return revlToI32(int64(a) * int64(b)) }")
+    }
     out = out.concat(["func revlToI32(v int64) int32 {", line(1, "if v < -2147483648 || v > 2147483647 {"),
                       line(2, `panic("revl: Int32 overflow")`), line(1, "}"), line(1, "return int32(v)"), "}", ""])
   }

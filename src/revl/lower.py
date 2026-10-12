@@ -64,6 +64,7 @@ from .typecheck import (
     unify,
     _is_wildcard,
     _check_method_namespace_disjoint,
+    _split_fn_type,
 )
 from .taint import (
     extract_and_normalize,
@@ -7455,7 +7456,17 @@ def _lower_pure_expr(expr, scope: dict, callables: set, alias_fns: dict, filenam
         # the checking pass has already diagnosed real mismatches, so this is
         # annotation only.
         if isinstance(expr.callee, ExprVar):
-            sig = (types.get(FNS_KEY) or {}).get(expr.callee.name)
+            callee_name = expr.callee.name
+            # issue #2311: a callee bound in the local scope (a parameter, a
+            # `let`, a loop variable) is that local function value, so its own
+            # declared type gives the parameter types, and it has no defaults.
+            # The signature table holds top-level fns only: a same-named fn in
+            # another file must not lend this call its arity or its types.
+            if callee_name in scope:
+                local_fn = _split_fn_type(str(type_env.get(callee_name) or ""))
+                sig = {"params": local_fn[0]} if local_fn else None
+            else:
+                sig = (types.get(FNS_KEY) or {}).get(callee_name)
             if sig is not None and sig.get("params"):
                 params = list(sig["params"])
                 if sig.get("tparams"):
@@ -7474,10 +7485,15 @@ def _lower_pure_expr(expr, scope: dict, callables: set, alias_fns: dict, filenam
                 # parameter's default expression. Lower each default here and
                 # mark the Int->Float widening on it exactly as a written
                 # argument would get, so a `Float = 0` default emits correctly.
-                sig = types.get(FNS_KEY, {}).get(expr.callee.name) or {}
                 defaults = sig.get("defaults") or []
                 for i in range(len(lowered_args), len(params)):
-                    dexpr = defaults[i]
+                    dexpr = defaults[i] if i < len(defaults) else None
+                    if dexpr is None:
+                        raise RevlError(
+                            filename, expr.line,
+                            f"call to `{callee_name}` gives {len(expr.args)} "
+                            f"argument(s), but its signature takes {len(params)} "
+                            f"and parameter {i + 1} has no default")
                     dnode = _lower_pure_expr(dexpr, scope, callables, alias_fns,
                                              filename, type_env, types)
                     _mark_widen(params[i], infer_ast(dexpr, type_env, types, None),

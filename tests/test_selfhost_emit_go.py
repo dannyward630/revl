@@ -170,6 +170,9 @@ CORPUS = [
     # flag on either path: imports and preambles follow what was rendered
     "comp_live_literal_helpers.rvl",
     "comp_combined_literal_helpers.rvl",
+    # ... and a method body's Int32 arithmetic writes the I32 helpers on the
+    # live path too (issue #2262)
+    "comp_live_int32_arith.rvl",
     "../emit_ts_corpus/services_methods.rvl",
     "../emit_ts_corpus/services_async.rvl",
     "../emit_py_corpus/provide_returns.rvl",
@@ -204,7 +207,8 @@ CORPUS = [
     # ... and `Any` and a Result parameter in a component signature (issue #1892)
     "comp_provide_any_result.rvl",
     # ... and arithmetic keyed on `operands`: the checked Int `+ - *`, true
-    # division, a Float `%` and Int-to-Float widening (issues #2259, #2198)
+    # division, a Float `%` and Int-to-Float widening (issues #2259, #2198),
+    # and the checked Int32 `+ - *` and unary minus (issue #2262)
     "comp_provide_arith.rvl",
 ]
 
