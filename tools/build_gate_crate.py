@@ -7381,7 +7381,7 @@ The self-host compiler is behind the reference implementation (roadmap item
 LAYER. `admit_src` decides the composition and guarantee layer (`G1`..`G4`,
 `A1`, `PRELUDE`, and parse failures as `BAD`). It does **not** run the
 reference's type layer, of which it runs one slice — the fn-body statement
-layer — and not the rest. Measured, not assumed: the reference refuses
+layer, and not the rest. Measured, not assumed: the reference refuses
 
     type P = { x: Int }
     fn f() -> P { return { y: 1 } }
