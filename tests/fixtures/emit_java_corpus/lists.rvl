@@ -1,3 +1,34 @@
 fn first(xs: List[Int]) -> Int { return xs[0] }
 fn build() -> List[Int] { return [1, 2, 3] }
 fn nest() -> List[List[Int]] { return [[1], [2, 3]] }
+// issue #2296: an annotated empty list declares as its element type, so a
+// loop over it binds a String, not an Object.
+fn collect(xs: List[Str]) -> Str {
+  var out: List[Str] = []
+  for (x of xs) { out = out.push(x) }
+  return out.join(",")
+}
+// An element type naming `Any` keeps the raw list.
+fn raw_any() -> Int {
+  var xs: List[Any] = []
+  return xs.length()
+}
+// A leaf with no Java spelling here (`Int8`) keeps the raw list; a declared
+// record and scalars nested under Map/Opt declare precisely.
+type Pt = { x: Int }
+fn sized() -> Int {
+  var xs: List[Int8] = []
+  return xs.length()
+}
+fn declared() -> Int {
+  var ps: List[Pt] = []
+  ps = ps.push({ x: 1 })
+  var ms: List[Map[Str, Opt[Int]]] = []
+  return ps.length() + ms.length()
+}
+// `Int32` (boxes to `int`) and an undeclared generic keep the raw list too.
+fn int32_and_set() -> Int {
+  var xs: List[Int32] = []
+  var ss: List[Set[Int]] = []
+  return xs.length() + ss.length()
+}

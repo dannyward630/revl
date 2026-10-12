@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from revl import compile_source  # noqa: E402
 from revl.errors import RevlError  # noqa: E402
+from revl.tiers import short_tier  # noqa: E402
 
 TIERS = ("python", "typescript", "rust", "java", "wasm", "go")
 
@@ -873,7 +874,6 @@ def selfhost_column() -> dict[str, str] | None:
 # the markdown matrix + its README embedding (roadmap item 328)
 # --------------------------------------------------------------------------
 
-_SHORT = {"python": "py", "typescript": "ts"}
 # `?` is deliberately not a verdict. A cell that reaches the renderer with this
 # glyph is a bug: `_write_readme` refuses before rendering (issue #1342). It
 # exists so `--markdown` on a working tree can still show the whole picture.
@@ -901,7 +901,7 @@ SWEEP_END = "<!-- CONFORMANCE-SWEEP:END -->"
 
 
 def _short(tier: str) -> str:
-    return _SHORT.get(tier, tier)
+    return short_tier(tier)
 
 
 def _perf_headline() -> str | None:

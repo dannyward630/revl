@@ -248,9 +248,11 @@ def _load_placement(path: str) -> dict:
 _EMIT_MODULES: dict = {}
 
 
-def backend_emit_module(backend: str):
+def backend_emit_module(backend: str, root=None):
     """The `backends/<backend>/emit.py` module, loaded from its own path and
-    cached.
+    cached. `root` is the `backends/` directory to read it from, by default
+    `backends_root()`; a caller that keeps its own root (`bundle`, and the
+    plan-time dry-run below) passes it so a repointed root is honoured.
 
     Every backend directory ships a module named `emit`, so a bare `import
     emit` answers with whichever directory sat first on `sys.path` (issue
@@ -263,6 +265,10 @@ def backend_emit_module(backend: str):
     from `sys.modules` when that name already holds this path, so every loader
     in the process shares ONE module object. The cache is keyed by the resolved
     path, so two checkouts in one process never alias each other's emitter.
+    Only the default tree's file takes the shared name: a `root` that resolves
+    to another file is bound under `revl_<backend>_emit_<path hash>`, so it
+    never displaces the module the default tree's other loaders (and
+    `backends/wasm/canonical.py`) reuse by name (issue #2204).
 
     This lives here, in the placement layer, and NOT in `revl._paths`:
     `_paths` is on the compile graph (`compiler.py` imports it), and a
@@ -271,12 +277,15 @@ def backend_emit_module(backend: str):
     module any `backends/**/*.py` file imports. `placement` is off that graph,
     so its loader edge is never expanded.
     """
-    path = (backends_root() / backend / "emit.py").resolve()
+    root = backends_root() if root is None else Path(root)
+    path = (root / backend / "emit.py").resolve()
     module = _EMIT_MODULES.get(path)
     if module is None:
         import importlib.util  # noqa: PLC0415
 
         name = f"revl_{backend}_emit"
+        if path != (backends_root() / backend / "emit.py").resolve():
+            name += "_" + hashlib.sha256(str(path).encode()).hexdigest()[:12]
         bound = Path(getattr(sys.modules.get(name), "__file__", "") or "")
         if bound.resolve() == path:
             module = sys.modules[name]
@@ -2932,7 +2941,6 @@ def host_ref_pins(ir: dict, own, files) -> dict:
 # dry-run. Every emitter is pure-python codegen (stdlib only), so the gate
 # needs no tier toolchain — a fn-typed component placed on java is refused at
 # plan time with the emitter's own tier-limit message, never a javac stderr.
-_EMIT_GATE_MODULES: dict[str, object] = {}
 _EMIT_GATE_PATHS = {
     "py": _BACKENDS_DIR / "python" / "emit.py",
     "node": _TS_DIR / "emit.py",
@@ -2958,13 +2966,11 @@ class PlanRefusal(RuntimeError):
 
 
 def _emit_gate_module(backend: str):
-    if backend not in _EMIT_GATE_MODULES:
-        path = _EMIT_GATE_PATHS[backend]
-        spec = importlib.util.spec_from_file_location(f"revl_{backend}_emit_gate", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        _EMIT_GATE_MODULES[backend] = module
-    return _EMIT_GATE_MODULES[backend]
+    """The tier's emitter for the dry-run: the one module every loader in the
+    process shares (`backend_emit_module`), so its `EmitError` is the class the
+    tier's other callers catch (issue #2204)."""
+    path = _EMIT_GATE_PATHS[backend]
+    return backend_emit_module(path.parent.name, root=path.parent.parent)
 
 
 def _ts_unemittable_externs(ir: dict) -> set[str]:

@@ -56,9 +56,6 @@ _EXTERNAL = ("the cordis-wasm runtime from a checkout OUTSIDE this repository, "
 # registration.
 ALLOWED = {
     ("tests/_load_by_path.py", "load_by_path"): "the helper itself",
-    ("tests/_backend_import.py", "backend_emitter"):
-        "a caching loader for backend emitters under per-tier unique names; "
-        "it returns the registered module before loading",
     ("tests/test_tier_host_trace_secret_421_f6.py", "_backend"):
         "returns the registered module before loading, and needs the emitter's "
         "directory on sys.path while it executes",
@@ -260,6 +257,64 @@ def test_the_bare_emit_detector_sees_every_spelling():
                    "import emit_temporal", "from . import emit",
                    "emit = python_backend_emitter()"):
         assert not bare_emit_imports(source), source
+
+
+#: src/revl modules that may import the bare name `emit`, and why.
+SRC_BARE_EMIT = {
+    "src/revl/_paths.py":
+        "`python_backend_emitter` puts backends/python first on sys.path and "
+        "refuses an `emit` bound to any other file",
+}
+
+
+def bare_emit_writes(source: str) -> list[int]:
+    """Lines that bind `sys.modules["emit"]`: an assignment to it, or
+    `sys.modules.setdefault("emit", ...)`."""
+    out = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Subscript) and ast.unparse(t.value) == "sys.modules"
+                and isinstance(t.slice, ast.Constant) and t.slice.value == "emit"
+                for t in node.targets):
+            out.append(node.lineno)
+        elif (isinstance(node, ast.Call)
+              and ast.unparse(node.func) == "sys.modules.setdefault"
+              and node.args and isinstance(node.args[0], ast.Constant)
+              and node.args[0].value == "emit"):
+            out.append(node.lineno)
+    return sorted(out)
+
+
+def test_src_binds_the_bare_name_emit_only_through_the_python_helper():
+    """Issue #2204: the guard above covers tests/ only. Under src/revl the
+    quarantine loader pinned `sys.modules["emit"]` by hand and the process
+    runner imported the bare name, each a separate workaround for the same
+    collision. A backend's emitter is reached through
+    `revl.placement.backend_emit_module`, the python one through
+    `revl._paths.python_backend_emitter`."""
+    found = []
+    for path in sorted((ROOT / "src" / "revl").rglob("*.py")):
+        rel = path.relative_to(ROOT).as_posix()
+        source = path.read_text(encoding="utf-8")
+        lines = bare_emit_writes(source)
+        if rel not in SRC_BARE_EMIT:
+            lines += bare_emit_imports(source)
+        found += [f"{rel}:{line}" for line in sorted(lines)]
+    assert not found, (
+        "src/revl binds the bare module name `emit`, which answers with "
+        "whichever backend directory is first on sys.path. Use "
+        "`revl.placement.backend_emit_module(tier)` or "
+        "`revl._paths.python_backend_emitter()`:\n  " + "\n  ".join(found))
+    for rel in SRC_BARE_EMIT:
+        assert bare_emit_imports((ROOT / rel).read_text(encoding="utf-8")), (
+            f"allowed site no longer imports `emit`: {rel}")
+
+
+def test_the_bare_emit_write_detector_sees_both_spellings():
+    """Non-vacuity: the quarantine loader's pin, and the setdefault form."""
+    assert bare_emit_writes("import sys\nsys.modules['emit'] = m\n") == [2]
+    assert bare_emit_writes("sys.modules.setdefault('emit', m)\n") == [1]
+    assert not bare_emit_writes("sys.modules['revl_wasm_emit'] = m\n")
 
 
 # --------------------------------------------------------------------------- #

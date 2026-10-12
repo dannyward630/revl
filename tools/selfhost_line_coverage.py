@@ -188,14 +188,19 @@ def _entry(module, tier: str):
         f"drive, or this gate measures nothing")
 
 
-TIERS = {
-    "py": "python",
-    "ts": "typescript",
-    "go": "go",
-    "java": "java",
-    "rust": "rust",
-    "wasm": "wasm",
-}
+def _tier_dirs() -> dict[str, str]:
+    """Short tier name -> backends/<dir>, from the shared table in
+    src/revl/tiers.py (stdlib only, so it loads by path without importing the
+    revl package). The order here is the ledger's and the report's."""
+    spec = importlib.util.spec_from_file_location(
+        "_revl_tiers", ROOT / "src" / "revl" / "tiers.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return {tier: module.TIER_DIRS[tier]
+            for tier in ("py", "ts", "go", "java", "rust", "wasm")}
+
+
+TIERS = _tier_dirs()
 
 # The shared frontend the selfhost/lower.rvl and selfhost/checker.rvl ports
 # mirror. Measured and reported, NOT gated: their oracles drive a different

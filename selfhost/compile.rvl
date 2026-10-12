@@ -123,6 +123,10 @@ pub fn admit(source: Str) -> Str {
 //     gate refuses              verdict; the IR producer and emitter never run —
 //                               a rejected program cannot be compiled, the one
 //                               revl promise, enforced natively);
+//   * a `use` the native    -> "REFUSED|LINK|<message>" (`compile_to_at` only,
+//     link cannot reproduce     issue #2181: the producer has run, the emitter
+//                               never does, so no source that differs from the
+//                               reference is returned);
 //   * an admitted program   -> the emitted target source, built end to end in revl:
 //                               lower_to_ir(source) → json_parse → emit_<tier>_src.
 //                               NO reference is in this chain. Byte-exact with the
@@ -156,21 +160,31 @@ fn emit_ir(ir: Any, tier: Str) -> Str {
 // native chain carried only the document's own. That is a HARNESS/API limitation,
 // not a `lower.rvl` one: the IR producer is handed one string and cannot know a
 // module set exists. So the driver grows a PATH — `compile_to_at(source, tier,
-// path)` resolves the document's `use` targets through `read_module` (the first
-// host crossing: a READ, no accounted mutation — the boundary `stdlib/auth.rvl`'s
-// `host_validate` draws) and APPENDS each imported name's service row, in
-// declaration order, after the document's own. `compile_to` keeps its exact
-// two-argument behavior: with no document path there is nothing to resolve a
-// relative `use` against, so it is the identity on the IR.
+// path)` resolves the document's `use` targets through `module_path` and
+// `read_module_text` (the first host crossing: a READ, no accounted mutation,
+// the boundary `stdlib/auth.rvl`'s `host_validate` draws) and APPENDS each
+// imported name's service row, in declaration order, after the document's own.
+// `compile_to` keeps its exact two-argument behavior: with no document path there
+// is nothing to resolve a relative `use` against, so it is the identity on the IR.
+//
+// Issue #2181. Service rows were half of it. The reference's `compile_files`
+// also merges every module whose PURE declarations the document imports (a
+// `pub fn`, `type` or `extern` named in a `use` list, transitively), and appends
+// each such module's WHOLE `extern` section to the merged program, so
+// `use "stdlib/json.rvl" { json_parse, json_stringify }` carries `json_try_parse`
+// too. `ul_link_externs` does the same after the service rows are in.
 
-// The FIRST host crossing of this driver: read the module a `use` names. `base` is
-// the importing document's path ("" when the caller had none), `target` the
-// literal `use` target. Resolution follows the reference loader: the target as
-// written, relative to the importing document's directory, then the same relative
-// path walked up through the document's ancestors — which is how `cli.rvl`'s
-// sibling imports and the canary's `stdlib/json.rvl` both resolve. "" when
-// nothing is there, so an unresolvable import is skipped rather than fatal.
-extern pure fn read_module(base: Str, target: Str) -> Str = @py {
+// The FIRST host crossing of this driver: find, then read, the module a `use`
+// names. `base` is the importing document's path ("" when the caller had none),
+// `target` the literal `use` target. Resolution follows the reference loader: the
+// target as written, relative to the importing document's directory, then the
+// same relative path walked up through the document's ancestors, which is how
+// `cli.rvl`'s sibling imports and the canary's `stdlib/json.rvl` both resolve.
+// The answer is the module's ABSOLUTE path (the reference loader's module key,
+// `os.path.abspath`, so two spellings of one module are one module and the
+// closure below sorts exactly as `compile_files` does), or "" when nothing is
+// there, so an unresolvable import is skipped rather than fatal.
+extern pure fn module_path(base: Str, target: Str) -> Str = @py {
     import os
     if base == "" or target == "":
         return ""
@@ -178,8 +192,7 @@ extern pure fn read_module(base: Str, target: Str) -> Str = @py {
     for _ in range(0, 12):
         cand = os.path.join(cur, target) if cur else target
         if os.path.isfile(cand):
-            with open(cand, "r", encoding="utf-8") as fh:
-                return fh.read()
+            return os.path.abspath(cand)
         if not cur:
             break
         parent = os.path.dirname(cur)
@@ -187,6 +200,14 @@ extern pure fn read_module(base: Str, target: Str) -> Str = @py {
             break
         cur = parent
     return ""
+}
+
+// The text of the module `module_path` resolved, or "" for the "" path.
+extern pure fn read_module_text(path: Str) -> Str = @py {
+    if path == "":
+        return ""
+    with open(path, "r", encoding="utf-8") as fh:
+        return fh.read()
 }
 
 // Issue #2089: the SECOND host crossing, and the reason the first one cannot
@@ -315,38 +336,78 @@ fn ul_line_end(s: Str, i: Int) -> Int {
   return n
 }
 
-// The index of the `}` matching the `{` at `open_at`, or -1. String-aware: a
-// brace inside a JSON string does not count, and an escaped quote does not close
-// one. (A service row holds only method/param/type names, but the matcher does
-// not rely on that.)
-fn ul_match_brace(s: Str, open_at: Int) -> Int {
+// The index of the `"` closing the JSON string whose opening quote is at
+// `open_at`, or -1. An escaped quote does not close it.
+fn ul_string_end(s: Str, open_at: Int) -> Int {
+  var i = open_at + 1
+  let n = s.length()
+  while (i < n) {
+    let ch = s.slice(i, i + 1)
+    if (ch == "\\") { i += 2 }
+    else {
+      if (ch == "\"") { return i }
+      i += 1
+    }
+  }
+  return 0 - 1
+}
+
+// The index of the `}` or `]` matching the `{` or `[` at `open_at`, or -1.
+// String-aware: a bracket inside a JSON string does not count. Both bracket
+// kinds share one depth, which is exact for the well-nested JSON the producer
+// writes. (A service row holds only method/param/type names, but the matcher
+// does not rely on that.)
+fn ul_match_close(s: Str, open_at: Int) -> Int {
   var depth = 0
-  var in_str = false
-  var esc = false
   var i = open_at
   let n = s.length()
   while (i < n) {
     let ch = s.slice(i, i + 1)
-    if (in_str) {
-      if (esc) { esc = false }
-      else {
-        if (ch == "\\") { esc = true }
-        else { if (ch == "\"") { in_str = false } }
-      }
+    if (ch == "\"") {
+      let end = ul_string_end(s, i)
+      if (end < 0) { return 0 - 1 }
+      i = end
     }
     else {
-      if (ch == "\"") { in_str = true }
+      if ((ch == "{") || (ch == "[")) { depth += 1 }
       else {
-        if (ch == "{") { depth += 1 }
-        else {
-          if (ch == "}") {
-            depth -= 1
-            if (depth == 0) { return i }
-          }
+        if ((ch == "}") || (ch == "]")) {
+          depth -= 1
+          if (depth == 0) { return i }
         }
       }
     }
     i += 1
+  }
+  return 0 - 1
+}
+
+// The index where the value of the TOP-LEVEL key `key` of the JSON object `ir`
+// starts, or -1. Only a key at depth 1 counts, so a service row or component
+// that carries a key of the same spelling is never mistaken for it.
+fn ul_top_key(ir: Str, key: Str) -> Int {
+  let want = "\"".concat(key).concat("\"")
+  var depth = 0
+  var i = 0
+  let n = ir.length()
+  while (i < n) {
+    let ch = ir.slice(i, i + 1)
+    if (ch == "\"") {
+      let end = ul_string_end(ir, i)
+      if (end < 0) { return 0 - 1 }
+      if ((depth == 1) && (ir.slice(i, end + 1) == want)) {
+        let colon = ul_skip_ws(ir, end + 1)
+        if (ir.slice(colon, colon + 1) == ":") { return ul_skip_ws(ir, colon + 1) }
+      }
+      i = end + 1
+    }
+    else {
+      if ((ch == "{") || (ch == "[")) { depth += 1 }
+      else {
+        if ((ch == "}") || (ch == "]")) { depth -= 1 }
+      }
+      i += 1
+    }
   }
   return 0 - 1
 }
@@ -365,7 +426,7 @@ fn ul_services_open(ir: Str) -> Int {
 fn ul_service_entry(module_ir: Str, name: Str) -> Str {
   let at = ul_services_open(module_ir)
   if (at < 0) { return "" }
-  let close = ul_match_brace(module_ir, at)
+  let close = ul_match_close(module_ir, at)
   if (close < 0) { return "" }
   let obj = module_ir.slice(at, close + 1)
   let key = "\"".concat(name).concat("\"")
@@ -375,7 +436,7 @@ fn ul_service_entry(module_ir: Str, name: Str) -> Str {
     if (obj.slice(nxt, nxt + 1) == ":") {
       let b = ul_find(obj, "{", k)
       if (b < 0) { return "" }
-      let e = ul_match_brace(obj, b)
+      let e = ul_match_close(obj, b)
       if (e < 0) { return "" }
       return obj.slice(b, e + 1)
     }
@@ -391,7 +452,7 @@ fn ul_service_entry(module_ir: Str, name: Str) -> Str {
 fn ul_append_service(ir: Str, name: Str, entry: Str) -> Str {
   let at = ul_services_open(ir)
   if (at < 0) { return ir }
-  let close = ul_match_brace(ir, at)
+  let close = ul_match_close(ir, at)
   if (close < 0) { return ir }
   var sep = ""
   if (close > at + 1) { sep = ", " }
@@ -448,7 +509,7 @@ fn ul_link_uses(ir: Str, source: Str, path: Str) -> Str {
     let name = pairs[i + 1]
     i += 2
     if (ul_service_entry(out, name) == "") {
-      let module_src = read_module(path, target)
+      let module_src = read_module_text(module_path(path, target))
       if (module_src != "") {
         let entry = ul_service_entry(lower_to_ir(module_src), name)
         if (entry != "") { out = ul_append_service(out, name, entry) }
@@ -456,6 +517,400 @@ fn ul_link_uses(ir: Str, source: Str, path: Str) -> Str {
     }
   }
   return out
+}
+
+// The index of `x` in `xs`, or -1.
+fn ul_index(xs: List[Str], x: Str) -> Int {
+  var i = 0
+  while (i < xs.length()) {
+    if (xs[i] == x) { return i }
+    i += 1
+  }
+  return 0 - 1
+}
+
+// `xs` holds `x`.
+fn ul_has(xs: List[Str], x: Str) -> Bool { return ul_index(xs, x) >= 0 }
+
+// `paths` with `p` inserted in ascending order, unless it is already there.
+fn ul_insert_sorted(paths: List[Str], p: Str) -> List[Str] {
+  if (ul_has(paths, p)) { return paths }
+  var out: List[Str] = []
+  var placed = false
+  var i = 0
+  while (i < paths.length()) {
+    if (!placed && (paths[i] > p)) {
+      out = out.push(p)
+      placed = true
+    }
+    out = out.push(paths[i])
+    i += 1
+  }
+  if (!placed) { out = out.push(p) }
+  return out
+}
+
+// The native IR of the module at the resolved path `dep`, with its host refs
+// probed against its own path, as the reference resolves a ref off the
+// declaring module.
+fn ul_module_ir(dep: Str) -> Str {
+  let src = read_module_text(dep)
+  return lower_to_ir_refs(src, rf_ref_rows(src, dep))
+}
+
+// The modules lowered so far, by resolved path, so the closure walk below
+// lowers each module once however many names are imported from it.
+type UlMods = { paths: List[Str], irs: List[Str] }
+
+// `mods` with every path of the `dep, name` pairs `targets` lowered.
+fn ul_lower_all(mods: UlMods, targets: List[Str]) -> UlMods {
+  var out = mods
+  var i = 0
+  while (i + 1 < targets.length()) {
+    let dep = targets[i]
+    if (!ul_has(out.paths, dep)) {
+      out = { paths: out.paths.push(dep), irs: out.irs.push(ul_module_ir(dep)) }
+    }
+    i += 2
+  }
+  return out
+}
+
+// The IR `mods` holds for `dep` ("" when it holds none).
+fn ul_mod_ir(mods: UlMods, dep: Str) -> Str {
+  let k = ul_index(mods.paths, dep)
+  if (k < 0) { return "" }
+  return mods.irs[k]
+}
+
+// The `use { … }` imports of the module `source` at `path`, as resolved
+// `path, name` pairs in declaration order. An unresolvable target is skipped.
+fn ul_use_targets(source: Str, path: Str) -> List[Str] {
+  let pairs = ul_use_pairs(source)
+  var out: List[Str] = []
+  var i = 0
+  while (i + 1 < pairs.length()) {
+    let dep = module_path(path, pairs[i])
+    if (dep != "") {
+      out = out.push(dep)
+      out = out.push(pairs[i + 1])
+    }
+    i += 2
+  }
+  return out
+}
+
+// The direct PURE dependencies among the resolved imports `targets`: every
+// module one of whose imported names is not one of its services (so a `pub fn`,
+// `type` or `extern`), each once and sorted. That is the reference loader's
+// `pure_dependencies` set, iterated the way `compile_files` iterates it
+// (`sorted(..., key=path)`). A `use` that names only services makes no pure
+// dependency, so it carries no extern. `mods` must hold every target.
+fn ul_pure_deps(targets: List[Str], mods: UlMods) -> List[Str] {
+  var deps: List[Str] = []
+  var i = 0
+  while (i + 1 < targets.length()) {
+    let dep = targets[i]
+    if (ul_service_entry(ul_mod_ir(mods, dep), targets[i + 1]) == "") {
+      deps = ul_insert_sorted(deps, dep)
+    }
+    i += 2
+  }
+  return deps
+}
+
+// The resolved path of the first top-level `use "target" as alias` import of
+// the module `source` at `path` (a `use` line with no `{ }` list), or "". The
+// reference makes the aliased module a pure dependency and merges all of it,
+// which this driver does not, so such a module is refused rather than dropped.
+fn ul_alias_target(source: Str, path: Str) -> Str {
+  var i = ul_find(source, "use ", 0)
+  while (i >= 0) {
+    if ((i == 0) || (source.slice(i - 1, i).charCodeAt(0) == 10)) {
+      let eol = ul_line_end(source, i)
+      let q0 = ul_find(source, "\"", i)
+      let lb = ul_find(source, "{", i)
+      if ((q0 >= 0) && (q0 < eol) && ((lb < 0) || (lb > eol))) {
+        let q1 = ul_find(source, "\"", q0 + 1)
+        if ((q1 >= 0) && (q1 < eol)) {
+          let dep = module_path(path, source.slice(q0 + 1, q1))
+          if (dep != "") { return dep }
+        }
+      }
+    }
+    i = ul_find(source, "use ", i + 4)
+  }
+  return ""
+}
+
+// The top-level keys of the JSON object `ir`, in order.
+fn ul_top_keys(ir: Str) -> List[Str] {
+  var out: List[Str] = []
+  var depth = 0
+  var i = 0
+  let n = ir.length()
+  while (i < n) {
+    let ch = ir.slice(i, i + 1)
+    if (ch == "\"") {
+      let end = ul_string_end(ir, i)
+      if (end < 0) { return out }
+      let colon = ul_skip_ws(ir, end + 1)
+      if ((depth == 1) && (ir.slice(colon, colon + 1) == ":")) {
+        out = out.push(ir.slice(i + 1, end))
+      }
+      i = end + 1
+    }
+    else {
+      if ((ch == "{") || (ch == "[")) { depth += 1 }
+      else {
+        if ((ch == "}") || (ch == "]")) { depth -= 1 }
+      }
+      i += 1
+    }
+  }
+  return out
+}
+
+// Whether `source` declares an extern at the top level.
+fn ul_declares_extern(source: Str) -> Bool {
+  var i = 0
+  let n = source.length()
+  while (i < n) {
+    let eol = ul_line_end(source, i)
+    let line = source.slice(i, eol)
+    if ((line.slice(0, 7) == "extern ") || (line.slice(0, 11) == "pub extern ")) { return true }
+    i = eol + 1
+  }
+  return false
+}
+
+// Whether `c` can begin a declaration keyword: an ASCII letter or `_`.
+fn ul_is_word_start(c: Str) -> Bool {
+  if (c == "") { return false }
+  let k = c.charCodeAt(0)
+  return ((k >= 65) && (k <= 90)) || ((k >= 97) && (k <= 122)) || (k == 95)
+}
+
+// Whether `line` begins with one of `prefixes`.
+fn ul_has_prefix(line: Str, prefixes: List[Str]) -> Bool {
+  var i = 0
+  while (i < prefixes.length()) {
+    let p = prefixes[i]
+    if (line.slice(0, p.length()) == p) { return true }
+    i += 1
+  }
+  return false
+}
+
+// The first top-level declaration of `source` that is not an extern, a `use`, a
+// service or a component, as the start of its line, or "". A declaration starts
+// at column 0 with a keyword; a body line, a closing brace, a comment or an
+// indented line does not. This reads the TEXT because the native producer writes
+// no IR key at all for a declaration it does not lower (a `prop test`, say),
+// which the reference would still merge.
+fn ul_foreign_decl(source: Str) -> Str {
+  let allowed = ["extern ", "pub extern ", "use ", "service ", "pub service ",
+                 "component ", "pub component "]
+  var i = 0
+  let n = source.length()
+  while (i < n) {
+    let eol = ul_line_end(source, i)
+    let line = source.slice(i, eol)
+    if (ul_is_word_start(line.slice(0, 1)) && !ul_has_prefix(line, allowed)) {
+      let shown = ul_trim(line)
+      if (shown.length() > 40) { return shown.slice(0, 40) }
+      return shown
+    }
+    i = eol + 1
+  }
+  return ""
+}
+
+// Why the pure dependency at `dep` (text `source`, native IR `ir`) cannot be
+// linked, as `LINK|<message>`, or "". The reference merges a pure dependency's
+// functions, types, secrets, tests and every other declaration list into the
+// document; this driver carries only its externs, so any top-level IR section
+// beyond `ir_version`, `services`, `components` (neither merged for a pure
+// dependency) and `externs` would be dropped, and is refused instead. So is a
+// top-level declaration the producer writes no key for (`ul_foreign_decl`), and
+// a module whose declared externs did not lower, which would drop them all.
+fn ul_dep_refusal(dep: Str, source: Str, ir: Str) -> Str {
+  let keys = ul_top_keys(ir)
+  var i = 0
+  while (i < keys.length()) {
+    let k = keys[i]
+    if ((k != "ir_version") && (k != "services") && (k != "components") && (k != "externs")) {
+      return "LINK|`".concat(dep).concat("` declares `").concat(k)
+        .concat("`, which the native link does not carry (only a used module's externs travel)")
+    }
+    i += 1
+  }
+  let foreign = ul_foreign_decl(source)
+  if (foreign != "") {
+    return "LINK|`".concat(dep).concat("` declares `").concat(foreign)
+      .concat("`, which the native link does not carry (only a used module's externs travel)")
+  }
+  if (ul_declares_extern(source) && (ul_array_items(ir, "externs") == "")) {
+    return "LINK|the externs of `".concat(dep).concat("` did not lower natively")
+  }
+  return ""
+}
+
+// The pure closure of a document: its modules in link order, their native IR,
+// and the refusal ("" for none) that stopped the walk.
+type UlClosure = { paths: List[Str], irs: List[Str], refusal: Str }
+
+// Every module whose pure declarations the document at `path` pulls in, in the
+// order `compile_files` builds its `included` list: breadth first from the
+// document, each module's own pure dependencies in path order, each module once.
+// The document itself is not in the list; its own externs are already in its IR.
+// The walk stops at the first module it cannot link (`ul_dep_refusal`) or the
+// first alias import (`ul_alias_target`), in the document or in a dependency.
+fn ul_pure_closure(source: Str, path: Str) -> UlClosure {
+  var none: List[Str] = []
+  var mods: UlMods = { paths: none, irs: none }
+  var included: List[Str] = []
+  var irs: List[Str] = []
+  var srcs: List[Str] = [source]
+  var paths: List[Str] = [path]
+  var q = 0
+  while (q < paths.length()) {
+    let alias = ul_alias_target(srcs[q], paths[q])
+    if (alias != "") {
+      return { paths: included, irs: irs, refusal: "LINK|`".concat(alias)
+        .concat("` is imported by alias, which the native link does not carry") }
+    }
+    let targets = ul_use_targets(srcs[q], paths[q])
+    mods = ul_lower_all(mods, targets)
+    let deps = ul_pure_deps(targets, mods)
+    var d = 0
+    while (d < deps.length()) {
+      let dep = deps[d]
+      if (!ul_has(included, dep)) {
+        let dep_src = read_module_text(dep)
+        let dep_ir = ul_mod_ir(mods, dep)
+        let why = ul_dep_refusal(dep, dep_src, dep_ir)
+        if (why != "") { return { paths: included, irs: irs, refusal: why } }
+        included = included.push(dep)
+        irs = irs.push(dep_ir)
+        paths = paths.push(dep)
+        srcs = srcs.push(dep_src)
+      }
+      d += 1
+    }
+    q += 1
+  }
+  return { paths: included, irs: irs, refusal: "" }
+}
+
+// The elements of the top-level array `key` of `ir` as JSON text, without the
+// brackets, or "" when there is no such array or it is empty.
+fn ul_array_items(ir: Str, key: Str) -> Str {
+  let at = ul_top_key(ir, key)
+  if ((at < 0) || (ir.slice(at, at + 1) != "[")) { return "" }
+  let close = ul_match_close(ir, at)
+  if (close < 0) { return "" }
+  return ul_trim(ir.slice(at + 1, close))
+}
+
+// The `name` of every object in the JSON array elements `items`, in order.
+fn ul_item_names(items: Str) -> List[Str] {
+  var out: List[Str] = []
+  var i = 0
+  let n = items.length()
+  while (i < n) {
+    if (items.slice(i, i + 1) == "{") {
+      let close = ul_match_close(items, i)
+      if (close < 0) { return out }
+      let obj = items.slice(i, close + 1)
+      let at = ul_top_key(obj, "name")
+      if ((at >= 0) && (obj.slice(at, at + 1) == "\"")) {
+        let end = ul_string_end(obj, at)
+        if (end > at) { out = out.push(obj.slice(at + 1, end)) }
+      }
+      i = close + 1
+    }
+    else { i += 1 }
+  }
+  return out
+}
+
+// The index just past the value of the top-level key `key` of `ir`, or -1 when
+// there is no such key or its value is not an array or object.
+fn ul_value_end(ir: Str, key: Str) -> Int {
+  let at = ul_top_key(ir, key)
+  if (at < 0) { return 0 - 1 }
+  let ch = ir.slice(at, at + 1)
+  if ((ch != "[") && (ch != "{")) { return 0 - 1 }
+  let close = ul_match_close(ir, at)
+  if (close < 0) { return 0 - 1 }
+  return close + 1
+}
+
+// `ir` with the extern elements `items` APPENDED to its top-level `externs`
+// array, after the document's own, as the reference merges the root module
+// first. A document that declares no extern has no `externs` key at all; the
+// array is then created where `lower_to_ir` writes it: after `functions`, else
+// after `types`, else after `components`.
+fn ul_append_externs(ir: Str, items: Str) -> Str {
+  if (items == "") { return ir }
+  let at = ul_top_key(ir, "externs")
+  if (at >= 0) {
+    if (ir.slice(at, at + 1) != "[") { return ir }
+    let close = ul_match_close(ir, at)
+    if (close < 0) { return ir }
+    var sep = ""
+    if (ul_trim(ir.slice(at + 1, close)) != "") { sep = ", " }
+    return ir.slice(0, close).concat(sep).concat(items).concat(ir.slice(close, ir.length()))
+  }
+  var end = ul_value_end(ir, "functions")
+  if (end < 0) { end = ul_value_end(ir, "types") }
+  if (end < 0) { end = ul_value_end(ir, "components") }
+  if (end < 0) { return ir }
+  let ins = ", \"externs\": [".concat(items).concat("]")
+  return ir.slice(0, end).concat(ins).concat(ir.slice(end, ir.length()))
+}
+
+// The first of `names` the IR `ir` already declares as an extern or a
+// function, or "".
+fn ul_name_clash(ir: Str, names: List[Str]) -> Str {
+  let exts = ul_item_names(ul_array_items(ir, "externs"))
+  let fns = ul_item_names(ul_array_items(ir, "functions"))
+  var i = 0
+  while (i < names.length()) {
+    if (ul_has(exts, names[i]) || ul_has(fns, names[i])) { return names[i] }
+    i += 1
+  }
+  return ""
+}
+
+// A linked IR, or the refusal ("" for none) that stopped the link.
+type UlLinked = { ir: Str, refusal: Str }
+
+// The document's IR with the whole extern section of every module in its pure
+// closure appended (issue #2181), in closure order, or a `LINK|<message>`
+// refusal where the result would differ from the reference's. The reference's
+// privacy pass renames a PRIVATE extern whose bare name collides across the
+// included modules; this driver does not rename, so a collision is refused
+// rather than emitted twice under one name. A dependency carrying anything but
+// externs, and an alias import, are refused by `ul_pure_closure`.
+fn ul_link_externs(ir: Str, source: Str, path: Str) -> UlLinked {
+  let closure = ul_pure_closure(source, path)
+  if (closure.refusal != "") { return { ir: ir, refusal: closure.refusal } }
+  var out = ir
+  var i = 0
+  while (i < closure.irs.length()) {
+    let items = ul_array_items(closure.irs[i], "externs")
+    let clash = ul_name_clash(out, ul_item_names(items))
+    if (clash != "") {
+      return { ir: ir, refusal: "LINK|extern `".concat(clash).concat("` of `")
+        .concat(closure.paths[i])
+        .concat("` collides with a declaration of the same name, and the native link does not rename module-private declarations apart") }
+    }
+    out = ul_append_externs(out, items)
+    i += 1
+  }
+  return { ir: out, refusal: "" }
 }
 
 // The identifier starting at `at`, up to the first delimiter. The scans below
@@ -542,6 +997,9 @@ fn rf_ref_rows(source: Str, path: Str) -> List[Str] {
 // before the native emitter runs. `path` may be relative; it is resolved against
 // the process working directory, and a `use` target is resolved against the
 // document's own directory first. A path that resolves nothing changes nothing.
+// Issue #2181: the imported externs are spliced in too, and a document the
+// native link cannot reproduce returns "REFUSED|LINK|<message>" (see
+// `ul_link_externs`) rather than different source.
 pub fn compile_to_at(source: Str, tier: Str, path: Str) -> Str {
   if (!supported_tier(tier)) { return "UNKNOWN_TIER|".concat(tier) }
   let verdict = admit_src(source)
@@ -549,8 +1007,11 @@ pub fn compile_to_at(source: Str, tier: Str, path: Str) -> Str {
   // FULLY NATIVE from here: native IR producer → use linking → parse → emitter.
   // Issue #2089: the producer also takes the document's host-ref WIRE, so an
   // extern's `refs` survive the native chain and the emitters can see them.
-  let ir = ul_link_uses(lower_to_ir_refs(source, rf_ref_rows(source, path)), source, path)
-  return emit_ir(json_parse(ir), tier)
+  // Issue #2181: then every pure dependency's extern section.
+  let own = lower_to_ir_refs(source, rf_ref_rows(source, path))
+  let linked = ul_link_externs(ul_link_uses(own, source, path), source, path)
+  if (linked.refusal != "") { return "REFUSED|".concat(linked.refusal) }
+  return emit_ir(json_parse(linked.ir), tier)
 }
 
 pub fn compile_to(source: Str, tier: Str) -> Str {
@@ -748,7 +1209,7 @@ test "the driver resolves `use` only when it is given a document path (issue #20
   assert ul_use_pairs(" use \"a.rvl\" { A }").length() == 0
   assert ul_use_pairs("fn f() -> Int { return 1 }").length() == 0
   // The brace matcher is string-aware: the `}` inside a string does not close.
-  assert ul_match_brace("{\"a\": \"}\", \"b\": {}}", 0) == 18
+  assert ul_match_close("{\"a\": \"}\", \"b\": {}}", 0) == 18
   // A service row is only matched at a KEY position.
   assert ul_service_entry("{\"services\": {}}", "A") == ""
   assert ul_service_entry("{\"services\": {\"CliDispatch\": {\"m\": {}}}}", "Cli") == ""
@@ -758,6 +1219,67 @@ test "the driver resolves `use` only when it is given a document path (issue #20
   let own = "{\"services\": {\"C\": {\"m\": {}}}}"
   assert ul_append_service(own, "A", "{\"m\": {}}") == "{\"services\": {\"C\": {\"m\": {}}, \"A\": {\"m\": {}}}}"
   assert ul_append_service("{\"services\": {}}", "A", "{\"m\": {}}") == "{\"services\": {\"A\": {\"m\": {}}}}"
+}
+
+test "a used module's extern section is appended at the IR's top level (issue #2181)" {
+  // Only a depth-1 key is found: the `externs` inside a service row is not it.
+  let ir = "{\"services\": {\"S\": {\"externs\": []}}, \"components\": [], \"types\": {}}"
+  assert ul_top_key(ir, "externs") == 0 - 1
+  assert ul_top_key(ir, "components") == 51
+  // The matcher closes an array as well as an object.
+  assert ul_match_close("[{\"a\": \"]\"}, []]", 0) == 15
+  // No `externs` key: the array is created where the producer writes it,
+  // after `functions`, else `types`, else `components`.
+  assert ul_append_externs(ir, "{\"name\": \"e\"}") == "{\"services\": {\"S\": {\"externs\": []}}, \"components\": [], \"types\": {}, \"externs\": [{\"name\": \"e\"}]}"
+  let fns = "{\"components\": [], \"types\": {}, \"functions\": [], \"tests\": []}"
+  assert ul_append_externs(fns, "{}") == "{\"components\": [], \"types\": {}, \"functions\": [], \"externs\": [{}], \"tests\": []}"
+  assert ul_append_externs("{\"components\": []}", "{}") == "{\"components\": [], \"externs\": [{}]}"
+  // A non-array `externs` value is left alone.
+  assert ul_append_externs("{\"externs\": 1, \"x\": []}", "{}") == "{\"externs\": 1, \"x\": []}"
+  // An existing array keeps the document's own externs first.
+  let own = "{\"components\": [], \"externs\": [{\"name\": \"d\"}]}"
+  assert ul_append_externs(own, "{\"name\": \"e\"}") == "{\"components\": [], \"externs\": [{\"name\": \"d\"}, {\"name\": \"e\"}]}"
+  assert ul_append_externs(own, "") == own
+  assert ul_array_items(own, "externs") == "{\"name\": \"d\"}"
+  assert ul_array_items(ir, "externs") == ""
+  // Paths are kept sorted and distinct.
+  var none: List[Str] = []
+  let ps = ul_insert_sorted(ul_insert_sorted(ul_insert_sorted(none, "/z"), "/a"), "/z")
+  assert ps.length() == 2
+  assert ps[0] == "/a"
+  assert ps[1] == "/z"
+  // With no document path nothing resolves, so nothing is linked.
+  let unlinked = ul_link_externs(own, "use \"stdlib/json.rvl\" { json_parse }", "")
+  assert unlinked.ir == own
+  assert unlinked.refusal == ""
+  // The keys and names the refusals read.
+  let keys = ul_top_keys("{\"a\": {\"b\": 1}, \"c\": [\"d\"], \"e\": \"f\"}")
+  assert keys.length() == 3
+  assert keys[1] == "c"
+  let names = ul_item_names("{\"name\": \"x\", \"p\": {\"name\": \"y\"}}, {\"name\": \"z\"}")
+  assert names.length() == 2
+  assert names[1] == "z"
+  // A clash is found against the document's externs and functions alike.
+  let doc = "{\"components\": [], \"functions\": [{\"name\": \"f\"}], \"externs\": [{\"name\": \"h\"}]}"
+  assert ul_name_clash(doc, ["g", "h"]) == "h"
+  assert ul_name_clash(doc, ["f"]) == "f"
+  assert ul_name_clash(doc, ["g"]) == ""
+  // A dependency is linked only when externs are all it carries, and they lowered.
+  let ext_only = "{\"ir_version\": 3, \"services\": {}, \"components\": [], \"externs\": [{\"name\": \"e\"}]}"
+  assert ul_dep_refusal("/m.rvl", "pub extern pure fn e() -> Int = @py { return 1 }", ext_only) == ""
+  let with_fns = "{\"ir_version\": 3, \"services\": {}, \"components\": [], \"functions\": []}"
+  assert ul_dep_refusal("/m.rvl", "pub fn f() -> Int { return 1 }", with_fns).slice(0, 5) == "LINK|"
+  let bare = "{\"ir_version\": 3, \"services\": {}, \"components\": []}"
+  assert ul_dep_refusal("/m.rvl", "pub extern pure fn e() -> Int = @py { return 1 }", bare).slice(0, 5) == "LINK|"
+  assert ul_dep_refusal("/m.rvl", "service S {}", bare) == ""
+  // A declaration the producer writes no key for is read off the text.
+  let nl = str_newline()
+  assert ul_foreign_decl("// c".concat(nl).concat("pub extern pure fn e() -> Int = @py {").concat(nl).concat("    return 1").concat(nl).concat("}")) == ""
+  assert ul_foreign_decl("pub extern pure fn e() -> Int = @py { return 1 }".concat(nl).concat("prop test \"p\" {}")) == "prop test \"p\" {}"
+  assert ul_dep_refusal("/m.rvl", "prop test \"p\" {}", ext_only).slice(0, 5) == "LINK|"
+  // An alias import resolves nothing without a path, and a `{ }` list is not one.
+  assert ul_alias_target("use \"a.rvl\" as a", "") == ""
+  assert ul_alias_target("use \"a.rvl\" { A }", "") == ""
 }
 
 test "an admitted component program compiles fully-native, both tiers (item 262)" {

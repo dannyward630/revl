@@ -67,7 +67,10 @@ A step is credited with a file only if it can really run it and fail the build
 on it (issue #2210): a pytest line whose targets are computed at run time
 (`pytest $SEL_PYTEST`) is credited with nothing, not with the whole tree, and a
 step or job that is `if: false` or `continue-on-error: true` is credited with
-nothing either.
+nothing either. Nor is a job that never executes: one in a workflow that only
+`workflow_dispatch`, a tag push or a path-filtered trigger starts, one whose
+`if:` is false for every event its workflow is triggered by, or one that needs
+such a job (`_executing_steps`).
 
 STILL NOT CAUGHT, stated plainly so nobody reads more into a green run than is
 there: a toolchain-probe skip for any OTHER tier that does NOT go through a
@@ -82,6 +85,7 @@ the workflows, not tools/pre_merge.sh: the local gate is not audited yet
 from __future__ import annotations
 
 import ast
+import fnmatch
 import posixpath
 import re
 from pathlib import Path
@@ -436,23 +440,213 @@ def _never_gates(spec: dict) -> bool:
     return cond is False or str(cond).replace(" ", "") in ("false", "${{false}}")
 
 
+#: Events that start a workflow by themselves, on a change or on a clock.
+#: `workflow_dispatch` waits for a person, `workflow_call` and `workflow_run`
+#: for another workflow: a job only they start is a job nothing starts.
+_SELF_STARTING = frozenset({
+    "push", "pull_request", "pull_request_target", "merge_group", "schedule"})
+
+
+def _matches_main(patterns: list) -> bool:
+    """Does a `branches:` filter include main? Patterns apply in order, and a
+    `!pattern` excludes what an earlier one included."""
+    included = False
+    for pattern in map(str, patterns):
+        negated = pattern.startswith("!")
+        if fnmatch.fnmatchcase("main", pattern.lstrip("!")):
+            included = not negated
+    return included
+
+
+def _triggers(doc: dict) -> set[str]:
+    """The self-starting events that run this workflow for every change to main.
+
+    A `push` limited to tags or to branches other than main, a `pull_request`
+    limited to some base branches or activity types, and any trigger with a
+    `paths:` filter run for some changes only, so they are not counted.
+    `paths-ignore` (skip docs-only changes) is. A pull request's activity
+    types must include `synchronize`, the push to an open pull request. PyYAML reads the bare key `on`
+    as the boolean True."""
+    on = doc.get("on", doc.get(True))
+    if isinstance(on, str):
+        on = {on: None}
+    elif isinstance(on, list):
+        on = dict.fromkeys(on)
+    elif not isinstance(on, dict):
+        return set()
+    events: set[str] = set()
+    for event, filters in on.items():
+        filters = filters if isinstance(filters, dict) else {}
+        branches = filters.get("branches")
+        if event not in _SELF_STARTING or "paths" in filters:
+            continue
+        if branches is None and ("tags" in filters or "tags-ignore" in filters):
+            continue
+        if branches is not None and not _matches_main(branches):
+            continue
+        if "main" in (filters.get("branches-ignore") or []):
+            continue
+        types = filters.get("types")
+        if (event.startswith("pull_request") and types is not None
+                and "synchronize" not in types):
+            continue
+        events.add(event)
+    return events
+
+
+_EXPR_TOKEN = re.compile(r"\s*(&&|\|\||==|!=|!|\(|\)|,|'(?:[^']|'')*'|[\w.*-]+)")
+
+
+def _when(cond: object, event: str) -> bool | None:
+    """Is a job or step `if:` true in a run that `event` started?
+
+    True, False, or None when the answer depends on something only the run
+    knows (a path filter's output, a needed job's result). Only a definite
+    False is acted on: `github.event_name` comparisons, literals, `!`, `&&`,
+    `||` and parentheses are evaluated, and `cancelled()` is false and
+    `always()` true, `failure()` false; everything else is None."""
+    if cond is None or isinstance(cond, bool):
+        return True if cond is None else cond
+    text = str(cond).strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        text = text[3:-2].strip()
+    tokens: list[str] = []
+    pos = 0
+    while pos < len(text):
+        match = _EXPR_TOKEN.match(text, pos)
+        if not match:
+            return None
+        tokens.append(match.group(1))
+        pos = match.end()
+    pos = 0
+
+    def peek() -> str | None:
+        return tokens[pos] if pos < len(tokens) else None
+
+    def take() -> str:
+        nonlocal pos
+        pos += 1
+        return tokens[pos - 1]
+
+    def truth(value: object) -> bool | None:
+        return None if value is None else bool(value)
+
+    def either(op: str, operand) -> object:
+        left = operand()
+        while peek() == op:
+            take()
+            a, b = truth(left), truth(operand())
+            short = op == "||"
+            if a is short or b is short:
+                left = short
+            elif a is None or b is None:
+                left = None
+            else:
+                left = not short
+        return left
+
+    def unary() -> object:
+        # `!` binds tighter than `==`: `!a == b` is `(!a) == b`.
+        if peek() == "!":
+            take()
+            value = truth(unary())
+            return None if value is None else not value
+        return atom()
+
+    def comparison() -> object:
+        left = unary()
+        if peek() in ("==", "!="):
+            same = take() == "=="
+            right = unary()
+            if left is None or right is None:
+                return None
+            if isinstance(left, str) and isinstance(right, str):
+                left, right = left.lower(), right.lower()
+            return (left == right) is same
+        return left
+
+    def atom() -> object:
+        tok = take()
+        if tok == "(":
+            value = either("||", lambda: either("&&", comparison))
+            if take() != ")":
+                raise ValueError(text)
+            return value
+        if peek() == "(":
+            depth = 0
+            while True:
+                part = take()
+                depth += {"(": 1, ")": -1}.get(part, 0)
+                if depth == 0:
+                    break
+            # `failure()` runs only after something else went red, so a step
+            # it guards proves nothing about a green run.
+            return {"always": True, "cancelled": False, "failure": False}.get(tok)
+        if tok.startswith("'"):
+            return tok[1:-1].replace("''", "'")
+        if tok in ("true", "false"):
+            return tok == "true"
+        return event if tok == "github.event_name" else None
+
+    try:
+        value = either("||", lambda: either("&&", comparison))
+    except (IndexError, ValueError):
+        return None
+    return truth(value) if pos == len(tokens) else None
+
+
+#: An `if:` that names one of these keeps the job running after a needed job
+#: was skipped; without one, GitHub skips it too.
+_STATUS_CHECK = re.compile(r"\b(?:always|cancelled|failure)\s*\(")
+
+
+def _executing_steps(doc: dict) -> list[tuple[str, dict, dict, dict]]:
+    """(job, job spec, step, merged env) for every step of one workflow that
+    runs in some run a self-starting trigger begins, and whose red is red.
+
+    A job runs for an event its workflow is triggered by when its `if:` is not
+    false for that event and, unless that `if:` overrides the default status
+    check, every job it needs runs for it too."""
+    jobs = {name: spec or {} for name, spec in (doc.get("jobs") or {}).items()}
+    triggers = _triggers(doc)
+    memo: dict[str, set[str]] = {}
+
+    def events_for(name: str, chain: tuple[str, ...] = ()) -> set[str]:
+        if name in memo:
+            return memo[name]
+        spec = jobs.get(name)
+        if spec is None or name in chain:
+            return set()
+        events = {e for e in triggers if _when(spec.get("if"), e) is not False}
+        needs = spec.get("needs") or []
+        if not _STATUS_CHECK.search(str(spec.get("if", ""))):
+            for need in [needs] if isinstance(needs, str) else needs:
+                events &= events_for(need, chain + (name,))
+        memo[name] = events
+        return events
+
+    out: list[tuple[str, dict, dict, dict]] = []
+    for job, spec in jobs.items():
+        if _never_gates(spec):
+            continue
+        events = events_for(job)
+        job_env = spec.get("env") or {}
+        for step in spec.get("steps") or []:
+            step = step or {}
+            if _never_gates(step) or not any(
+                    _when(step.get("if"), e) is not False for e in events):
+                continue
+            out.append((job, spec, step, {**job_env, **(step.get("env") or {})}))
+    return out
+
+
 def _gating_steps() -> list[tuple[str, dict, dict, dict]]:
     """(job, job spec, step, merged env) for every workflow step that can fail
     the build. A step that never runs, or whose failure is ignored, proves
     nothing about the files it names (issue #2210)."""
     out: list[tuple[str, dict, dict, dict]] = []
     for path in sorted(WORKFLOWS.rglob("*.yml")) + sorted(WORKFLOWS.rglob("*.yaml")):
-        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        for job, spec in (doc.get("jobs") or {}).items():
-            spec = spec or {}
-            if _never_gates(spec):
-                continue
-            job_env = spec.get("env") or {}
-            for step in spec.get("steps") or []:
-                step = step or {}
-                if _never_gates(step):
-                    continue
-                out.append((job, spec, step, {**job_env, **(step.get("env") or {})}))
+        out += _executing_steps(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
     return out
 
 
@@ -928,6 +1122,90 @@ def test_a_step_that_cannot_fail_the_build_is_not_credited(spec, gates):
     assert _never_gates(spec) is not gates
 
 
+_GATED_JOB = """\
+  gated:
+    runs-on: ubuntu-latest{job_extra}
+    steps:
+      - run: sh backends/python/setup.sh
+      - run: pytest tests/test_gated.py -q{step_extra}
+        env:
+          REVL_PROBE_GATE: "1"
+"""
+_IDLE_JOB = """\
+  idle:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
+"""
+
+
+def _workflow(on: str, job_extra: str = "", step_extra: str = "",
+              idle_job: bool = False) -> str:
+    jobs = (_IDLE_JOB if idle_job else "") + _GATED_JOB.format(
+        job_extra=job_extra, step_extra=step_extra)
+    return f"on: {on}\njobs:\n{jobs}"
+
+
+@pytest.mark.parametrize("workflow, executes", [
+    # A job nothing starts on its own: a person, a tag, or a path filter.
+    (_workflow("workflow_dispatch"), False),
+    (_workflow("{push: {tags: ['v*']}}"), False),
+    (_workflow("{push: {branches: [release]}}"), False),
+    (_workflow("{pull_request: {paths: ['docs/**']}}"), False),
+    (_workflow("{pull_request: {types: [labeled]}}"), False),
+    (_workflow("{push: {branches: ['**', '!main']}}"), False),
+    # Triggered, but its `if:` is false for every event that starts it.
+    (_workflow("[push, pull_request]",
+               job_extra="\n    if: github.event_name == 'workflow_dispatch'"), False),
+    (_workflow("[push, pull_request]",
+               step_extra="\n        if: ${{ github.event_name == 'schedule' }}"), False),
+    # Needs a job that never runs, so GitHub skips it too.
+    (_workflow("[push, pull_request]", job_extra="\n    needs: idle", idle_job=True), False),
+    # Positive controls: these do execute.
+    (_workflow("{push: {branches: [main]}, pull_request: null}"), True),
+    (_workflow("{push: {branches: [main], paths-ignore: ['**/*.md']}}"), True),
+    (_workflow("{schedule: [{cron: '0 7 * * *'}]}"), True),
+    (_workflow("{merge_group: {types: [checks_requested]}}"), True),
+    (_workflow("[push, pull_request]",
+               job_extra="\n    if: ${{ github.event_name != 'pull_request' }}"), True),
+    (_workflow("[push, pull_request]",
+               job_extra="\n    if: needs.changes.outputs.backends != 'false'"), True),
+    (_workflow("[push, pull_request]", idle_job=True,
+               job_extra="\n    needs: idle\n    if: ${{ !cancelled() }}"), True),
+])
+def test_a_gate_set_only_in_a_job_that_never_executes_is_not_credited(
+        tmp_path, monkeypatch, workflow, executes):
+    """A gate set in a CI job that never executes runs its test nowhere (issue
+    #2210), yet `if: false` was the only way a job could fail to execute here.
+    Driven through the same readers the checks above use, over a workflow
+    directory this test writes."""
+    (tmp_path / "probe.yml").write_text(workflow, encoding="utf-8")
+    monkeypatch.setitem(globals(), "WORKFLOWS", tmp_path)
+    assert bool(_steps_setting("REVL_PROBE_GATE")) is executes
+    assert (_runtime_gaps({"tests/test_gated.py": []}, _runtime_provisioning_jobs())
+            == ([] if executes else ["tests/test_gated.py"]))
+
+
+@pytest.mark.parametrize("cond, event, value", [
+    (None, "push", True),
+    ("${{ github.event_name != 'pull_request' }}", "pull_request", False),
+    ("${{ github.event_name != 'pull_request' }}", "push", True),
+    ("github.event_name == 'push' || github.event_name == 'schedule'", "schedule", True),
+    ("${{ !cancelled() && needs.lint.result == 'success' }}", "push", None),
+    ("${{ !cancelled() && (github.event_name != 'pull_request' || "
+     "needs.changes.outputs.backends != 'false') }}", "pull_request", None),
+    ("${{ github.event_name == 'pull_request' && needs.x.result == 'y' }}", "push", False),
+    ("contains(github.ref, 'main')", "push", None),
+    ("github.run_attempt > 1", "push", None),
+    ("!github.event_name == 'push'", "pull_request", False),
+    ("!(github.event_name == 'push')", "pull_request", True),
+    ("${{ failure() }}", "push", False),
+])
+def test_an_if_is_false_only_when_the_event_makes_it_false(cond, event, value):
+    assert _when(cond, event) is value
+
+
 def test_the_switch_is_wired_in_ci_at_all():
     """`REVL_REQUIRE_TIERS` is read in src/revl/, not tests/, so the scanners at
     the top of this file cannot see it. Check it directly: it must be set by at
@@ -1125,20 +1403,20 @@ def _runtime_provisioning_jobs() -> list[tuple[str, list[str]]]:
 
     Per JOB rather than per step: `setup.sh` and the pytest invocation are two
     separate steps of the same job, and it is the job that carries the venv
-    from one to the other.
+    from one to the other. Only steps that execute and can fail the build
+    count (`_gating_steps`), so a job nothing starts provisions nothing.
     """
+    by_job: dict[int, tuple[str, list[str]]] = {}
+    for job, spec, step, _env in _gating_steps():
+        by_job.setdefault(id(spec), (job, []))[1].append(str(step.get("run", "")))
     out: list[tuple[str, list[str]]] = []
-    for path in sorted(WORKFLOWS.rglob("*.yml")) + sorted(WORKFLOWS.rglob("*.yaml")):
-        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        for job, spec in (doc.get("jobs") or {}).items():
-            runs = [str((step or {}).get("run", ""))
-                    for step in (spec or {}).get("steps") or []]
-            if not any(_CORDIS_SETUP in run for run in runs):
-                continue
-            targets: list[str] = []
-            for run in runs:
-                targets += _pytest_targets(_command_lines(run))
-            out.append((job, targets))
+    for job, runs in by_job.values():
+        if not any(_CORDIS_SETUP in run for run in runs):
+            continue
+        targets: list[str] = []
+        for run in runs:
+            targets += _pytest_targets(_command_lines(run))
+        out.append((job, targets))
     return out
 
 

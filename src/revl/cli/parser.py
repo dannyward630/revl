@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 
 from .._run_backends import KNOWN_BACKENDS, RUNNABLE_BACKENDS
+from ..tiers import tier_metavar, tier_type
 
 # The backends `revl bundle` can emit (the emitter package names under
 # backends/). Kept as a literal here so parser assembly stays import-light —
@@ -1000,7 +1001,8 @@ def build_parser() -> argparse.ArgumentParser:
              "are py-tier-only) reports a skip with the reason, never a pass "
              "(issue #843)")
     test.add_argument("--backend", default="py",
-                      choices=("py", "ts", "rust", "java", "wasm", "go", "all"),
+                      type=tier_type(None, extra=("all",)),
+                      metavar=tier_metavar(None, ("all",)),
                       help="tier to run the `test` blocks on (default: py); "
                            "`all` runs every tier whose toolchain is present")
     test.add_argument("--sweep", action="store_true",
@@ -1169,7 +1171,9 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_import.add_argument("manifest", help="JSON file: a tools/list result (or {\"tools\": [...]})")
     mcp_import.add_argument("--service", default="Imported", help="generated service name")
     mcp_import.add_argument("--key", default="imported", help="provision key")
-    mcp_import.add_argument("--backend", default="ts", choices=("ts", "py"),
+    mcp_import.add_argument("--backend", default="ts",
+                            type=tier_type(("ts", "py")),
+                            metavar=tier_metavar(("ts", "py")),
                             help="host block backend for the generated externs")
     mcp_import.add_argument("--undo", action="append", default=[],
                             metavar="TOOL=INVERSE[:result]",
@@ -1241,7 +1245,8 @@ def build_parser() -> argparse.ArgumentParser:
         "wit", help="turn a WIT world/interface into revl source (docs/import-wit.md)")
     imp_wit.add_argument("file", help="a .wit file")
     imp_wit.add_argument("--backend", default="wasm",
-                         choices=("wasm", "ts", "py", "rust"),
+                         type=tier_type(("wasm", "ts", "py", "rust")),
+                         metavar=tier_metavar(("wasm", "ts", "py", "rust")),
                          help="host block backend for the generated extern stubs "
                               "(default: wasm)")
     imp_wit.add_argument(
@@ -1260,7 +1265,9 @@ def build_parser() -> argparse.ArgumentParser:
         "openapi",
         help="turn an OpenAPI 3.x document into revl source (docs/import-openapi.md)")
     imp_api.add_argument("file", help="a .json (or .yaml, if PyYAML is importable) OpenAPI 3.x document")
-    imp_api.add_argument("--backend", default="ts", choices=("ts", "py", "rust"),
+    imp_api.add_argument("--backend", default="ts",
+                     type=tier_type(("ts", "py", "rust")),
+                     metavar=tier_metavar(("ts", "py", "rust")),
                          help="host block backend for the generated extern stubs "
                               "(default: ts)")
     imp_api.add_argument("--service", default=None,
@@ -1323,7 +1330,9 @@ def build_parser() -> argparse.ArgumentParser:
         "cordis",
         help="turn a Cordis (TS) plugin into revl source (docs/import-cordis.md)")
     imp_cordis.add_argument("file", help="a Cordis plugin .ts (or .js) file")
-    imp_cordis.add_argument("--backend", default="ts", choices=("ts", "py", "rust"),
+    imp_cordis.add_argument("--backend", default="ts",
+                        type=tier_type(("ts", "py", "rust")),
+                        metavar=tier_metavar(("ts", "py", "rust")),
                             help="host block backend for the generated extern stubs "
                                  "(default: ts)")
     imp_cordis.add_argument("--service", default=None,
@@ -1352,7 +1361,9 @@ def build_parser() -> argparse.ArgumentParser:
         "a2a",
         help="turn an A2A 1.0.0 Agent Card into revl source (docs/import-a2a.md)")
     imp_a2a.add_argument("file", help="an A2A 1.0.0 Agent Card (.json)")
-    imp_a2a.add_argument("--backend", default="ts", choices=("ts", "py"),
+    imp_a2a.add_argument("--backend", default="ts",
+                         type=tier_type(("ts", "py")),
+                         metavar=tier_metavar(("ts", "py")),
                          help="host block backend for the generated externs "
                               "(default: ts)")
     imp_a2a.add_argument("--service", default=None,
@@ -1539,7 +1550,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="boot a composition on a Cordis runtime; streams the lifecycle/host trace (hold + REPL, --watch, or --plan)")
     run.add_argument("files", nargs="+")
-    run.add_argument("--backend", default="py", choices=KNOWN_BACKENDS,
+    run.add_argument("--backend", default="py",
+                     type=tier_type(KNOWN_BACKENDS),
+                     metavar=tier_metavar(KNOWN_BACKENDS),
                      help="target runtime tier (default: py). All tiers run: "
                           f"{', '.join(RUNNABLE_BACKENDS)} — py boots in-process, "
                           "the rest each boot as a separate process over the bridge "
@@ -2528,8 +2541,8 @@ def build_parser() -> argparse.ArgumentParser:
     bundle_cmd.add_argument("--out", required=True, metavar="DIR",
                             help="the bundle directory to write (e.g. app.revlbundle)")
     bundle_cmd.add_argument(
-        "--backend", action="append", default=[], metavar="BACKEND",
-        choices=list(BUNDLE_BACKENDS),
+        "--backend", action="append", default=[],
+        type=tier_type(spelling="dir"), metavar=tier_metavar(),
         help="a backend to emit into the bundle; repeatable. Omit to emit every "
              f"backend ({', '.join(BUNDLE_BACKENDS)}). An emitter that is absent "
              "here is omitted quietly (exit 0); an emitter that REFUSES this IR "
@@ -2564,7 +2577,8 @@ def build_parser() -> argparse.ArgumentParser:
     emit_cmd.add_argument("files", nargs="+",
                           help=".rvl sources to compile and emit")
     emit_cmd.add_argument("--backend", default="typescript",
-                          choices=list(BUNDLE_BACKENDS),
+                          type=tier_type(spelling="dir"),
+                          metavar=tier_metavar(),
                           help="the backend emitter to render (default: typescript)")
     emit_cmd.add_argument("--target", default=None, metavar="TARGET",
                           help="a rendering of the backend's emitter, orthogonal "
@@ -2630,7 +2644,8 @@ def build_parser() -> argparse.ArgumentParser:
              "attestation key_id). With no key the chain cannot be verified and "
              "admission refuses at the signer link")
     deploy_cmd.add_argument(
-        "--backend", metavar="NAME", default="python",
+        "--backend", default="python",
+        type=tier_type(spelling="dir"), metavar=tier_metavar(),
         help="the receiver backend whose emitted artifact bytes the chain is "
              "re-hashed over when --bundle is given (default: python)")
     deploy_cmd.add_argument(

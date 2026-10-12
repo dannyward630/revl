@@ -6,13 +6,14 @@
         "src/revl/_run_backends.py::KNOWN_BACKENDS",
         "src/revl/_run_backends.py::RUNNABLE_BACKENDS",
         "src/revl/fault.py::_SWEEP_ALL_TIERS",
-        "src/revl/gate.py::_KNOWN_TIERS",
         "src/revl/test.py::_RAW_RUNNERS",
+        "src/revl/tiers.py::TIERS",
+        "src/revl/tiers.py::TIER_DIRS",
         "tools/conformance_cert.py::ALL_TIERS",
         "tools/docgen.py::VISION_TIER_RUNTIME",
         "tools/fuzz_cross_tier.py::detect_tiers",
         "tools/selfhost_coverage.py::TIERS",
-        "tools/selfhost_line_coverage.py::TIERS"
+        "tools/selfhost_line_coverage.py::_tier_dirs"
       ],
       "tokens": [
         "go",
@@ -22,7 +23,7 @@
         "ts",
         "wasm"
       ],
-      "note": "The six tier names in their short spelling, re-declared in ten places, the largest mirror class in the tree. Real mirror, not yet resolved."
+      "note": "The six tier names in their short spelling, re-declared in ten places, the largest mirror class in the tree. Real mirror, not yet resolved; src/revl/tiers.py now owns the alias maps and the CLI, gate and tools read them from there."
     },
     {
       "sites": [
