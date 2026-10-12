@@ -630,3 +630,57 @@ def test_a_fiber_that_already_failed_is_reported_by_its_end_state(tmp_path):
             if "| Impl " in line and "dispose" in line]
     assert impl and all("inverses replay" in line for line in impl), done.stdout
     assert "MARK INVERSE-RAN" in done.stdout + done.stderr, done.stderr
+
+
+# ---------------------------------------------------------------------------
+# held-mode teardown waits for each dispose (issue #2336)
+# ---------------------------------------------------------------------------
+
+# The inverse is slow on purpose: a busy loop long enough that a process which
+# only REQUESTS the dispose reaches `DOWN` and exits long before the inverse
+# prints. Plain `println` goes to stderr, so the run merges stderr into stdout
+# to keep one total order with the runner's own `DOWN` line.
+_SLOW_UNDO_DOC = '''
+service Vault { fn show(user: Str) -> Str }
+
+extern pure fn mark(what: Str) -> Str = @go {
+	if what == "INVERSE-RAN" {
+		sum := 0
+		for i := 0; i < 400000000; i++ {
+			sum += i & 3
+		}
+		println("SPIN", sum)
+	}
+	println("MARK " + what)
+	return what
+}
+
+component Impl provides vault: Vault {
+  let slot = effect mark("applied") undo mark("INVERSE-RAN")
+
+  provide vault {
+    fn show(user) { return "shown " + user }
+  }
+}
+'''
+
+
+def test_held_teardown_waits_for_the_inverse_before_down(tmp_path):
+    """Outside `--once` the runner holds until stdin closes, then disposes each
+    fiber. `Dispose` only requests the teardown, so a runner that does not wait
+    prints `DOWN` and exits before the held component's inverse has run. The
+    inverse marker must precede `DOWN`, and the dispose line must say what was
+    confirmed rather than claim a bare `dispose`."""
+    binary = _build(tmp_path, doc=_SLOW_UNDO_DOC)
+    spec = tmp_path / "held.json"
+    spec.write_text(json.dumps({**_SPEC, "probe": [], "once": False}))
+    done = subprocess.run([binary, str(spec)], stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, text=True, timeout=300,
+                          stdin=subprocess.DEVNULL)
+    out = done.stdout
+    assert done.returncode == 0, out
+    assert "MARK applied" in out and "] DOWN" in out, out
+    assert "MARK INVERSE-RAN" in out, out
+    assert out.index("MARK applied") < out.index("MARK INVERSE-RAN") < out.index("] DOWN"), out
+    impl = [line for line in out.splitlines() if "| Impl " in line and "dispose" in line]
+    assert impl and all("inverses replay" in line for line in impl), out

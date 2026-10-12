@@ -1,0 +1,16 @@
+// issue #2285: `Int.to_char` in a provide-method body, the v3 COMBINED path's
+// `_comp_builtin`. The function-only path is `to_char.rvl`. The pure path is
+// combined only beside a top-level fn, hence `seed`.
+fn seed() -> Int { return 0 }
+
+service Chars {
+  fn ch(n: Int) -> Str
+  fn cr() -> Str
+}
+
+component Text provides chars: Chars {
+  provide chars {
+    fn ch(n) = n.to_char()
+    fn cr() = 13.to_char()
+  }
+}
