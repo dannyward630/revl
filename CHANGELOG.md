@@ -109,6 +109,20 @@ release also folds in the full agent story and the standing correctness debt.
   declaration rules), with differential-oracle rows for G9, G-RETAIN,
   G-COUNCIL-SPLIT and the witnessed-extern `undo` rule (#1853, #2081, #2082,
   #2053, #2122).
+- Java: an annotated empty list is declared as its element type, not as a raw
+  `java.util.List`, so a loop over one (as in `dedent` in `stdlib/str.rvl`)
+  compiles under javac (#2302, closes #2296).
+- The self-host native driver links a used module's externs. It now builds the
+  same extern closure as `compile_files`, so a module that uses `stdlib/json.rvl`
+  keeps its json extern bodies on py and ts (#2305, closes #2181).
+- Go: an `Int32` `+`, `-` or `*` in a component method body traps on overflow,
+  and so does unary minus, as a top-level `fn` already did (#2312, closes
+  #2262).
+- Service names that differ only in case, and hot-swap names that fold onto a
+  running component, are refused on every tier (#2309, closes #2275, #2276).
+- A call in a fn body whose callee is a local binding takes its arity and types
+  from that binding, not from a same-named private fn in another file (#2319,
+  closes #2311).
 
 ### The agent story
 
@@ -474,6 +488,13 @@ but not seen. Every instance was closed. Representative fixes:
   (#768).
 - Licensing: AGPL-3.0 for the compiler, gate and tooling, MIT for what ships in
   your program, with a trademark policy (#1237).
+- Every `--backend` flag and tier alias map reads one tier list in
+  `src/revl/tiers.py`, so a tier spelled one way is accepted or refused the same
+  way by every command. `revl deploy --backend` is now validated (#2299, closes
+  #2205).
+- `revl mcp serve --print-config` prints the client config block for the first
+  interpreter that imports both revl and cordis, and `revl doctor` gets a
+  matching row (#2318, closes #2281).
 
 ### Live systems
 
@@ -491,7 +512,6 @@ then rejects, or that it handles differently from the reference.
   Java.
 - #2325 (java): generic variants, `Unit` type arguments and `Set`/`Stream`
   heads emit invalid Java.
-- #2275 (rust): two services whose names differ only in case collide.
 - #2328 (self-host rust): a type named `Box` is not renamed to `Box_` as the
   reference does.
 - #2344: a `@py` host body reaches the runtime through `sys.modules` although
@@ -503,7 +523,11 @@ Regeneration, CI, test-harness and roadmap-currency work (the light PR runs and
 merge-queue CI of #1679, the root-suite sharding, the affected-tests selector,
 the census and ledger records, the site and playground wheel refreshes, and the
 main-health fixes between them) is not itemised; it changes no behaviour of the
-language or its tiers.
+language or its tiers. Recent examples: the env-gate credit guard (#2304), one
+loader per backend emitter (#2306), a cached test listing for the affected-tests
+selector (#2307), the pre-merge run of every CI-only suite (#2310), a shared
+compile of the self-host lowering module across tests (#2314), and a main-red
+fix to a paths-ignore control (#2330).
 
 ## 2.0.0
 
