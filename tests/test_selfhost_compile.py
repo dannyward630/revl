@@ -1142,6 +1142,132 @@ def test_native_driver_refuses_what_it_cannot_link(compile_rvl, tmp_path, case):
     assert why in got
 
 
+_STORE_DOC = ('use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT)
+
+# Issue #2332: case -> (the reference's parse error, files). The reference loads
+# and parses every used module, at any depth, before it links anything, so each
+# document below is a parse error there. The native link used to read only what
+# it carries out of `lib.rvl` and emitted code for every one of them.
+_MODULE_DOES_NOT_PARSE = {
+    "comma_between_operations": ("expected fn, found ','", {
+        "doc.rvl": _STORE_DOC % "1",
+        "lib.rvl": "pub service Store { fn put(x: Int) -> Str, fn get() -> Int }\n",
+    }),
+    "where_after_a_record_type": ("expected a top-level declaration, found 'where'", {
+        "doc.rvl": _STORE_DOC % "1",
+        "lib.rvl": (
+            'pub type St = { s: Str } where s != ""\n'
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+    }),
+    "a_line_that_is_no_declaration": ("expected a top-level declaration, found 'this'", {
+        "doc.rvl": _STORE_DOC % "1",
+        "lib.rvl": "pub service Store { fn put(x: Int) -> Str }\nthis is not revl\n",
+    }),
+    "block_comment_before_a_private_alias": ("expected a top-level declaration, found '/'", {
+        "doc.rvl": _STORE_DOC % "[]",
+        "lib.rvl": (
+            "/* c */ type Id = Int\n"
+            "pub type Row = { id: Id }\n"
+            "pub service Store {\n  fn put(xs: List[Row]) -> Str\n}\n"),
+    }),
+    "block_comment_before_a_public_type": ("expected a top-level declaration, found '/'", {
+        "doc.rvl": _STORE_DOC % "[]",
+        "lib.rvl": (
+            "/* c */ pub type Row = { id: Int }\n"
+            "pub service Store {\n  fn put(xs: List[Row]) -> Str\n}\n"),
+    }),
+    # One `use` further down: the reference parses the module `lib.rvl` uses
+    # too, though nothing of it is carried.
+    "a_module_two_uses_away": ("expected a top-level declaration, found 'this'", {
+        "doc.rvl": _STORE_DOC % "1",
+        "lib.rvl": (
+            'use "./inner.rvl" { Tool }\n\n'
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+        "inner.rvl": "pub service Tool { fn run() -> Int }\nthis is not revl\n",
+    }),
+}
+
+
+@pytest.mark.parametrize("tier", ("py", "go", "java", "rust"))
+@pytest.mark.parametrize("case", sorted(_MODULE_DOES_NOT_PARSE))
+def test_native_driver_refuses_a_used_module_that_does_not_parse(
+        compile_rvl, tmp_path, case, tier):
+    """Issue #2332: a used module the reference does not parse makes the native
+    driver refuse with `REFUSED|BAD|<module>: ...` before it links anything, so
+    a document the reference rejects is never turned into emitted code."""
+    message, files = _MODULE_DOES_NOT_PARSE[case]
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    with pytest.raises(RevlError, match=message):
+        compile_files([str(doc)])
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
+    assert got.startswith("REFUSED|BAD|"), got[:120]
+    assert ".rvl: " in got, got[:200]
+
+
+def _modules_the_reference_parses():
+    from revl.parser import parse_text
+    out = []
+    for path in sorted((ROOT / "stdlib").glob("*.rvl")) + sorted(
+            (ROOT / "src" / "revl" / "truc" / "components").glob("*.rvl")):
+        text = path.read_text(encoding="utf-8")
+        parse_text(text, str(path))
+        out.append((path.relative_to(ROOT).as_posix(), text))
+    return out
+
+
+def test_native_module_admission_reads_every_stdlib_and_truc_module(compile_rvl):
+    """Issue #2332, the positive control: the admission a used module now
+    passes reads every stdlib module and every truc component (multi-line
+    import lists, variants spread over lines, aliases, function types)
+    without a refusal, so the check does not refuse what the reference
+    parses on the modules documents actually import."""
+    modules = _modules_the_reference_parses()
+    assert len(modules) > 20
+    refused = {name: why for name, text in modules
+               if (why := compile_rvl["ad_module_refusal"](text)) != ""}
+    assert refused == {}
+
+
+# Issue #2343: the whitespace the reference lexer skips between an `@backend`
+# name and its `{` is Python's `str.isspace`, newlines included in any order.
+_HOST_GAPS = {"space": " ", "form_feed": "\x0c", "vertical_tab": "\x0b",
+              "file_separator": "\x1c", "nbsp": " ", "newline_then_space": "\n "}
+
+
+@pytest.mark.parametrize("gap", sorted(_HOST_GAPS))
+def test_native_compile_reads_any_isspace_gap_before_a_host_body(
+        compile_to, reference_emit, gap):
+    """Issue #2343, single file: `@py<gap>{ ... }` is a host body for the
+    reference whatever `str.isspace` character the gap holds, and the native
+    compile is the reference's, byte for byte."""
+    src = "extern pure fn f() -> Int = @py" + _HOST_GAPS[gap] + "{ return 1 }\n"
+    assert compile_to(src, "py") == reference_emit["py"](compile_source(src))
+
+
+@pytest.mark.parametrize("tier", ("py", "go"))
+@pytest.mark.parametrize("gap", sorted(_HOST_GAPS))
+def test_native_link_reads_any_isspace_gap_before_a_host_body(
+        compile_rvl, reference_emit, tmp_path, gap, tier):
+    """Issue #2343, across a `use`: when the gap after `@py` was not read as
+    whitespace, the backtick in the host comment opened a revl template that
+    ran to the one on the `//` line and hid `Row`, so the native link emitted
+    ir_version 1 without the type the reference carries."""
+    (tmp_path / "doc.rvl").write_text(_STORE_DOC % "[]", encoding="utf-8")
+    (tmp_path / "lib.rvl").write_text(
+        "pub extern pure fn e(x: Int) -> Int = @py" + _HOST_GAPS[gap]
+        + "{\n    return x  # `\n}\n"
+        "pub type Row = { id: Int }\n"
+        "// `\n"
+        "pub service Store { fn put(xs: List[Row]) -> Str }\n", encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    reference_ir = compile_files([str(doc)])
+    assert "Row" in reference_ir["types"]
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
+    assert got == reference_emit[tier](reference_ir), got[:200]
+
+
 # case -> (tiers, files). The tiers are those whose native emitter covers the
 # document once it is linked: wasm's emits no component yet, and only py and ts
 # bodies are written for the extern case.

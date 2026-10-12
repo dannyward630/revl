@@ -33461,7 +33461,39 @@ fn dollar_interp(text: &str) -> bool {
 }
 
 fn is_ws(c: &str) -> bool {
-    return { let _rc: &str = &c; _rc == " " || _rc == "\t" || _rc == "\n" || _rc == "\r" };
+    if { let _rc: &str = &c; _rc == " " || _rc == "\t" || _rc == "\n" || _rc == "\r" } {
+        return true;
+    }
+    return is_py_space_extra(code0(c));
+}
+
+fn is_py_space_extra(cc: i64) -> bool {
+    if ((cc == 11i64) || (cc == 12i64)) {
+        return true;
+    }
+    if ((cc >= 28i64) && (cc <= 31i64)) {
+        return true;
+    }
+    if (((cc == 133i64) || (cc == 160i64)) || (cc == 5760i64)) {
+        return true;
+    }
+    if ((cc >= 8192i64) && (cc <= 8202i64)) {
+        return true;
+    }
+    if (((cc == 8232i64) || (cc == 8233i64)) || (cc == 8239i64)) {
+        return true;
+    }
+    return ((cc == 8287i64) || (cc == 12288i64));
+}
+
+fn is_py_space(c: &str, cc: i64) -> bool {
+    if { let _rc: &str = &c; _rc == " " || _rc == "\t" || _rc == "\n" || _rc == "\r" } {
+        return true;
+    }
+    if ((cc < 32i64) || (cc >= 133i64)) {
+        return is_py_space_extra(cc);
+    }
+    return false;
 }
 
 fn trim__m7(s: &str) -> String {
@@ -33660,7 +33692,7 @@ fn step(source: &str, i: i64, line: i64, source_revl_cs: &[char]) -> Step {
     if (cc == 10i64) {
         return Step { i: (i).checked_add(1i64).expect("revl: Int overflow"), line: (line).checked_add(1i64).expect("revl: Int overflow"), tok: none.clone() };
     }
-    if { let _rc: &str = &c; _rc == " " || _rc == "\t" || _rc == "\n" || _rc == "\r" } {
+    if is_py_space(&c, cc) {
         return Step { i: (i).checked_add(1i64).expect("revl: Int overflow"), line: line, tok: none.clone() };
     }
     if ({ let _rsn = source_revl_cs.len() as i64; let _rsa = { let x = (i) as i64; let x = if x < 0 { x + _rsn } else { x }; x.max(0).min(_rsn) }; let _rsb = { let x = ((i).checked_add(2i64).expect("revl: Int overflow")) as i64; let x = if x < 0 { x + _rsn } else { x }; x.max(0).min(_rsn).max(_rsa) }; source_revl_cs.iter().skip(_rsa as usize).take((_rsb - _rsa) as usize).collect::<String>() } == "//") {
@@ -33792,10 +33824,7 @@ fn step(source: &str, i: i64, line: i64, source_revl_cs: &[char]) -> Step {
             }
             let backend = { let _rsn = source_revl_cs.len() as i64; let _rsa = { let x = ((i).checked_add(1i64).expect("revl: Int overflow")) as i64; let x = if x < 0 { x + _rsn } else { x }; x.max(0).min(_rsn) }; let _rsb = { let x = (jb.clone()) as i64; let x = if x < 0 { x + _rsn } else { x }; x.max(0).min(_rsn).max(_rsa) }; source_revl_cs.iter().skip(_rsa as usize).take((_rsb - _rsa) as usize).collect::<String>() };
             let mut kb = jb.clone();
-            while (((kb < n1) && ({ source_revl_cs[(kb.clone()) as usize] as u32 as i64 } != 10i64)) && { let _rc: &str = &({ source_revl_cs[(kb.clone()) as usize].to_string() }); _rc == " " || _rc == "\t" || _rc == "\n" || _rc == "\r" }) {
-                kb = (kb).checked_add(1i64).expect("revl: Int overflow");
-            }
-            while ((kb < n1) && ({ source_revl_cs[(kb.clone()) as usize] as u32 as i64 } == 10i64)) {
+            while ((kb < n1) && is_py_space(&({ source_revl_cs[(kb.clone()) as usize].to_string() }), { source_revl_cs[(kb.clone()) as usize] as u32 as i64 })) {
                 kb = (kb).checked_add(1i64).expect("revl: Int overflow");
             }
             if ((kb < n1) && ({ source_revl_cs[(kb.clone()) as usize].to_string() } == "{")) {
