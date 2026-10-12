@@ -1247,6 +1247,12 @@ def _render_builtin(method, target: str, args: list, recv: str | None = None) ->
     # the self-host lexer would otherwise index a second time via `code0`.
     if method == "codepoint_at":
         return f"ord(_revl_str_at({target}, {args[0]}))"
+    # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+    # §Int.to_char): a one-code-point Str for a Unicode scalar value, "" for
+    # anything else. `chr` alone would raise on a negative and hand back a lone
+    # surrogate, so the range check lives in the `_revl_to_char` helper.
+    if method == "to_char":
+        return f"_revl_to_char({target})"
     if method == "concat":
         return f"({target} + {args[0]})"
     if method == "indexOf":
@@ -6295,6 +6301,16 @@ def emit(ir: dict) -> str:
         out.add(0, '    """Euclidean division: the remainder is never negative '
                    '(docs/arithmetic.md)."""')
         out.add(0, "    return a // b if b > 0 else -(a // -b)")
+        out.add(0)
+    if "to_char" in _scan.builtins:
+        # Int.to_char (issue #2285): total, "" outside the Unicode scalar
+        # values, the same answer every tier gives.
+        out.add(0, "def _revl_to_char(n):")
+        out.add(0, '    """Int.to_char: the code point as a 1-char Str, "" if '
+                   'it is not a scalar."""')
+        out.add(0, "    if n < 0 or n > 0x10FFFF or 0xD800 <= n <= 0xDFFF:")
+        out.add(0, "        return \"\"")
+        out.add(0, "    return chr(n)")
         out.add(0)
     if "indexOf" in _scan.builtins:
         out.add(0, "def _revl_index_of(v, n):")

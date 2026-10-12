@@ -4596,7 +4596,8 @@ def _map_value_expr_type(node: dict, var_types: dict, env: _Env) -> str | None:
         if method in ("length", "charCodeAt", "codepoint_at", "indexOf",
                       "to_int"):
             return "Int"
-        if method in ("charAt", "join", "repeat", "to_str", "slice"):
+        if method in ("charAt", "join", "repeat", "to_str", "to_char",
+                      "slice"):
             return "Str"
         if method == "split":
             return "List[Str]"
@@ -6862,7 +6863,7 @@ _BUILTIN_RESULT = {
     "indexOf": "Int", "div_trunc": "Int", "div_floor": "Int",
     "div_euclid": "Int", "mod": "Int", "size": "Int",
     "charAt": "Str", "join": "Str", "repeat": "Str", "str": "Str",
-    "to_str": "Str",
+    "to_str": "Str", "to_char": "Str",
     "startsWith": "Bool", "endsWith": "Bool", "has": "Bool",
     "is_alnum": "Bool", "is_digit": "Bool", "is_alpha": "Bool",
     "is_space": "Bool",
@@ -8201,6 +8202,15 @@ def _v3_builtin(method: str, target: str, args: list[str],
         if recv == "Float":
             return f"revl_ftoa({target})"
         return f"({target}).to_string()"
+    # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+    # §Int.to_char): a one-code-point Str for a Unicode scalar value, "" for
+    # anything else. The receiver is bound once; `char::from_u32` refuses a
+    # surrogate and anything above U+10FFFF, and the i64 range check keeps a
+    # negative from wrapping into a valid u32.
+    if method == "to_char":
+        return (f"{{ let _cp: i64 = {target}; if _cp < 0 || _cp > 0x10FFFF "
+                "{ String::new() } else { char::from_u32(_cp as u32)"
+                ".map(|c| c.to_string()).unwrap_or_default() } }")
     # Single-character ASCII classification (item 233, docs/stdlib-2.0.md
     # §Str.is_alnum), mirroring the python backend's native forms
     # (backends/python/emit.py §is_digit/is_alpha/is_alnum/is_space). The

@@ -491,7 +491,7 @@ def check_mcp_runtime(prober: Prober, backends_dir: Path) -> Check:
     venv (that venv can import cordis), or serve with the runtime verbs refused
     by name. The last is a WARN that names them, so a benchmark or an agent
     learns it before the first call rather than one failed verb at a time."""
-    from .mcp.runtime_gate import RUNTIME_VERBS  # noqa: PLC0415 — lazy
+    from .mcp.runtime_gate import GATE_PROBE, RUNTIME_VERBS  # noqa: PLC0415 - lazy
 
     if prober.module_available("cordis"):
         return Check("mcp server runtime", OK, None,
@@ -499,7 +499,7 @@ def check_mcp_runtime(prober: Prober, backends_dir: Path) -> Check:
     from ._paths import venv_python  # noqa: PLC0415
 
     venv = venv_python(backends_dir / "python" / ".venv")
-    if prober.run([str(venv), "-P", "-c", "import cordis, revl"]).ok:
+    if prober.run([str(venv), *GATE_PROBE]).ok:
         return Check("mcp server runtime", OK, None,
                      f"`revl mcp serve` re-executes under {venv}, which can "
                      "import cordis")
@@ -507,6 +507,32 @@ def check_mcp_runtime(prober: Prober, backends_dir: Path) -> Check:
                  f"`revl mcp serve` would refuse {len(RUNTIME_VERBS)} verbs "
                  f"({', '.join(sorted(RUNTIME_VERBS))}): no cordis here and no "
                  f"runtime venv at {venv}. Fix: sh "
+                 f"{backends_dir / 'python' / 'setup.sh'}")
+
+
+def check_mcp_client_config(prober: Prober, backends_dir: Path) -> Check:
+    """Whether an MCP client can be pointed at `revl mcp serve` (issue #2281):
+    some interpreter has to import both revl and cordis, and
+    `revl mcp serve --print-config` prints a block naming it. Same candidates,
+    same probe (no inherited PYTHONPATH) and same source-checkout fallback as
+    that command, so the two cannot disagree."""
+    from .mcp import print_config  # noqa: PLC0415 - lazy
+
+    options = print_config.candidates(backends_dir / "python")
+    found = print_config.resolve(
+        options, lambda argv: prober.run(argv).ok,
+        checkout_pythonpath(prober, backends_dir))
+    if found is not None:
+        python, env = found
+        how = (f", with `env` PYTHONPATH={env['PYTHONPATH']}" if env else "")
+        return Check("mcp client config", OK, None,
+                     f"`revl mcp serve --print-config` names {python}, which "
+                     f"imports revl and cordis{how}")
+    return Check("mcp client config", WARN, None,
+                 "no interpreter imports both revl and cordis with no PYTHON* "
+                 f"environment (PYTHONPATH, PYTHONHOME) (tried "
+                 f"{', '.join(str(p) for p in options)}), so "
+                 "`revl mcp serve --print-config` has nothing to name. Fix: sh "
                  f"{backends_dir / 'python' / 'setup.sh'}")
 
 
@@ -718,6 +744,7 @@ def diagnose(prober: Prober | None = None,
         check_cordis_py(prober),
         check_cordis_ts(prober, backends_dir),
         check_mcp_runtime(prober, backends_dir),
+        check_mcp_client_config(prober, backends_dir),
         check_mtls(prober),
         check_otel(prober),
         check_stdlib_version(prober),
