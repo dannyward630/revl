@@ -23,13 +23,6 @@ _SPEC = importlib.util.spec_from_file_location(
 )
 at = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(at)
-# Issue #2216: `select()` relists tests/ about 22 times per changed file, and
-# this module asks it about several hundred. The listing is cached on a hash of
-# the directory's entry names; see tests/_test_listing_cache.py.
-from _test_listing_cache import cached_test_files  # noqa: E402
-
-_UNCACHED_TEST_FILES = at._test_files
-at._test_files = cached_test_files(_UNCACHED_TEST_FILES)
 
 
 def sel(*changed):
@@ -566,12 +559,10 @@ def test_every_site_wheel_input_selects_the_site_wheel_gate():
 
 
 def test_the_cached_test_listing_answers_what_the_glob_answers():
-    """Issue #2216. This module runs the selector over a cached listing of
-    tests/, so the cache has to be installed and has to give the selector's own
-    answer, on this tree and on a tree that gains a test between two calls."""
-    assert at._test_files is not _UNCACHED_TEST_FILES, (
-        "the selector's tests/ listing is not cached in this module")
-    assert at._test_files(ROOT) == _UNCACHED_TEST_FILES(ROOT)
+    """Issue #2216. The selector caches its listing of tests/, so the cached
+    answer has to be the glob's own answer, on this tree and on a tree that
+    gains a test between two calls."""
+    assert at._test_files(ROOT) == at._list_test_files(ROOT)
 
 
 def test_the_cached_test_listing_sees_a_test_added_between_calls(tmp_path):
@@ -581,7 +572,7 @@ def test_the_cached_test_listing_sees_a_test_added_between_calls(tmp_path):
     (tmp_path / "tests" / "test_b.py").write_text("", encoding="utf-8")
     assert [p.name for p in at._test_files(tmp_path)] == [
         "test_a.py", "test_b.py"]
-    assert at._test_files(tmp_path) == _UNCACHED_TEST_FILES(tmp_path)
+    assert at._test_files(tmp_path) == at._list_test_files(tmp_path)
 
 
 def test_the_word_index_answers_what_the_word_regex_answers():

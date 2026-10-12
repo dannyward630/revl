@@ -52,8 +52,10 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import importlib.util
 import io
+import os
 import re
 import subprocess
 import sys
@@ -545,11 +547,43 @@ def _norm(f: str) -> str:
 # --------------------------------------------------------------------------- #
 # Test-corpus index (pure, deterministic scan of tests/).                      #
 # --------------------------------------------------------------------------- #
-def _test_files(root: Path):
+# Issue #2216. `select()` lists tests/ once per word heuristic, about 22 times
+# per changed file, so a caller that asks about a few hundred files (this
+# module's own suite asks about every input of the site wheel) spent most of
+# its time globbing the same directory. The glob reads nothing but the entry
+# names of `<root>/tests`, so the listing is cached on the root and a SHA-256
+# of those names: adding, removing or renaming any entry changes the key and
+# the glob runs again. An edit inside a test file is not an input here.
+_TEST_FILES_CACHE: dict[tuple[str, str], tuple[Path, ...]] = {}
+
+
+def _test_listing_key(root: Path) -> tuple[str, str] | None:
+    """The root and a SHA-256 of every entry name in `<root>/tests`, or None
+    when that directory cannot be listed (the glob then runs uncached)."""
+    try:
+        names = sorted(os.fsencode(n) for n in os.listdir(Path(root) / "tests"))
+    except OSError:
+        return None
+    return str(root), hashlib.sha256(b"\0".join(names)).hexdigest()
+
+
+def _list_test_files(root: Path):
     d = root / "tests"
     if not d.is_dir():
         return []
     return sorted(d.glob("test_*.py"))
+
+
+def _test_files(root: Path):
+    """`tests/test_*.py` under `root`, sorted. A fresh list on every call, so
+    a caller that changes its result cannot change the cache."""
+    key = _test_listing_key(root)
+    if key is None:
+        return _list_test_files(root)
+    hit = _TEST_FILES_CACHE.get(key)
+    if hit is None:
+        hit = _TEST_FILES_CACHE[key] = tuple(_list_test_files(root))
+    return list(hit)
 
 
 _READ_CACHE: dict[Path, str] = {}
