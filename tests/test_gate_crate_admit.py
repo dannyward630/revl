@@ -453,6 +453,11 @@ def _two_components(first: str, second: str) -> str:
             f"component {second} provides b: S {{\n  provide b {{\n    fn get(k) = k\n  }}\n}}\n")
 
 
+def _two_services(first: str, second: str) -> str:
+    return (f"service {first} {{\n  fn get(k: Str) -> Str\n}}\n"
+            f"service {second} {{\n  fn put(k: Str) -> Str\n}}\n")
+
+
 # Programs INSIDE the crate's admission surface (`crates/revl-gate/src/
 # admission.rs`), and near misses one token outside it. The oracle corpus above
 # contains none of either: every program in it declares a component or an `fn`
@@ -467,6 +472,8 @@ INSIDE_THE_ADMISSION_SURFACE = (
     # components under names that stay apart, so that near miss is withheld
     # for its names and not for its shape
     ("two_components", _two_components("KVStore", "Store")),
+    # the positive control for `folded_service_names` below
+    ("two_services", _two_services("KVStore", "Store")),
 )
 
 OUTSIDE_THE_ADMISSION_SURFACE = (
@@ -479,6 +486,8 @@ OUTSIDE_THE_ADMISSION_SURFACE = (
     # issue #2224: the reference refuses two component names that differ only
     # in letter case or underscores, which `has_duplicate` alone would admit
     ("folded_component_names", _two_components("KVStore", "Kvstore")),
+    # issue #2275: the same fold over service names
+    ("folded_service_names", _two_services("KVStore", "Kvstore")),
     # the type layer, which is the whole reason the surface is this small
     ("type_error", 'fn f() -> Int { return "s" }'),
     ("undefined_name", "fn f() -> Int { return undefined_name }"),
@@ -572,6 +581,66 @@ def test_the_manifest_admission_arm_reads_its_manifest(consumer):
     halted = _crate_verdicts(consumer, [silent], "--admission-into",
                              "Kv/store/;!halted")
     assert halted[0]["admitted"] is False, halted
+
+
+def test_the_manifest_admission_arm_withholds_a_name_folded_onto_a_running_component(consumer):
+    """Issue #2276: the reference refuses a hot-swap that adds `Kvstore` to a
+    composition keeping `KVStore`, so the crate must not certify it. The wire
+    is rendered from the reference's own manifest, and a candidate under a name
+    that stays apart is the positive control."""
+    from revl.compiler import compile_source
+    from revl.manifest import manifest_wire
+    running = compile_source(
+        "service Store {\n  fn get(key: Str) -> Str\n}\n"
+        "component KVStore provides a: Store {\n  provide a {\n"
+        "    fn get(key) = key\n  }\n}\n", "running.rvl")
+    wire = manifest_wire(running)
+
+    # the candidate provides a service of its own: this surface withholds a
+    # provision of a running service, whose declaration the wire carries only
+    # as far as it can spell it
+    def candidate(name: str) -> str:
+        return ("service Local {\n  fn get(key: Str) -> Str\n}\n"
+                f"component {name} provides b: Local {{\n  provide b {{\n"
+                "    fn get(key) = key\n  }\n}\n")
+
+    folded, apart = _crate_verdicts(
+        consumer, [candidate("Kvstore"), candidate("Cache")],
+        "--admission-into", wire)
+    assert apart["admitted"] is True, (
+        f"the control must be certified into the composition: {apart}")
+    assert folded["admitted"] is False, (
+        "the crate certified `Kvstore` into a composition keeping `KVStore`, "
+        f"which the reference refuses: {folded}")
+    compile_source(candidate("Cache"), "incoming.rvl", manifest=running)
+    with pytest.raises(Exception, match="collides with running component"):
+        compile_source(candidate("Kvstore"), "incoming.rvl", manifest=running)
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "known false admission, open as a follow-up: the manifest wire does not "
+    "name a running component with no rows, so the crate cannot withhold a "
+    "candidate whose name folds onto it"))
+def test_the_manifest_admission_arm_withholds_a_name_folded_onto_a_rowless_running_component(consumer):
+    """The reference refuses `LONE` into a composition keeping `component Lone
+    {}` (issue #2276). `Lone` provides and requires nothing, so the wire has no
+    row for it and the crate certifies `LONE`. Strict: when the wire names such a
+    component and the crate withholds this, the xfail turns red."""
+    from revl.compiler import compile_source
+    from revl.manifest import manifest_wire
+    running = compile_source(
+        "service Store {\n  fn get(key: Str) -> Str\n}\n"
+        "component KVStore provides a: Store {\n  provide a {\n"
+        "    fn get(key) = key\n  }\n}\ncomponent Lone {\n}\n", "running.rvl")
+    wire = manifest_wire(running)
+    candidate = ("service Local {\n  fn get(key: Str) -> Str\n}\n"
+                 "component LONE provides b: Local {\n  provide b {\n"
+                 "    fn get(key) = key\n  }\n}\n")
+    with pytest.raises(Exception, match="collides with running component `Lone`"):
+        compile_source(candidate, "incoming.rvl", manifest=running)
+    (verdict,) = _crate_verdicts(consumer, [candidate], "--admission-into", wire)
+    assert verdict["admitted"] is False, (
+        f"the crate certified `LONE` beside a running `Lone` on {wire!r}: {verdict}")
 
 
 def test_every_refusal_the_crate_issues_is_a_real_reference_refusal(agreement):

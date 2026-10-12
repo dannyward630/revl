@@ -157,6 +157,9 @@ Newline-delimited JSON-RPC 2.0 over stdio, stdlib only. An agent gets a
 typed protocol instead of filesystem access: every mutation it proposes runs
 the same admission gate a human's `revl compile` does.
 
+To connect it to a client, run `revl mcp serve --print-config` and paste the
+block it prints (recipe: [guide-ai-agents.md](guide-ai-agents.md#wiring-revl-mcp-serve-into-a-working-session)).
+
 | tool | what it answers |
 |---|---|
 | `revl_check` | does this component compile? (summary + G8 boundary, or diagnostics) |
