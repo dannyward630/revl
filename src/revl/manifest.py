@@ -312,7 +312,13 @@ def manifest_wire(ir: dict, replacing: Iterable[str] = ()) -> str:
     therefore named by at least one row. A component that has any other row
     renders no presence row, so every wire that named all its components before
     is byte-identical. A reader from before this row refuses it as an unknown
-    row kind, which fails closed.
+    row kind, which fails closed: a consumer pinned to an older gate refuses
+    every admission into a composition holding such a component. A bare
+    manifest dict whose components all lack rows used to render the empty
+    wire, which a reader takes as the empty composition with no services; it
+    now renders the presence rows, and with no `!services` header the running
+    services read as unknown, which is the truthful reading of a dict that
+    carries no service table.
 
     `replacing` is the same set ``compile_files``' `replacing=` takes: the
     running components this admission withdraws. A name that is not running

@@ -238,6 +238,7 @@ def test_the_manifest_path_refuses_a_name_folded_onto_a_rowless_running_one(nati
 
 def test_a_garbled_presence_row_is_refused_by_name(native):
     """A presence row is a bare name; a row carrying anything else is a wire
-    the gate cannot read, and it refuses rather than skip it."""
+    the gate cannot read, and it refuses rather than skip it. A guard: base
+    refuses this row too, so it pins that the new row kind stays narrow."""
     verdict = native["admit_into"](_local_component("Cache"), "Kv/a/;No!op")
     assert "unrecognized manifest row `No!op`" in verdict, verdict
