@@ -392,7 +392,7 @@ fn covers_variant(ctx: Ctx, patterns: List[Str]) -> Bool {
 // `_split_v3_types`: split `A, B` on top-level commas (bridged to str.split_top).
 // `_java_v3_type`: IR v3 surface type -> Java type. `boxed` picks the reference-
 // wrapper form for a type-ARGUMENT position (long/int/double/boolean box in the
-// v3 table, `_V3_BOXED` — `String`/`byte[]`/etc. pass through, and `void` is not
+// v3 table, `_V3_BOXED`; `String`/`byte[]`/etc. pass through, and `void` is not
 // a type argument at all, which is the reference's gap too).
 fn box(java_type: Str, boxed: Bool) -> Str {
   if (!boxed) { return java_type }
