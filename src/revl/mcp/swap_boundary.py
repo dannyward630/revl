@@ -11,8 +11,9 @@ name, and the session reboots the predecessor so it keeps serving.
 What is compared, and the refusal each one raises:
 
 * `residue` and `hostResources`: the R4 teardown checks `unload` reports (the
-  four cordis counters, and every host `new`/`open` paired with its
-  `drop`/`close` over the driver's whole host trace). `RESIDUE_LEFT`. With no
+  four cordis counters, an unresolved compensation, and every host
+  `new`/`open` paired with its `drop`/`close` over the driver's whole host
+  trace). `RESIDUE_LEFT`. With no
   host trace the pairing cannot run, so it is reported unverified and the swap
   refuses `UNVERIFIED`; a check that did not run is never a pass.
 * `escrow`: a witnessed mutation or a deferred emission still pending on the
@@ -20,7 +21,10 @@ What is compared, and the refusal each one raises:
   surface under an open escrow.
 * `registers`: the process-global runtime registers in `REGISTERS`.
   `REGISTER_DRIFT`. Only the enumerated set is compared; a register added to the
-  runtime later is a hole until it is listed here.
+  runtime later is a hole until it is listed here. The two registers the
+  runtime fills per generation and never empties (`DISCHARGED`: resolved config
+  and decoding grammars) are emptied of the predecessor's keys first, because
+  that residue is the toolchain's to pay, not the author's.
 * `threads`: a thread alive at the seal that was not alive at the baseline.
   `THREAD_LEFT`.
 * `env`: an `os.environ` key added, removed or changed. `ENV_DRIFT`. The proof
@@ -71,9 +75,13 @@ REFUSALS = (
 )
 
 #: The process-global mutable registers of `backends/python/runtime.py` the
-#: seal compares. Two are left out on purpose, so they are not mistaken for
+#: seal compares. Three are left out on purpose, so they are not mistaken for
 #: forgotten ones:
 #:
+#: * `_REALM_LABELS`: an intern table. A label is a stateless `(realm, key)`
+#:   identity object that equal realm strings share across the whole process
+#:   by design, so a successor reusing its predecessor's label is the intended
+#:   behaviour, and the label carries nothing it could pass along.
 #: * `_CLOCK_ANCHOR`: the session clock is a ratchet and its anchor outlives a
 #:   generation by design (`_SURVIVES_A_FAILED_LOAD` in session.py). A successor
 #:   observes a later clock than a fresh process would; the proof does not claim
@@ -81,11 +89,21 @@ REFUSALS = (
 #: * `_trace`: the primary trace callback is the session's own plumbing. Each
 #:   session reinstalls its driver's callback before every step.
 REGISTERS = (
-    "_revl_grammars", "_REALM_LABELS", "_ACTIVATING", "_LIVE_INSTANCES",
+    "_revl_grammars", "_ACTIVATING", "_LIVE_INSTANCES",
     "_observers", "_fault_probe", "_SESSION_OWNER", "_ESTOP", "_ESTOP_LATCH",
     "_INFLIGHT", "_LIVE_FRAMES", "RESOLVED_CONFIG", "_pending_config",
     "_STREAM_PARKED", "_STREAM_SWEEPER",
 )
+
+#: Registers the runtime fills for each generation and never empties: the
+#: config each component resolved (secret fields included) and the decoding
+#: grammars each emitted module states. That is the toolchain's own residue,
+#: not the author's, so before comparing, the seal withdraws every key added
+#: since the baseline and names it in `detail.discharged`. A successor
+#: registers both for itself (its components resolve their config at
+#: activation, its module registers its grammars when it is emitted), and a
+#: refused swap's predecessor does the same when it is booted again.
+DISCHARGED = ("RESOLVED_CONFIG", "_revl_grammars")
 
 #: The `sys.modules` prefix every emitted generation registers under
 #: (`run._Driver._gen_prefix`). The driver evicts these itself and emitted
@@ -101,18 +119,23 @@ class Snapshot:
     threads: frozenset
     env: dict
     modules: frozenset
+    discharged: dict
 
 
 def take(runtime) -> Snapshot:
     """Snapshot the process for a later `seal`. Cheap: a fingerprint per
     register, the live thread idents, a copy of the environment and the
-    `sys.modules` keys."""
+    `sys.modules` keys. Threads are held as the objects themselves, so a
+    thread ident the OS reuses cannot pass a new thread off as a baseline one.
+    """
     return Snapshot(
         registers={name: _fingerprint(getattr(runtime, name, None))
                    for name in REGISTERS},
-        threads=frozenset(t.ident for t in threading.enumerate()),
+        threads=frozenset(threading.enumerate()),
         env=dict(os.environ),
         modules=frozenset(sys.modules),
+        discharged={name: frozenset(getattr(runtime, name, None) or ())
+                    for name in DISCHARGED},
     )
 
 
@@ -120,7 +143,13 @@ def _fingerprint(value):
     """Identity of a register's contents: which objects it holds, not their
     state. A container is the frozenset of what it holds (a dict by key and
     value identity), so `_drifted` can ask what is NEW; anything else is the
-    value itself, or its identity."""
+    value itself, or its identity.
+
+    Identity is `id()`, which CPython reuses once an object is collected. A new
+    object that lands at a collected baseline object's address, under the same
+    key, would read as the baseline one. Holding the baseline objects to rule
+    that out would keep weakly held frames alive, so the limit is stated
+    instead (docs/swap.md)."""
     if isinstance(value, dict):
         return frozenset((repr(key), id(item)) for key, item in value.items())
     if isinstance(value, (weakref.WeakSet, list, tuple, set)):
@@ -150,6 +179,7 @@ def seal(baseline: Snapshot, runtime, residue: dict, owner) -> dict:
     Returns `{noResidue, checks, detail}`, with `unverified` when a check could
     not run and `refusals` when anything is off baseline. `noResidue` is true
     only when every check ran and passed."""
+    discharged = _discharge(baseline, runtime)
     # a disposed generation's frames can sit in reference cycles until the
     # collector runs; unreachable, they reach nothing, so collect them first
     gc.collect()
@@ -176,6 +206,7 @@ def seal(baseline: Snapshot, runtime, residue: dict, owner) -> dict:
     })
     detail = {
         "residue": residue["detail"],
+        "discharged": discharged,
         "escrowed": escrowed,
         "queued": queued,
         "registers": drifted,
@@ -206,6 +237,24 @@ def refusals(proof: dict) -> list:
     return named
 
 
+def _discharge(baseline: Snapshot, runtime) -> dict:
+    """Withdraw from each `DISCHARGED` register the keys added since the
+    baseline. Returns the withdrawn keys per register (keys only: a config
+    value can be a secret)."""
+    out = {}
+    for name in DISCHARGED:
+        table = getattr(runtime, name, None)
+        if not isinstance(table, dict):
+            continue
+        kept = baseline.discharged.get(name, frozenset())
+        added = sorted((key for key in table if key not in kept), key=str)
+        for key in added:
+            del table[key]
+        if added:
+            out[name] = [str(key) for key in added]
+    return out
+
+
 def _pending(owner) -> tuple:
     """How many escrowed entries and deferred emissions the owner still holds."""
     if owner is None:
@@ -217,7 +266,7 @@ def _pending(owner) -> tuple:
 def _threads_left(baseline: Snapshot) -> list:
     """Threads alive now that were not alive at the baseline, by name."""
     return sorted(t.name for t in threading.enumerate()
-                  if t.ident not in baseline.threads and t.is_alive())
+                  if t not in baseline.threads and t.is_alive())
 
 
 def _modules_left(baseline: Snapshot, now: Snapshot) -> list:

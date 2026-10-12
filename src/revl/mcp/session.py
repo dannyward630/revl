@@ -1781,7 +1781,8 @@ class Session:
         A clean seal adds the proof to the answer as `boundary`. `backend` is
         the tier the caller expects the proof on; a Session swaps in process on
         the py tier only, so any other tier refuses `TIER_UNSUPPORTED` before
-        anything runs. Without `prove_boundary` the swap is unchanged."""
+        anything runs. `backend` is read only with `prove_boundary`. Without
+        `prove_boundary` the swap is unchanged."""
         driver = self._require()
         self._refuse_if_halted("swap")   # item 443
         if prove_boundary and backend != "py":
@@ -4556,7 +4557,11 @@ class Session:
     def _prove_boundary(self, driver) -> dict:
         """Seal the swap boundary (issue #2277): the disposed generation's R4
         checks plus the process snapshot, against the session's baseline."""
-        checks, detail, unverified = self._residue_checks(driver)
+        owner = self._owner
+        owed = owner.collect_compensation_residue() if owner is not None else []
+        checks, detail, unverified = self._residue_checks(driver, owed)
+        if owed:
+            detail["compensationResidue"] = len(owed)
         residue = {"checks": checks, "detail": detail, "unverified": unverified}
         return _swap_boundary.seal(self._boundary_baseline, driver.runtime,
                                    residue, self._owner)

@@ -279,8 +279,8 @@ OTHER_CODES = {
         "guarantee": "a proven swap boots its successor only once the "
                      "predecessor's teardown left no residue",
         "meaning": "an R4 teardown check failed at the swap boundary: the "
-                   "cordis counters, or a host acquisition with no release in "
-                   "the host trace",
+                   "cordis counters, an unresolved compensation, or a host "
+                   "acquisition with no release in the host trace",
         "fix": "give each acquisition an `undo` that releases it and make the "
                "release succeed, then swap again",
     },
@@ -306,7 +306,7 @@ OTHER_CODES = {
         "meaning": "a runtime register holds something it did not hold before "
                    "the session's first generation (the proof names it)",
         "fix": "release what the named register holds (unsubscribe the "
-               "observer, withdraw the entry) before the swap",
+               "observer, stop the probe) before the swap",
     },
     "THREAD_LEFT": {
         "category": "session",
@@ -322,7 +322,7 @@ OTHER_CODES = {
         "meaning": "an `os.environ` key was added, removed or changed (the "
                    "proof names keys, never values)",
         "fix": "do not write the environment from a host body; pass the value "
-               "through config instead",
+               "through the component's `config` block instead",
     },
     "MODULE_LEFT": {
         "category": "session",

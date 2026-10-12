@@ -232,10 +232,11 @@ additionally needs that tier's toolchain, which the placement smoke covers.
 
 Everything above is the placement swap, which moves a component to a fresh
 process. The in-process hot-swap is a different path: `Session.swap`
-(`src/revl/mcp/session.py`, behind `revl_swap`, `revl_edit` and rollback)
-disposes generation N and boots N+1 **in the same process**. Disposal running
-does not prove that N left nothing behind, so the swap can be asked to prove it
-(issue #2277):
+(`src/revl/mcp/session.py`, the call under `revl_swap`, `revl_edit` and
+rollback) disposes generation N and boots N+1 **in the same process**.
+Disposal running does not prove that N left nothing behind, so the swap can be
+asked to prove it (issue #2277). For now the option is Python API only: none
+of the MCP verbs passes it yet.
 
 ```python
 session.swap(ir, origin=origin, prove_boundary=True)
@@ -260,14 +261,23 @@ refused:
 
 | Refusal | What was off baseline |
 |---|---|
-| `RESIDUE_LEFT` | An R4 teardown check failed: the cordis registry, provisions, effect stack or listeners, or a host `new`/`open` with no `drop`/`close` in the host trace. These are the same checks `unload` reports. |
+| `RESIDUE_LEFT` | An R4 teardown check failed: the cordis registry, provisions, effect stack or listeners, an unresolved compensation, or a host `new`/`open` with no `drop`/`close` in the host trace. These are the same checks `unload` reports. |
 | `UNVERIFIED` | The driver captured no host trace, so the host-resource pairing could not run. A check that did not run is never a pass. |
 | `ESCROW_OPEN` | A witnessed mutation is still escrowed, or a deferred emission is still queued, on the session owner. It stays the session's to commit or abort. |
-| `REGISTER_DRIFT` | A runtime register in `swap_boundary.REGISTERS` holds something it did not hold at the baseline (for example a trace observer that was never unsubscribed, or a `config` entry). |
+| `REGISTER_DRIFT` | A runtime register in `swap_boundary.REGISTERS` holds something it did not hold at the baseline, for example a trace observer that was never unsubscribed. |
 | `THREAD_LEFT` | A thread is alive that was not alive at the baseline. |
 | `ENV_DRIFT` | An `os.environ` key was added, removed or changed. The proof names keys, never values. |
 | `MODULE_LEFT` | A `sys.modules` entry appeared that is not the generation namespace (`revl_run_gen*`), the standard library or revl's toolchain. A `@py ref` module counts, because the successor could import N's copy. |
 | `TIER_UNSUPPORTED` | The proof was asked for on a tier other than py. Other tiers boot each generation as a child process, so there is no shared boundary. This refuses before anything is torn down. |
+
+Two runtime registers fill up for every generation and are never emptied by
+the runtime: the config each component resolved (secret fields included) and
+the decoding grammars each emitted module states. That residue is revl's, not
+the author's, so with the option the seal withdraws the predecessor's keys from
+both before comparing and lists them in `detail.discharged` (keys only). The
+successor registers its own. The realm-label table is not compared at all: it
+interns stateless `(realm, key)` identities that every generation shares on
+purpose.
 
 What the seal does **not** cover, so a clean proof is not read as more than it
 is:
@@ -280,6 +290,10 @@ is:
   is not seen.
 - **Registers added later.** Only the enumerated registers are compared. A
   runtime register added later is a gap until it is added to `REGISTERS`.
+- **Reused identities.** A register's entries are compared by object identity
+  (`id()`), which CPython reuses after an object is collected. A new object at
+  a collected baseline object's address, under the same key, reads as the
+  baseline one. Threads are held as objects, so this does not apply to them.
 - **Other activity in the process.** Threads, environment and modules are
   process-wide, so a second session or the host program changing them between
   the baseline and the seal also refuses. This errs on the side of refusing.

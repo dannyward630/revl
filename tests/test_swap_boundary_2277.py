@@ -276,6 +276,53 @@ def test_boundary_refuses_module_left(session, tmp_path, monkeypatch):
         sys.modules.pop(name, None)
 
 
+#: A component with resolved config. The runtime keeps every component's
+#: resolved config (secret fields included) and never empties it.
+CONFIGURED = """
+service Counter { fn next() -> Int }
+component CounterSvc provides counter: Counter {
+  config { a: Int = 7 }
+  provide counter { fn next() { return config.a } }
+}
+"""
+
+#: The same service from a component with no config at all.
+UNCONFIGURED = """
+service Counter { fn next() -> Int }
+component OtherSvc provides counter: Counter {
+  provide counter { fn next() = 8 }
+}
+"""
+
+
+def test_the_predecessors_resolved_config_is_withdrawn_not_refused(session):
+    """The resolved-config table is the toolchain's residue, not the author's:
+    the seal withdraws the predecessor's entry rather than refusing every
+    composition that declares `config`, and the successor no longer sees the
+    values its predecessor ran with."""
+    import runtime
+
+    session.load(_ir(CONFIGURED))
+    assert runtime.resolved_config("CounterSvc") == {"a": 7}
+    state = session.swap(_ir(UNCONFIGURED), prove_boundary=True)
+    boundary = state["boundary"]
+    assert boundary["noResidue"] is True, boundary
+    assert boundary["detail"]["discharged"] == {"RESOLVED_CONFIG": ["CounterSvc"]}
+    assert runtime.resolved_config("CounterSvc") is None
+    assert _next(session) == 8
+
+
+def test_a_realm_placement_seals_clean(session):
+    """Realm labels are a process-wide intern table of stateless identities,
+    shared across generations by design, so a placement does not refuse."""
+    realm = CLEAN.replace("  let m =",
+                          '  isolate counter in realm("billing")\n  let m =')
+    session.load(_ir(realm))
+    state = session.swap(_successor(realm), prove_boundary=True)
+    assert state["boundary"]["noResidue"] is True, state["boundary"]
+    assert _next(session) == 8
+
+
 def test_proof_on_another_tier_refuses_tier_unsupported(session):
     session.load(_ir(CLEAN))
     refusal = _refused(session, _successor(CLEAN), backend="go")
