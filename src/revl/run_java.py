@@ -172,8 +172,12 @@ def _key_service(ir: dict) -> dict[str, str]:
 def _java_emitter():
     """Load backends/java/emit.py.
 
-    Loaded, never cached: the emitter carries module-global render state, so a
-    fresh module per emission is the contract this file has always had. The
+    Loaded, never cached, and deliberately NOT moved onto the shared
+    `placement.backend_emit_module` (issue #2204): the emitter carries
+    module-global render state (`_RECORD_MODE`, `_SECRET_MODE`,
+    `_STREAM_ITER_COUNTER`, the ui tables), so a fresh module per emission is
+    the contract this file has always had, and sharing one would change
+    behaviour when two emissions interleave. The
     CALLER keeps the module it was handed, because `EmitError` is a class on the
     module OBJECT -- a second `exec_module` produces a DIFFERENT class, and an
     `except` against it would not match the instance the first module raised

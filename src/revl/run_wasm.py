@@ -45,7 +45,6 @@ exits nonzero, exactly as the py tier does for a missing cordis-py.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import shutil
@@ -203,15 +202,18 @@ def _load_order(ir: dict) -> list[str]:
 
 
 def _wasm_emitter():
-    """Load backends/wasm/emit.py and hand the CALLER the module object.
+    """The wasm emitter module, from the one cached loader
+    (`placement.backend_emit_module`, issue #2204).
 
-    The caller keeps it because `EmitError` is a class on the module OBJECT: a
-    second `exec_module` produces a different class, and an `except` against it
-    would not catch the instance the first module raised (issue #1406)."""
-    spec = importlib.util.spec_from_file_location("revl_wasm_emit", _WASM_DIR / "emit.py")
-    emit_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(emit_module)
-    return emit_module
+    The caller keeps the module it is handed because `EmitError` is a class on
+    the module OBJECT: a second `exec_module` produces a different class, and
+    an `except` against it would not catch the instance the first module raised
+    (issue #1406). Sharing one module per process makes that hold across
+    loaders too, not only within one call. Unlike the java and go emitters this
+    one holds no `global` render state, so nothing here needs a fresh copy."""
+    from .placement import backend_emit_module  # noqa: PLC0415 - off the compile graph
+
+    return backend_emit_module("wasm", root=_BACKENDS_DIR)
 
 
 def _emit_modules(ir: dict, record: bool = False, emit_module=None) -> dict[str, str]:

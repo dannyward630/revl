@@ -3409,7 +3409,15 @@ def _tier_emitter(name: str, path) -> object:
     second `exec_module` produces a different class, and an `except` against it
     would not catch the instance the first module raised (issue #1406). One
     function so the three build steps below load an emitter the same way, and so
-    a test can substitute a refusing or a faulting emitter for any of them."""
+    a test can substitute a refusing or a faulting emitter for any of them.
+
+    Deliberately NOT `backend_emit_module` (issue #2204): its three callers load
+    the java and go emitters, which hold module-global render state (java's
+    `_RECORD_MODE`, `_SECRET_MODE` and ui tables, go's `_V3_MODE` and
+    `_COMP_NEEDS_*` flags), and each build has always taken a fresh module of
+    them. A cached module would share that state between builds and between
+    threads. If a build step for a stateless tier is ever added, take it from
+    `backend_emit_module` instead."""
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
