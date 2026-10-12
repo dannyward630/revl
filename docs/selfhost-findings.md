@@ -1688,10 +1688,10 @@ seeding. Two reference shapes stay out and take a LOUD marker instead of a
 guess — the same treatment `selfhost/emit_go.rvl` gives them: an extern with no
 `@rs` body (`<<UNSUPPORTED-EXTERN-NO-RS-BODY:name>>` since issue #2353; the reference RAISES, a portability
 boundary) and an extern carrying a `config` schema
-(`<<DEFER-EXTERN-config:name>>`; item 378 Stage 5's `_revl_extern_config`
+(`<<UNSUPPORTED-EXTERN-config:name>>`, `DEFER` before issue #2367; item 378 Stage 5's `_revl_extern_config`
 scaffold). The body splice is LF-only, so a body carrying one of the code points
 Python `splitlines()` breaks on that `split("\n")` does not takes
-`<<DEFER-EXTERN-linebreak:name>>` rather than splitting differently.
+`<<UNSUPPORTED-EXTERN-linebreak:name>>` rather than splitting differently.
 
 **`tests/fixtures/emit_rust_corpus/externs.rvl` is the new fixture**, and it is
 the part that keeps this closed: the verbatim `@rs` splice, a Rust-keyword extern

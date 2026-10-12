@@ -2113,7 +2113,7 @@ fn build_type_tables(types: Value) -> TypeTables {
 fn record_type_for_fields(ctx_: Ctx__m1, names: Vec<String>) -> String {
     let name = map_get(ctx_.rbf, sorted_key(names.clone()));
     if (!resolved(&name)) {
-        return format!("<<DEFER-record>>");
+        return format!("<<UNSUPPORTED-record>>");
     }
     return mangle(name.clone());
 }
@@ -2189,7 +2189,7 @@ fn rust_type_t(tv: Value, tnames: std::collections::HashMap<String, String>) -> 
         return String::from("Value");
     }
     if is_fn_type(&name) {
-        return String::from("<<DEFER-fn-type>>");
+        return String::from("<<UNSUPPORTED-fn-type>>");
     }
     let tm = type_map(&name);
     if (tm != "") {
@@ -3190,7 +3190,7 @@ fn constructor(ctx_: Ctx__m1, name: String, args: &[String]) -> String {
     if (((name == "Some") || (name == "Ok")) || (name == "Err")) {
         return format!("{}({})", name, (args)[(0i64) as usize]);
     }
-    return format!("<<DEFER-ctor:{}>>", name);
+    return format!("<<UNSUPPORTED-ctor:{}>>", name);
 }
 
 fn match_pattern(ctx_: Ctx__m1, arm: Value) -> String {
@@ -3207,7 +3207,7 @@ fn match_pattern(ctx_: Ctx__m1, arm: Value) -> String {
         if is_builtin_ctor(&pattern) {
             prefix = pattern.clone();
         } else {
-            return format!("<<DEFER-match:{}>>", pattern);
+            return format!("<<UNSUPPORTED-match:{}>>", pattern);
         }
     }
     if (bind != "") {
@@ -3378,7 +3378,7 @@ fn render_call(node: Value, ctx_: Ctx__m1) -> String {
     }
     let ckind = node_kind(callee_node.clone());
     if (ckind == "field") {
-        return String::from("<<DEFER-method-call>>");
+        return String::from("<<UNSUPPORTED-method-call>>");
     }
     let mut callee_name = String::from("");
     if (ckind == "var") {
@@ -3738,7 +3738,7 @@ fn render_builtin(node: Value, ctx_: Ctx__m1) -> String {
 
 fn render_host(node: Value, ctx_: Ctx__m1) -> String {
     if (!value_is_null(value_field(node.clone(), String::from("replay")))) {
-        return String::from("<<DEFER-host-replay>>");
+        return String::from("<<UNSUPPORTED-host-replay>>");
     }
     let fname = value_str(value_field(node.clone(), String::from("fn")));
     let parts = fname.revl_split(".");
@@ -3852,7 +3852,7 @@ fn json_dumps(v: Value) -> String {
         }
         return format!("{{{}}}", parts.revl_join(", "));
     }
-    return format!("<<DEFER-json-kind:{}>>", k);
+    return format!("<<UNSUPPORTED-json-kind:{}>>", k);
 }
 
 fn stream_head(node: Value, ctx_: Ctx__m1) -> String {
@@ -3870,7 +3870,7 @@ fn stream_stage_arrow(stage: Value, ctx_: Ctx__m1) -> String {
     let fnode = value_field(stage.clone(), String::from("fn"));
     let params = value_list(value_field(fnode.clone(), String::from("params")));
     if ((node_kind(fnode.clone()) != "arrow") || (params.revl_length() != 1i64)) {
-        return format!("<<DEFER-stream-stage-arrow:{}>>", value_str(value_field(stage.clone(), String::from("stage"))));
+        return format!("<<UNSUPPORTED-stream-stage-arrow:{}>>", value_str(value_field(stage.clone(), String::from("stage"))));
     }
     let raw = value_str((params)[(0i64) as usize].clone());
     let pname = mangle(raw.clone());
@@ -3892,7 +3892,7 @@ fn stream_chain(head: Value, stages: Vec<Value>, ctx_: Ctx__m1) -> String {
             if ((kind == "map") || (kind == "filter")) {
                 out = format!("Stream::{}(&{}, {})", kind, out, stream_stage_arrow(stage.clone(), ctx_.clone()));
             } else {
-                out = format!("<<DEFER-stream-combinator:{}>>", kind);
+                out = format!("<<UNSUPPORTED-stream-combinator:{}>>", kind);
             }
         }
     }
@@ -3901,10 +3901,10 @@ fn stream_chain(head: Value, stages: Vec<Value>, ctx_: Ctx__m1) -> String {
 
 fn render_subscribe(node: Value, ctx_: Ctx__m1) -> String {
     if (!value_is_null(value_field(node.clone(), String::from("replay")))) {
-        return String::from("<<DEFER-stream-replay>>");
+        return String::from("<<UNSUPPORTED-stream-replay>>");
     }
     if (!value_is_null(value_field(node.clone(), String::from("drain")))) {
-        return String::from("<<DEFER-stream-drain>>");
+        return String::from("<<UNSUPPORTED-stream-drain>>");
     }
     let mut policy = value_str(value_field(node.clone(), String::from("policy")));
     if (policy == "") {
@@ -4184,7 +4184,7 @@ fn emit_v3_externs(externs: Vec<Value>, tnames: std::collections::HashMap<String
             let body = trim(value_str(rs_body.clone()));
             let defer = extern_body_defer(ext.clone(), &body);
             if (defer != "") {
-                out.push(format!("<<DEFER-EXTERN-{}:{}>>", defer, name));
+                out.push(format!("<<UNSUPPORTED-EXTERN-{}:{}>>", defer, name));
                 out.push(String::from(""));
             } else {
                 out.push(format!("fn {}({}) -> {} {{", name, ps.revl_join(", "), returns));
@@ -6029,7 +6029,7 @@ fn pure_stmt(step: Value, kind: &str, c: Ctx__m1, params: Vec<String>) -> String
     if (kind == "continue") {
         return String::from("continue;");
     }
-    return format!("<<DEFER-method-step:{}>>", kind);
+    return format!("<<UNSUPPORTED-method-step:{}>>", kind);
 }
 
 fn binds(comp: Value) -> Vec<String> {
@@ -6537,7 +6537,7 @@ fn svc_ident(name: String) -> String {
 
 fn require_ty(svc: String) -> String {
     if svc.revl_starts_with("Stream[") {
-        return format!("<<DEFER-required-stream:{}>>", svc);
+        return format!("<<UNSUPPORTED-required-stream:{}>>", svc);
     }
     return svc_ident(svc.clone());
 }
@@ -6883,7 +6883,7 @@ fn method_body_lines(comp: Value, method: Value, services: Value, ctx_: Ctx__m1,
                             out.push(format!("{}{}", pad, ln));
                         }
                     } else {
-                        out.push(format!("{}<<DEFER-method-step:{}>>", pad, kind));
+                        out.push(format!("{}<<UNSUPPORTED-method-step:{}>>", pad, kind));
                     }
                 }
             }
@@ -7075,7 +7075,7 @@ fn uses_teardown(ir: Value) -> bool {
 fn declared_compensate_marker(ir: Value) -> Vec<String> {
     for ext in value_list(value_field(ir.clone(), String::from("externs"))) {
         if ((value_str(value_field(ext.clone(), String::from("class"))) == "emission") && (!value_is_null(value_field(ext.clone(), String::from("compensate"))))) {
-            return vec![String::from("<<DEFER-declared-compensate>>")];
+            return vec![String::from("<<UNSUPPORTED-declared-compensate>>")];
         }
     }
     return vec![];
@@ -7150,14 +7150,14 @@ fn emit_let_effect_step(comp: Value, step: Value, ir: Value, ctx_: Ctx__m1, map_
     let bind = mangle(raw_bind.clone());
     let acq_node = value_field(step.clone(), String::from("acquire"));
     if (value_list(value_field(step.clone(), String::from("setup"))).revl_length() > 0i64) {
-        out.push(format!("{}<<DEFER-let-effect-setup:{}>>", pad, raw_bind));
+        out.push(format!("{}<<UNSUPPORTED-let-effect-setup:{}>>", pad, raw_bind));
     }
     if witnessed_acquire(ir.clone(), acq_node.clone()) {
-        out.push(format!("{}<<DEFER-let-effect-witnessed:{}>>", pad, raw_bind));
+        out.push(format!("{}<<UNSUPPORTED-let-effect-witnessed:{}>>", pad, raw_bind));
         return out;
     }
     if is_map_cas(acq_node.clone()) {
-        out.push(format!("{}<<DEFER-let-effect-cas:{}>>", pad, raw_bind));
+        out.push(format!("{}<<UNSUPPORTED-let-effect-cas:{}>>", pad, raw_bind));
         return out;
     }
     let mut acq_src = render_expr(acq_node.clone(), ctx_.clone());
@@ -7227,10 +7227,10 @@ fn emit_comp_step(comp: Value, step: Value, ir: Value, ctx_: Ctx__m1, map_values
     }
     if (kind == "effect") {
         if (value_list(value_field(step.clone(), String::from("setup"))).revl_length() > 0i64) {
-            out.push(format!("{}<<DEFER-effect-setup:{}>>", pad, name));
+            out.push(format!("{}<<UNSUPPORTED-effect-setup:{}>>", pad, name));
         }
         if witnessed_acquire(ir.clone(), value_field(step.clone(), String::from("acquire"))) {
-            out.push(format!("{}<<DEFER-effect-witnessed:{}>>", pad, name));
+            out.push(format!("{}<<UNSUPPORTED-effect-witnessed:{}>>", pad, name));
             return out;
         }
         let acq_src = render_expr(value_field(step.clone(), String::from("acquire")), ctx_.clone());
@@ -7274,7 +7274,7 @@ fn emit_comp_step(comp: Value, step: Value, ir: Value, ctx_: Ctx__m1, map_values
         let tctx = set_rn(ctx_.clone(), tR.clone());
         for em in value_list(value_field(step.clone(), String::from("body"))) {
             if (value_str(value_field(em.clone(), String::from("step"))) != "emit") {
-                out.push(format!("{}    <<DEFER-timer-body:{}>>", pad, value_str(value_field(em.clone(), String::from("step")))));
+                out.push(format!("{}    <<UNSUPPORTED-timer-body:{}>>", pad, value_str(value_field(em.clone(), String::from("step")))));
             } else {
                 out.push(format!("{}    let _ = {};", pad, render_expr(value_field(em.clone(), String::from("expr")), tctx.clone())));
             }
@@ -7289,7 +7289,7 @@ fn emit_comp_step(comp: Value, step: Value, ir: Value, ctx_: Ctx__m1, map_values
         let bind = mangle(raw_bind.clone());
         let body = value_list(value_field(step.clone(), String::from("body")));
         if (body.revl_length() == 0i64) {
-            return vec![format!("{}<<DEFER-stream-iter-empty:{}>>", pad, name)];
+            return vec![format!("{}<<UNSUPPORTED-stream-iter-empty:{}>>", pad, name)];
         }
         let contract = value_field(step.clone(), String::from("event"));
         let mut bodyctx = ctx_.clone();
@@ -7303,7 +7303,7 @@ fn emit_comp_step(comp: Value, step: Value, ir: Value, ctx_: Ctx__m1, map_values
             let key = value_str(value_field(contract.clone(), String::from("key")));
             let window = value_int(value_field(contract.clone(), String::from("window")));
             if (window < 1i64) {
-                return vec![format!("{}<<DEFER-stream-event-window:{}>>", pad, evname)];
+                return vec![format!("{}<<UNSUPPORTED-stream-event-window:{}>>", pad, evname)];
             }
             gate = format!("_revl_event{}", (sbase).checked_add(1i64).expect("revl: Int overflow"));
             where__ = string_lit(Value::new(serde_json::Value::from(format!("{}: on {}", name, evname))));
@@ -7384,7 +7384,7 @@ fn emit_comp_step(comp: Value, step: Value, ir: Value, ctx_: Ctx__m1, map_values
         out.push(format!("{}}}", pad));
         return out;
     }
-    return vec![format!("<<DEFER-comp-step:{}>>", kind)];
+    return vec![format!("<<UNSUPPORTED-comp-step:{}>>", kind)];
 }
 
 fn emit_component(comp: Value, services: Value, ir: Value) -> Vec<String> {
@@ -8198,12 +8198,70 @@ pub fn emit_rust_src(ir: Value) -> String {
     if (test_markers.revl_length() > 0i64) {
         out.extend((test_markers).iter().cloned());
     }
-    out.extend((deferred_emission_markers(ir.clone())).iter().cloned());
+    out = (out.revl_concat(&deferred_emission_markers(ir.clone()))).revl_concat(&validated_markers(ir.clone()));
+    out.extend((host_key_collision_markers(ir.clone())).iter().cloned());
     return rstrip__m1(&(out.revl_join(&newline()))).revl_concat(&newline());
 }
 
 fn flag_of(node: Value, field: String) -> bool {
     return value_bool(value_field(node.clone(), field.clone()));
+}
+
+fn validated_markers(ir: Value) -> Vec<String> {
+    let mut wheres: Vec<String> = vec![];
+    let mut nodes: Vec<Value> = vec![];
+    let services = value_field(ir.clone(), String::from("services"));
+    for sname in value_keys(services.clone()) {
+        let methods = value_field(value_field(services.clone(), sname.clone()), String::from("methods"));
+        for mname in value_keys(methods.clone()) {
+            wheres.push(format!("{}.{}", sname, mname));
+            nodes.push(value_field(methods.clone(), mname.clone()));
+        }
+    }
+    for e in value_list(value_field(ir.clone(), String::from("externs"))) {
+        wheres.push(value_str(value_field(e.clone(), String::from("name"))));
+        nodes.push(e.clone());
+    }
+    let mut out: Vec<String> = vec![];
+    let mut i = 0i64;
+    while (i < nodes.revl_length()) {
+        if flag_of((nodes)[(i) as usize].clone(), String::from("validated")) {
+            out.push(format!("<<UNSUPPORTED-VALIDATED:{}>>", (wheres)[(i) as usize]));
+        }
+        i = (i).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return out;
+}
+
+fn host_key(key: String) -> String {
+    if (key.revl_index_of("::") < 0i64) {
+        return key;
+    }
+    let mut parts: Vec<String> = vec![];
+    for part in key.revl_split("::") {
+        parts.push((part.revl_split("_")).revl_join("_u"));
+    }
+    return parts.revl_join("__");
+}
+
+fn host_key_collision_markers(ir: Value) -> Vec<String> {
+    let mut seen = std::collections::HashMap::new();
+    let mut out: Vec<String> = vec![];
+    for c in value_list(value_field(ir.clone(), String::from("components"))) {
+        for table in vec![String::from("provides"), String::from("requires"), String::from("routes"), String::from("isolate"), String::from("intercept")] {
+            for k in value_keys(value_field(c.clone(), table)) {
+                let host = host_key(k.clone());
+                if seen.contains_key(&host) {
+                    if (map_get(seen.clone(), host.clone()) != k) {
+                        out.push(format!("<<UNSUPPORTED-HOST-KEY-COLLISION:{}>>", k));
+                    }
+                } else {
+                    seen.insert(host.clone(), k.clone());
+                }
+            }
+        }
+    }
+    return out;
 }
 
 fn deferred_emission_markers(ir: Value) -> Vec<String> {

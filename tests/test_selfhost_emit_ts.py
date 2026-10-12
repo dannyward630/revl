@@ -612,3 +612,42 @@ def test_a_declared_but_uncalled_deferred_emission_is_not_named(emitted, referen
     got = emitted["emit_ts_src"](ir)
     assert "<<UNSUPPORTED" not in got
     assert got == reference.emit(ir)
+
+
+# issue #2367: the remaining reference refusals this port answered without an
+# `<<UNSUPPORTED` marker. A `validated` crossing is named by declaration, a
+# namespaced key whose host spelling another key already holds by key, and a
+# required `Stream[T]` coeffect by its requirement.
+REFUSAL_FIXTURES = ROOT / "tests" / "fixtures"
+NAMED_REFUSALS = [
+    *[(f"emit_{t}_refusals/validated_emission_operation.rvl",
+       "needs the response-validation", "<<UNSUPPORTED-VALIDATED:Model.complete>>")
+      for t in ("go", "java", "rust", "ts", "wasm")],
+    *[(f"emit_{t}_refusals/host_identifier_collision.rvl",
+       "both spell the", "<<UNSUPPORTED-HOST-KEY-COLLISION:acme::greeter>>")
+      for t in ("go", "java", "py", "rust", "ts")],
+    ("emit_rust_refusals/required_stream_coeffect.rvl",
+     "a required `Stream\\[T\\]` coeffect", "<<UNSUPPORTED-REQUIRED-STREAM:Fulfiller.feed>>"),
+]
+
+
+@pytest.mark.parametrize("rel, refusal, marker", NAMED_REFUSALS,
+                         ids=[rel for rel, _, _ in NAMED_REFUSALS])
+def test_a_reference_refusal_is_named_by_the_port(emitted, reference, rel, refusal, marker):
+    ir = compile_files([str(REFUSAL_FIXTURES / rel)])
+    with pytest.raises(reference.EmitError, match=refusal):
+        reference.emit(ir)
+    assert marker in emitted["emit_ts_src"](ir)
+
+
+def test_an_unvalidated_operation_is_not_named(emitted, reference, tmp_path):
+    """The document without `validated` emits on the reference, and the port
+    agrees byte for byte: the modifier alone carries the refusal."""
+    src = (REFUSAL_FIXTURES / "emit_ts_refusals"
+           / "validated_emission_operation.rvl").read_text()
+    doc = tmp_path / "unvalidated.rvl"
+    doc.write_text(src.replace("emission validated fn", "emission fn"))
+    ir = compile_files([str(doc)])
+    got = emitted["emit_ts_src"](ir)
+    assert "<<UNSUPPORTED" not in got
+    assert got == reference.emit(ir)
