@@ -1212,6 +1212,17 @@ def _split_v3_types(inner: str) -> list[str]:
     return parts
 
 
+# The v3 type-argument spelling of each primitive (#2303). Every primitive
+# TYPE_MAP can produce is here, so `List[Int32]` is `List<java.lang.Integer>`
+# and not the invalid `List<int>`.
+_V3_BOXED = {
+    "long": "java.lang.Long",
+    "int": "java.lang.Integer",
+    "double": "java.lang.Double",
+    "boolean": "java.lang.Boolean",
+}
+
+
 def _java_v3_type(name: object, *, boxed: bool = False) -> str:
     """IR v3 surface type -> Java type for emitted v3 classes."""
     if name is None or name == "Unit":
@@ -1224,11 +1235,11 @@ def _java_v3_type(name: object, *, boxed: bool = False) -> str:
         java_type = TYPE_MAP[name]
         if not boxed:
             return java_type
-        return {
-            "long": "java.lang.Long",
-            "double": "java.lang.Double",
-            "boolean": "java.lang.Boolean",
-        }.get(java_type, java_type)
+        return _V3_BOXED.get(java_type, java_type)
+    if name == "Any":
+        # No TYPE_MAP entry: `Any` is the open type, so it is `Object` in every
+        # position (a bare `Any` would name a class that does not exist).
+        return "Object"
     if "[" in name:
         base = name[: name.index("[")]
         inner = name[name.index("[") + 1 : name.rindex("]")]
@@ -1247,7 +1258,12 @@ def _java_v3_type(name: object, *, boxed: bool = False) -> str:
                 f"RevlResult<{_java_v3_type(args[0], boxed=True)}, "
                 f"{_java_v3_type(args[1], boxed=True)}>"
             )
-        return base + "<" + ", ".join("Object" for _ in args) + ">"
+        # A user generic type (`Bx[Int]`) applies its arguments boxed:
+        # `Bx<java.lang.Long>`. The class declares the same parameters
+        # (`_emit_v3_types`), so an `Object` here would not type-check a read
+        # of a field whose declared type is the parameter (#2303).
+        return base + "<" + ", ".join(
+            _java_v3_type(a, boxed=True) for a in args) + ">"
     if name == "Row" and name not in _V3_DECLARED_TYPES:
         # The host Pool's query-result row: undeclared by the document, handed
         # back by the runtime. `Pool.query` here returns `java.util.List<Object>`,
@@ -3625,13 +3641,20 @@ def _emit_v3_secret_members(members: list[str]) -> list[str]:
     return lines
 
 
+def _v3_type_params(spec: dict) -> str:
+    """`<T, U>` for a generic type declaration, empty for a plain one (#2303)."""
+    params = [_ident(p, "type parameter") for p in spec.get("params") or []]
+    return "<" + ", ".join(params) + ">" if params else ""
+
+
 def _emit_v3_types(types: dict) -> list[str]:
     lines: list[str] = []
     for name, spec in types.items():
         name = _ident(name, "type name")
         if spec.get("kind") == "record":
             shape = " implements RevlSecretShape" if _SECRET_MODE else ""
-            lines.append(f"public static final class {name}{shape} {{")
+            lines.append(
+                f"public static final class {name}{_v3_type_params(spec)}{shape} {{")
             fields = spec.get("fields") or {}
             for field, ftype in fields.items():
                 field = _ident(field, "record field")

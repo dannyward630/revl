@@ -230,9 +230,9 @@
 
 ["function", "backends-java-emit-py-java-type-residual-legacy", "_java_type", 5, 5]
 
-["reason", "backends-java-emit-py-java-v3-type-residual", "backends/java/emit.py::_java_v3_type: Residual Result boxing and undeclared host Pool Row-to-Object typing belong to the explicit Result/Pool boundaries. Unknown generic heads (user generics are monomorphized) and missing/non-string types are hand-built or invalid IR."]
+["reason", "backends-java-emit-py-java-v3-type-residual", "backends/java/emit.py::_java_v3_type: Residual Result boxing and undeclared host Pool Row-to-Object typing belong to the explicit Result/Pool boundaries. Missing/non-string types are hand-built or invalid IR."]
 
-["function", "backends-java-emit-py-java-v3-type-residual", "_java_v3_type", 5, 5]
+["function", "backends-java-emit-py-java-v3-type-residual", "_java_v3_type", 3, 3]
 
 ["reason", "backends-java-emit-py-lit-residual-null-and", "backends/java/emit.py::_lit: Residual null and unsupported-value branches are outside source literals: lower.py rejects explicit null (5389/6938/11072); Opt None uses a var/constructor node. Unsupported Python values raise."]
 
