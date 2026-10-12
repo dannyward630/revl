@@ -111,6 +111,21 @@ path, which is what the resolution needs:
   - a `use "m" as alias` import, which makes the whole module a dependency;
   - a dependency that declares externs none of which lowered natively.
 
+  An extern declaration is read as a whole, host bodies included, so a
+  column-0 line of host code inside `@py { ... }` is not taken for a
+  top-level declaration of its own (issue #2308).
+- Last, the driver links the types an imported service carries (issue #2308).
+  A `use "./lib.rvl" { Store }` that names only a service makes no pure
+  dependency, but the reference's `compile_files` still brings the PUBLIC record
+  and variant types the service's operations name, closed over the types their
+  fields and case payloads name (its `carried` list, issue #1899), and appends
+  them to the merged `types` table after the document's own. `ul_link_types`
+  does the same, in the module's declaration order, each type once, and sets
+  `ir_version` to 3 as a type table does in the reference. It refuses with
+  `REFUSED|LINK|` where the reference would rename apart (a document's own type
+  of the same name), where two modules carry one name, and where a public type
+  the closure reaches did not lower natively.
+
 This is the honest multi-file native compile: the whole chain still runs in revl,
 and the only host crossing is the read the reference loader also performs. It
 closes the `cli.rvl` entry on the py and go tiers. `tests/test_selfhost_compile.py`
