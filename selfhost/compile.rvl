@@ -1568,6 +1568,154 @@ fn ul_link_types(ir: Str, source: Str, path: Str) -> UlLinked {
   return { ir: ul_bump_v3(ul_append_types(ir, items)), refusal: "" }
 }
 
+// Issue #2329. The native gate reads only the document, so a call to an
+// operation of an imported service went untyped: `store.put("x")` against a
+// `put(id: Int)` declared in the imported module was admitted, and emitted,
+// where the reference refuses it at check time. The driver now admits the
+// document a second time with the declaration text of every service it imports
+// appended, so the gate types those calls the way the reference checker does.
+// The module's own type declarations are NOT appended: a private one (`type Id
+// = Int`) is out of the document's scope in the reference too, which keeps the
+// parameter as `Id` and refuses every argument but an `Id`, exactly as the gate
+// does for a name it cannot resolve.
+
+// The index of the `}` closing the brace body opening at `open_at`, scanned the
+// way `ul_type_scan` scans (comments, strings, templates and host bodies are
+// opaque), or -1 when there is no `{` there or the body does not close.
+fn tc_body_close(s: Str, open_at: Int) -> Int {
+  if (s.slice(open_at, open_at + 1) != "{") { return 0 - 1 }
+  var depth = 0
+  var i = open_at
+  let n = s.length()
+  while (i < n) {
+    let past = rl_opaque_end(s, i)
+    if (past < 0) { return 0 - 1 }
+    if (past > i) { i = past }
+    else {
+      let ch = s.slice(i, i + 1)
+      if ((ch == "{") || (ch == "[") || (ch == "(")) { depth += 1 }
+      if ((ch == "}") || (ch == "]") || (ch == ")")) {
+        depth -= 1
+        if (depth == 0) { return i }
+        if (depth < 0) { return 0 - 1 }
+      }
+      i += 1
+    }
+  }
+  return 0 - 1
+}
+
+// The declaration text of the service `name` in the module text `source`, from
+// the `service` keyword to the `}` closing its body, found at bracket depth 0 by
+// the reference-lexer scan, or "" when the module declares no such service or
+// the text cannot be read that way. A leading `pub` adds nothing, and a
+// `commutative` constrains only a provider's body, which the native gate does
+// not parse in that position, so neither is part of the text.
+fn tc_service_text(source: Str, name: Str) -> Str {
+  var depth = 0
+  var i = 0
+  let n = source.length()
+  while (i < n) {
+    let past = rl_opaque_end(source, i)
+    if (past < 0) { return "" }
+    if (past > i) { i = past }
+    else {
+      let ch = source.slice(i, i + 1)
+      if (ul_is_word_start(ch)) {
+        let w = ul_word_at(source, i)
+        if ((depth == 0) && (w == "service")) {
+          let k = rl_skip_trivia(source, i + 7)
+          if (ul_word_at(source, k) == name) {
+            let close = tc_body_close(source, rl_skip_trivia(source, k + name.length()))
+            if (close < 0) { return "" }
+            return source.slice(i, close + 1)
+          }
+        }
+        i += w.length()
+      }
+      else {
+        if ((ch == "{") || (ch == "[") || (ch == "(")) { depth += 1 }
+        if ((ch == "}") || (ch == "]") || (ch == ")")) {
+          depth -= 1
+          if (depth < 0) { return "" }
+        }
+        i += 1
+      }
+    }
+  }
+  return ""
+}
+
+// The first identifier of `text` that is also in `names`, or "".
+fn tc_first_shared(text: Str, names: List[Str]) -> Str {
+  let words = ul_type_idents(text)
+  var i = 0
+  while (i < words.length()) {
+    if (ul_has(names, words[i])) { return words[i] }
+    i += 1
+  }
+  return ""
+}
+
+// The admission text, or the refusal ("" for none) that stopped building it.
+type TcText = { text: Str, refusal: Str }
+
+// The document `source` (at `path`, lowered to `own`) with the declaration text
+// of every service a top-level `use` names appended, once each, unless the
+// document declares that service itself or the module declares none of that
+// name (the link then appends no row either). Refused with `LINK|` where the
+// appended text would not type the calls as the reference does: a service the
+// native IR has a row for but whose text the scan cannot read, and a
+// declaration that names a type the document also declares, which the appended
+// text would resolve to the document's type where the reference resolves the
+// module's.
+fn tc_admission_text(source: Str, path: Str, own: Str) -> TcText {
+  let pairs = ul_use_pairs(source)
+  let doc_types = ul_type_scan(source)
+  var done: List[Str] = []
+  var text = source
+  var i = 0
+  while (i + 1 < pairs.length()) {
+    let dep = module_path(path, pairs[i])
+    let name = pairs[i + 1]
+    i += 2
+    if ((dep != "") && !ul_has(done, name) && (ul_service_entry(own, name) == "")) {
+      let module_src = read_module_text(dep)
+      let decl = tc_service_text(module_src, name)
+      if (decl == "") {
+        if (ul_service_entry(lower_to_ir(module_src), name) != "") {
+          return { text: source, refusal: "LINK|the declaration of service `".concat(name)
+            .concat("` in `").concat(dep).concat("` could not be read to type the document's calls to it") }
+        }
+      }
+      else {
+        if (!doc_types.ok) {
+          return { text: source, refusal: "LINK|the document's type declarations could not be read to type its calls to the imported service `"
+            .concat(name).concat("`") }
+        }
+        let shared = tc_first_shared(decl, doc_types.all)
+        if (shared != "") {
+          return { text: source, refusal: "LINK|the imported service `".concat(name).concat("` names `")
+            .concat(shared).concat("`, which the document also declares as a type, and the native gate would resolve it to the document's") }
+        }
+        done = done.push(name)
+        text = text.concat(str_newline()).concat(str_newline()).concat(decl).concat(str_newline())
+      }
+    }
+  }
+  return { text: text, refusal: "" }
+}
+
+// The native gate's verdict on the document's calls to the services it
+// imports: "" when it imports none or the gate admits them, else the refusal.
+fn tc_admit_imports(source: Str, path: Str, own: Str) -> Str {
+  if (path == "") { return "" }
+  let built = tc_admission_text(source, path, own)
+  if (built.refusal != "") { return built.refusal }
+  if (built.text == source) { return "" }
+  return admit_src(built.text)
+}
+
 // The identifier starting at `at`, up to the first delimiter. The scans below
 // read a name out of a source LINE, where a name is followed by a space, `(`,
 // `,`, `:`, `{`, `}`, `"`, `[` or the end of the line.
@@ -1670,6 +1818,11 @@ pub fn compile_to_at(source: Str, tier: Str, path: Str) -> Str {
   // Issue #2308: then the types every imported service carries.
   let typed = ul_link_types(linked.ir, source, path)
   if (typed.refusal != "") { return "REFUSED|".concat(typed.refusal) }
+  // Issue #2329: last, the document's calls to an imported service's
+  // operations are typed against its declaration. A link refusal above wins,
+  // so a type the native link cannot carry is reported as that.
+  let calls = tc_admit_imports(source, path, own)
+  if (calls != "") { return "REFUSED|".concat(calls) }
   return emit_ir(json_parse(typed.ir), tier)
 }
 

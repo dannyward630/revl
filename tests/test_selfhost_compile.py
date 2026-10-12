@@ -1264,6 +1264,64 @@ def test_native_driver_links_the_truc_cli_as_the_reference_does(
     assert got == want, got[:200]
 
 
+# Issue #2329: a document's call to an operation of a service it imports, and
+# the module that declares the service. The reference checker types the call
+# against the module's declaration; the native gate read only the document.
+_IMPORTED_CALLS = {
+    # The issue's reproducer: a private alias is out of the document's scope,
+    # so the reference keeps `Id` and refuses a `Str` (and an `Int`) for it.
+    "private_alias_str": ("type Id = Int\npub service Store { fn put(id: Id) -> Str }\n",
+                          'store.put("x")'),
+    "private_alias_int": ("type Id = Int\npub service Store { fn put(id: Id) -> Str }\n",
+                          "store.put(1)"),
+    "int_given_str": ("pub service Store { fn put(id: Int) -> Str }\n", 'store.put("x")'),
+    "list_given_wrong_items": ("pub service Store { fn put(xs: List[Int]) -> Str }\n",
+                               'store.put(["a"])'),
+    "record_given_int": ("pub type Row = { id: Int }\n"
+                         "pub service Store { fn put(r: Row) -> Str }\n", "store.put(1)"),
+    # A brace in a comment ahead of the declaration does not hide it.
+    "after_comment_brace": ("// } service Store {\n"
+                            "pub service Store { fn put(id: Int) -> Str }\n",
+                            'store.put("x")'),
+    # Positive controls: the reference admits these, and the native output
+    # must stay its bytes.
+    "int_given_int": ("pub service Store { fn put(id: Int) -> Str }\n", "store.put(1)"),
+    "list_given_list": ("pub service Store { fn put(xs: List[Int]) -> Str }\n",
+                        "store.put([1, 2])"),
+    "record_given_record": ("pub type Row = { id: Int }\n"
+                            "pub service Store { fn put(r: Row) -> Str }\n",
+                            "store.put({ id: 1 })"),
+}
+
+
+def _write_imported_call(tmp_path, case):
+    lib, call = _IMPORTED_CALLS[case]
+    (tmp_path / "lib.rvl").write_text(lib, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    doc.write_text('use "./lib.rvl" { Store }\n\n'
+                   + _STORE_COMPONENT.replace("store.put(%s)", call), encoding="utf-8")
+    return doc
+
+
+@pytest.mark.parametrize("case", sorted(_IMPORTED_CALLS))
+def test_native_driver_types_calls_to_an_imported_service(
+        compile_rvl, reference_emit, tmp_path, case):
+    """Issue #2329: where the reference refuses a call to an imported
+    service's operation, the native chain refuses too, never emits; a refusal
+    the native gate gives is the reference's own message. Where the reference
+    admits, the native output is its bytes."""
+    doc = _write_imported_call(tmp_path, case)
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
+    try:
+        ir = compile_files([str(doc)])
+    except RevlError as e:
+        assert got.startswith("REFUSED|"), got[:200]
+        if not got.startswith("REFUSED|LINK|"):
+            assert got.split("|", 2)[2] == e.message, got[:200]
+        return
+    assert got == reference_emit["py"](ir), got[:200]
+
+
 def test_six_way_composition_co_compiles(compile_rvl):
     """SEAM 2 is closed for ALL SIX TIERS (roadmap item 146, gap 2): lower.rvl plus
     emit_{py,ts,go,java,rust,wasm}.rvl ``use``d together in compile.rvl compile into
