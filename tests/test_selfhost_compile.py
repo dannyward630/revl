@@ -948,6 +948,15 @@ def test_native_driver_links_the_pure_closure_externs(
     assert got == want
 
 
+_STORE_COMPONENT = (
+    "service Front { fn go() -> Str }\n\n"
+    "component App requires store: Store provides front: Front {\n"
+    "  provide front {\n"
+    "    fn go() = store.put(%s)\n"
+    "  }\n"
+    "}\n")
+
+
 _UNLINKABLE = {
     # The reference renames both private `h` apart (`h__m0`, `h__m1`); emitting
     # two `h` would let the document's `f` call a.rvl's.
@@ -1000,6 +1009,119 @@ _UNLINKABLE = {
         "doc.rvl": 'use "a.rvl" as m\n\nfn f(x: Int) -> Int { return m.helper(x) }\n',
         "a.rvl": "pub fn helper(x: Int) -> Int { return x + 1 }\n",
     }),
+    # Issue #2308: the producer expands the alias `Al` in the service row and
+    # keeps no `types` entry for it, where the reference carries `Al` itself.
+    "carried_alias": ("did not lower natively", {
+        "doc.rvl": 'use "lib.rvl" { Store }\n\n' + _STORE_COMPONENT % '"x"',
+        "lib.rvl": (
+            "pub type Cell = { b: Int }\n"
+            "pub type Al = Cell\n"
+            "pub service Store {\n"
+            "  fn put(s: Str) -> Str\n"
+            "  fn peek() -> Al\n"
+            "}\n"),
+    }),
+    # Issue #2308: a PRIVATE alias is expanded by the producer too, in a
+    # record field and in a service row. The reference keeps `id: Id`, keeps
+    # `p: P` without carrying `Cell`, and carries nothing for `List[P]`.
+    "private_alias_in_field": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "type Id = Int\n"
+            "pub type Row = { id: Id }\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    "private_alias_of_public_record": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub type Cell = { b: Int }\n"
+            "type P = Cell\n"
+            "pub type Row = { p: P }\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    "private_alias_in_service_row": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub type Cell = { b: Int }\n"
+            "type P = Cell\n"
+            "pub service Store { fn put(xs: List[P]) -> Str }\n"),
+    }),
+    # A private alias declared indented, or on one line after the record
+    # that names it, is a top-level declaration all the same.
+    "private_alias_indented": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "  type Id = Int\n"
+            "pub type Row = { id: Id }\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    "private_alias_same_line": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub type Row = { id: Id }; type Id = Int\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    # The reference carries `Row`; the native producer does not lower a
+    # second declaration on one line, so the link refuses rather than drop it.
+    "pub_type_same_line": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "type H = { h: Int }; pub type Row = { id: Int }\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    # Issue #2308: braces and quotes inside every string form the reference
+    # lexes ('...', """...""", backtick templates and their `${...}`) stay
+    # inside the string, so the private alias `Id` after one is still seen and
+    # the link refuses. Read as text, the `}` or `'` shifted the scan and `Row`
+    # was emitted with `id: int`.
+    "sq_close_brace_hides_alias": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub type Row = { id: Id }\n"
+            "pub fn s() -> Str { return '}' }\n"
+            "type Id = Int\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    "sq_open_brace_hides_alias": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub fn s() -> Str { return '{' }\n"
+            "pub type Row = { id: Id }\n"
+            "type Id = Int\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    "triple_quote_hides_alias": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            'pub fn s() -> Str { return """a " { """ }\n'
+            "pub type Row = { id: Id }\n"
+            "type Id = Int\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    "template_hides_alias": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub type Row = { id: Id }\n"
+            "pub fn s(x: Str) -> Str { return `{ ${ x.concat(`}{`) } '` }\n"
+            "type Id = Int\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    # Issue #2308: the reference renames the document's private `Item` apart
+    # (`Item__m0`) from the `Item` the imported service carries.
+    "carried_type_collision": ("collides", {
+        "doc.rvl": (
+            'use "lib.rvl" { Store }\n\n'
+            "type Item = { name: Str }\n\n"
+            "service Front { fn go() -> Str }\n\n"
+            "component App requires store: Store provides front: Front {\n"
+            "  provide front {\n"
+            '    fn go() = store.put({ ref: "a", qty: 1 })\n'
+            "  }\n"
+            "}\n"),
+        "lib.rvl": (
+            "pub type Item = { ref: Str, qty: Int }\n"
+            "pub service Store { fn put(row: Item) -> Str }\n"),
+    }),
 }
 
 
@@ -1018,6 +1140,128 @@ def test_native_driver_refuses_what_it_cannot_link(compile_rvl, tmp_path, case):
     got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
     assert got.startswith("REFUSED|LINK|"), got[:120]
     assert why in got
+
+
+# case -> (tiers, files). The tiers are those whose native emitter covers the
+# document once it is linked: wasm's emits no component yet, and only py and ts
+# bodies are written for the extern case.
+_LINKED_AS_REFERENCE = {
+    # The issue's reproducer: a service-only import brings the record type its
+    # operation names, so the reference IR has a `types` table and is v3.
+    "service_record": (("py", "ts", "go", "java", "rust"), {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n'
+                   + _STORE_COMPONENT % '{ ref: "a", qty: 1 }',
+        "lib.rvl": (
+            "pub type Item = { ref: Str, qty: Int }\n"
+            "pub service Store { fn put(row: Item) -> Str }\n"),
+    }),
+    # Carried transitively through a field and a case payload, in the module's
+    # declaration order (not discovery order), after the document's own type;
+    # a private type and a public one no operation reaches stay behind.
+    "service_closure": (("py", "ts", "go", "java", "rust"), {
+        # (The call names no carried type: the native gate admits one document
+        # and does not see the module's `Plain`.)
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\ntype Own = { o: Int }\n\n'
+                   + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub type Row = { tag: Tag, n: Int }\n"
+            "type Hidden = { h: Int }\n"
+            "pub type Unused = { u: Int }\n"
+            "pub type Tag = Plain | Marked(Cell)\n"
+            "pub type Cell = { b: Int }\n"
+            "pub service Store {\n"
+            "  fn put(rows: List[Row]) -> Str\n"
+            "  fn count() -> Int\n"
+            "}\n"),
+    }),
+    # `pub` and `type` may be separated by any run of spaces or tabs.
+    "service_record_tabbed": (("py", "ts", "go", "java", "rust"), {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n'
+                   + _STORE_COMPONENT % '{ ref: "a", qty: 1 }',
+        "lib.rvl": (
+            "pub\ttype  Item = { ref: Str, qty: Int }\n"
+            "pub service Store { fn put(row: Item) -> Str }\n"),
+    }),
+    # A `pub type` declared indented is carried like any other.
+    "pub_type_indented": (("py", "ts", "go", "java", "rust"), {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "  pub type Row = { id: Int }\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    # Issue #2308: a `pub type` after a string holding a brace or a quote is
+    # carried; read as text, the opener left the scan inside a string and the
+    # native IR had no `Row` (ir_version 1). One case per string form the
+    # reference lexes, with the other quote kinds and escapes at the end.
+    "sq_string_before_record": (("py", "go", "java", "rust"), {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub fn s() -> Str { return '\"' }\n"
+            "pub fn t() -> Str { return 'a \" ` \"\"\" {\\\\' }\n"
+            "pub type Row = { id: Int }\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    "dq_and_triple_before_record": (("py", "go", "java", "rust"), {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub fn s() -> Str { return \"a ' ` {\\\\\" }\n"
+            'pub fn t() -> Str { return """a \' " ` } """ }\n'
+            "pub type Row = { id: Int }\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    "template_before_record": (("py", "go", "java", "rust"), {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub fn s(m: Map[Str, Str]) -> Str { return `a ${ m.get(\"}\") } b` }\n"
+            "pub fn t(x: Str) -> Str { return `{ ${ x.concat(`}`) } \" '` }\n"
+            "pub type Row = { id: Int }\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    # A pure dependency whose extern bodies hold column-0 host lines: they are
+    # inside the declaration, not top-level declarations of their own.
+    "column0_extern_body": (("py", "ts"), {
+        "doc.rvl": 'use "a.rvl" { g }\n\nfn f(x: Int) -> Int { return g(x) }\n',
+        "a.rvl": (
+            "pub extern pure fn g(x: Int) -> Int = @py {\n"
+            "return x\n"
+            "} = @ts {\n"
+            "return x\n"
+            "}\n"),
+    }),
+}
+
+
+def _linked_cases():
+    return [(case, tier) for case, (tiers, _files) in sorted(_LINKED_AS_REFERENCE.items())
+            for tier in tiers]
+
+
+@pytest.mark.parametrize("case, tier", _linked_cases())
+def test_native_driver_links_as_the_reference_does(
+        compile_rvl, reference_emit, tmp_path, case, tier):
+    """Issue #2308: a service imported on its own carries the public record and
+    variant types its operations name, closed over their fields and cases (the
+    reference's `carried` list, issue #1899), and the IR that gains them is v3.
+    A pure dependency whose extern body holds a column-0 host line links too.
+    The native output is the reference's, byte for byte."""
+    for name, text in _LINKED_AS_REFERENCE[case][1].items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    want = reference_emit[tier](compile_files([str(doc)]))
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
+    assert got == want, got[:200]
+
+
+@pytest.mark.parametrize("tier", ("py", "go", "java", "rust"))
+def test_native_driver_links_the_truc_cli_as_the_reference_does(
+        compile_rvl, reference_emit, tier):
+    """Issue #2308: `src/revl/truc/components/cli.rvl` imports the services
+    `Assembler` and `Shipper` on their own and links byte for byte today. The
+    carried-type refusals must not start refusing it."""
+    doc = ROOT / "src" / "revl" / "truc" / "components" / "cli.rvl"
+    want = reference_emit[tier](compile_files([str(doc)]))
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
+    assert got == want, got[:200]
 
 
 def test_six_way_composition_co_compiles(compile_rvl):

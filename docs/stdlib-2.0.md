@@ -40,6 +40,7 @@ revl refuses.)
 | `lookup(k)` | 1 | Map | value under `k` as `Opt[V]` | `x.get(k)` | `x.get(k)` |
 | `has(k)` | 1 | Map | key membership | `k in x` | `x.has(k)` |
 | `to_str()` | 0 | Int | decimal rendering, `-` for negatives | `str(x)` | `x.toString()` |
+| `to_char()` | 0 | Int | the one-code-point Str for a Unicode scalar value, `""` otherwise (issue #2285) | `_revl_to_char(x)` helper | range check + `String.fromCodePoint` |
 | `to_int()` | 0 | Str | ASCII-digit parse → `Opt[Int]` (FR-9); ALSO the Int32→Int widen (§ below) | lambda | `revlParseInt(x)` |
 
 - `push`/`concat` are **persistent** (value semantics) — consistent with
@@ -348,6 +349,27 @@ namespace to pollute (the same grain that made Map's surface methods), and
 an Int-only receiver family is already how the checker dispatches Int-only
 builtins (`div_trunc` and friends). The name follows the type, not the
 host — `to_str`, spelled after the revl type `Str`, on every tier.
+
+### `Int.to_char()`: one code point as a Str (issue #2285)
+
+`n.to_char()` is the reverse of `codepoint_at`: for a Unicode scalar value
+(`0..=0x10FFFF` minus the surrogates `0xD800..=0xDFFF`) it returns the
+one-code-point `Str` whose `charCodeAt(0)` is `n`, so `13.to_char()` is a
+carriage return and `0.to_char()` a NUL. Any other `Int` (negative, a
+surrogate, above `0x10FFFF`) returns `""`. It is **total**, like `to_str`:
+no input faults, and every tier gives the same answer.
+
+It exists because pure revl had no other way to spell most control
+characters: `"..."` carries no escapes, and the source reader folds a CR byte
+to LF before the lexer runs, so a backtick template cannot hold a lone CR.
+`stdlib/str.rvl`'s `str_char` routes every code point outside its pure table
+(tab, newline, printable ASCII) through it.
+
+Per tier: py `chr` behind a range check (`_revl_to_char`), ts
+`String.fromCodePoint`, go `string(rune(n))`, rust `char::from_u32`, java
+`Character.toChars`, each behind the same range check; wasm encodes the scalar
+as 1 to 4 UTF-8 bytes in `$str_of_code_point`, emitted only where a body calls
+it.
 
 ### `Str.startsWith(p)` / `Str.endsWith(p)`: the prefix/suffix probes (FR-6)
 
