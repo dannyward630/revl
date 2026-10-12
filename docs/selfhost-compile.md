@@ -169,22 +169,31 @@ path, which is what the resolution needs:
   can hold a record literal to a carried record parameter field-wise. A
   generic carried type is left out.
 - The gate's own call-site rules, in a single document and through an import
-  (issue #2362): a requirement call with the wrong number of arguments is
-  refused with the reference's ``store.put` takes 1 argument(s), 2 given``; a
-  record literal passed for a nominal record parameter is held to the record's
-  fields (the same field set, each compatible) through the `field
-  <Type>.<name>` rows; a `return` of a requirement call is checked at the
-  operation's declared return; and a `fn m() = <expr>` provide method is typed
-  as the `return <expr>` the reference makes of it, with its requirement calls
-  checked before the return's own check, as the reference orders them. Still
-  not decided: a requirement call nested inside a larger expression
-  (`store.put(1) + 1`) is untyped, so its value is not held to a declared
-  result; a variant or generic parameter meeting a record literal stays
-  silent; through an import, a wrong call nested in a larger returned value
-  (`= store.put(1, 2) == 1`) refuses with the return's message rather than the
-  call's, because the first admission reads the importing document alone; and
-  a wrong argument count to an unmarked `emission` operation refuses with the
-  wiring's G4 where the reference reports the count first.
+  (issue #2362):
+  - A requirement call with the wrong number of arguments is refused with the
+    reference's ``store.put` takes 1 argument(s), 2 given``.
+  - A record literal passed for a nominal record parameter is held to the
+    record's fields (the same field set, each compatible) through the `field
+    <Type>.<name>` rows. A record named inside a field type, whole or as a type
+    argument (`In`, `Opt[In]`, `List[In]`), is expanded the same way, four
+    levels deep.
+  - A record literal passed for a variant parameter is refused with the
+    reference's argument message.
+  - A requirement call is typed at its operation's declared return wherever
+    it appears (`reqret <root>.<op>` rows), so `= store.put(1) + 1` is held to
+    the method's result like any other value.
+  - A `fn m() = <expr>` provide method is typed as the `return <expr>` the
+    reference makes of it, and a returned value's requirement calls are decided
+    before the return's own check, in the reference's order.
+  - Through an import, a T1 from the document read alone yields to the import
+    admission's verdict when that refuses too, so the call's message wins as
+    it does in the reference.
+
+  Still refused differently from the reference: in a single document, a record
+  literal for a generic record parameter (`Cell[Int]`) is refused by name
+  (`TYPE|... is not typed by the native gate`), not typed. A wrong argument
+  count to an unmarked `emission` operation refuses with the wiring's G4 where
+  the reference reports the count first. Both are refusals; neither emits.
 
 This is the honest multi-file native compile: the whole chain still runs in revl,
 and the only host crossing is the read the reference loader also performs. It

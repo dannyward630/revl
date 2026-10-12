@@ -1368,7 +1368,38 @@ _CALL_SITE_RULES = {
                             "= store.put(1, 2) == 1", "T1"),
     "argument_in_list": ("pub service Store { fn put(id: Int) -> Str }\n",
                          '{\n      return [store.put("x")]\n    }', "T1"),
+    # a nested record field is held field-wise too
+    "record_nested_field": ("pub type In = { a: Int }\npub type Row = { i: In }\n"
+                            "pub service Store { fn put(r: Row) -> Str }\n",
+                            '= store.put({ i: { a: "x" } })', "T1"),
+    "record_list_field": ("pub type In = { a: Int }\npub type Row = { i: List[In] }\n"
+                          "pub service Store { fn put(r: Row) -> Str }\n",
+                          '= store.put({ i: [{ a: "x" }] })', "T1"),
+    "record_opt_field": ("pub type In = { a: Int }\npub type Row = { i: Opt[In] }\n"
+                         "pub service Store { fn put(r: Row) -> Str }\n",
+                         '= store.put({ i: { a: "x" } })', "T1"),
+    # a requirement call inside a larger expression is typed at its return
+    "nested_call_operand": ("pub service Store { fn put(id: Int) -> Int }\n",
+                            "= store.put(1) + 1", "T1"),
+    "nested_call_in_let": ("pub service Store { fn put(id: Int) -> Int }\n",
+                           "{\n      let n = store.put(1) + 1\n      return n\n    }", "T1"),
+    # a record literal for a variant or a generic record parameter
+    "variant_param": ("pub type Shape = Dot | Box(Int)\n"
+                      "pub service Store { fn put(r: Shape) -> Str }\n",
+                      "= store.put({ a: 1 })", "T1"),
+    "generic_param": ("pub type Cell[T] = { v: T }\n"
+                      "pub service Store { fn put(r: Cell[Int]) -> Str }\n",
+                      '= store.put({ v: "x" })', "T1"),
     # Positive controls: admitted by the reference, and by the native gate.
+    "record_nested_matches": ("pub type In = { a: Int }\npub type Row = { i: In }\n"
+                              "pub service Store { fn put(r: Row) -> Str }\n",
+                              "= store.put({ i: { a: 1 } })", "emit"),
+    "record_container_matches": ("pub type In = { a: Int }\n"
+                                 "pub type Row = { i: Opt[In], j: List[In] }\n"
+                                 "pub service Store { fn put(r: Row) -> Str }\n",
+                                 "= store.put({ i: { a: 1 }, j: [{ a: 2 }] })", "emit"),
+    "nested_call_matches": ("pub service Store { fn put(id: Int) -> Str }\n",
+                            '= store.put(1).concat("x")', "emit"),
     "return_matches": ("pub service Store { fn put(id: Int) -> Str }\n",
                        "= store.put(1)", "emit"),
     "record_matches": ("pub type Row = { id: Int, n: Str }\n"
@@ -1376,12 +1407,9 @@ _CALL_SITE_RULES = {
                        '= store.put({ n: "a", id: 1 })', "emit"),
 }
 
-# Through an import these two still refuse, but with the return's own message:
-# the first native admission reads the importing document alone, where the
-# service is undeclared, so the outer value's type is checked before the
-# import pass can hold the nested call to its declaration. A named gap in
-# docs/selfhost-compile.md; pinned here so it cannot become a silent emit.
-_CALL_SITE_IMPORT_MESSAGE_GAP = {"arity_under_compare", "argument_in_list"}
+# In one document the native gate does not type a record literal against a
+# generic record parameter; it refuses by name instead of emitting.
+_CALL_SITE_NAMED_IN_ONE_DOC = {"generic_param": "TYPE|`store.put` argument `r`"}
 
 _CALL_SITE_COMPONENT = (
     "service Front { fn go() -> Str }\n\n"
@@ -1409,6 +1437,9 @@ def test_native_gate_decides_the_call_site_rules_in_one_document(admit, case):
     if expect == "emit":
         assert want == ""
         assert admit(src) == ""
+    elif case in _CALL_SITE_NAMED_IN_ONE_DOC:
+        assert want != ""
+        assert admit(src).startswith(_CALL_SITE_NAMED_IN_ONE_DOC[case])
     else:
         assert want != ""
         assert admit(src) == "T1|" + want
@@ -1430,9 +1461,6 @@ def test_native_driver_decides_the_call_site_rules_through_an_import(
     else:
         want = _reference_message(lambda: compile_files([str(doc)]))
         assert want != ""
-        if case in _CALL_SITE_IMPORT_MESSAGE_GAP:
-            assert got.startswith("REFUSED|T1|`go` returns expects"), got[:200]
-            return
         assert got == "REFUSED|T1|" + want, got[:200]
 
 

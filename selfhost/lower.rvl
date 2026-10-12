@@ -7021,8 +7021,16 @@ fn ct_args(root: Str, meth: Str, decl: MSig, args: List[Expr],
   if (i >= args.length() || i >= decl.ps.length()) { return "" }
   let pt = tk_solid(taint_strip(decl.ps[i].ty), env)
   let inf = tk_infer(args[i], env)
+  let raw = taint_strip(decl.ps[i].ty)
+  if (inf.v == "" && tk_is_struct(inf.ty) && tk_generic_record(raw, env)) {
+    return tagged("TYPE", "`".concat(root).concat(".").concat(meth)
+      .concat("` argument `").concat(decl.ps[i].name)
+      .concat("`: a record literal for the generic record `").concat(raw)
+      .concat("` is not typed by the native gate (issue #2362)"))
+  }
   if (inf.v == "" && pt != "" && inf.ty != ""
-      && !tk_compatible(ct_record_shape(pt, inf.ty, env), inf.ty)) {
+      && (ct_struct_to_variant(pt, inf.ty, env)
+          || !tk_compatible(ct_record_shape(pt, inf.ty, env), inf.ty))) {
     return tagged("T1", "`".concat(root).concat(".").concat(meth)
       .concat("` argument `").concat(decl.ps[i].name).concat("` expects `")
       .concat(tk_render(pt)).concat("`, got `")
@@ -7039,6 +7047,57 @@ fn ct_args(root: Str, meth: Str, decl: MSig, args: List[Expr],
 // <Type>.<name>` rows in `env` are that table, so a parameter whose record
 // fields they spell is expanded to its shape here. Any other pairing, and a
 // nominal name with no rows, keeps the declared spelling.
+// Issue #2362: the `reqret <root>.<op>` row `ct_req_ret_rows` gives a
+// requirement call's declared return, or "".
+fn tk_req_row(callee: Expr, env: List[Bind]) -> Str {
+  return match callee {
+    Field(f) => match f.target {
+      Var(v) => tenv_get(env, "reqret ".concat(v).concat(".").concat(f.name)),
+      _      => "",
+    },
+    _        => "",
+  }
+}
+
+// Issue #2362: one `reqret <root>.<op>` row per operation of every requirement
+// the provide method can call, at the operation's declared return. A return
+// that does not resolve is left out, so its call stays untyped.
+fn ct_req_ret_rows(cx: Ctx, env: List[Bind]) -> List[Bind] {
+  var out = env
+  let ks = cx.reqMap.keys()
+  var i = 0
+  while (i < ks.length()) {
+    let root = ks[i]
+    if (!cx.provAlias.has(root)) {
+      let svc = match cx.reqMap.lookup(root) { Some(sv) => sv, None => "" }
+      let ms = cx.svcs.has(svc) ? svc_of(cx, svc).methods
+             : match cx.ambOps.lookup(svc) { Some(a) => a.sigs, None => [] }
+      var j = 0
+      while (j < ms.length()) {
+        let t = tk_solid(taint_strip(ms[j].ret), env)
+        if (t != "") {
+          out = out.push({ name: "reqret ".concat(root).concat(".").concat(ms[j].name), ty: t })
+        }
+        j += 1
+      }
+    }
+    i += 1
+  }
+  return out
+}
+
+// Issue #2362: a record literal never meets a variant parameter
+// (`typecheck.compatible` has no struct-to-ADT arm).
+fn ct_struct_to_variant(pt: Str, actual: Str, env: List[Bind]) -> Bool {
+  return tk_is_struct(actual) && tk_nominal_name(pt) && ty_variant_decl(pt, env)
+}
+
+// Issue #2362: `Cell[Int]` where `Cell` is a declared generic record.
+fn tk_generic_record(pt: Str, env: List[Bind]) -> Bool {
+  let b = pt.indexOf("[")
+  return b > 0 && tenv_get(env, "grec ".concat(pt.slice(0, b))) != ""
+}
+
 fn ct_record_shape(pt: Str, actual: Str, env: List[Bind]) -> Str {
   if (!tk_is_struct(actual) || !tk_nominal_name(pt)) { return pt }
   let shape = tk_nominal_shape(pt, env)
@@ -7046,8 +7105,42 @@ fn ct_record_shape(pt: Str, actual: Str, env: List[Bind]) -> Str {
 }
 
 // The structural shape `{a: A, b: B}` the `field <Type>.<name>` rows of `env`
-// give the record `t`, or "" when no row names it.
+// give the record `t`, or "" when no row names it. A field whose type is itself
+// a record with rows is expanded too (issue #2362: `typecheck.compatible`
+// resolves nested records field-wise), down to a fixed depth so a recursive
+// record cannot loop.
 fn tk_nominal_shape(t: Str, env: List[Bind]) -> Str {
+  return tk_nominal_shape_at(t, env, 0)
+}
+
+// Every record name in the field type `ft`, a type argument (`List[In]`,
+// `Opt[In]`) as much as the whole type, replaced by its shape.
+fn tk_nominal_field(ft: Str, env: List[Bind], depth: Int) -> Str {
+  if (depth >= 4) { return ft }
+  let word = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"
+  var out = ""
+  var cur = ""
+  var j = 0
+  while (j <= ft.length()) {
+    let c = j < ft.length() ? ft.slice(j, j + 1) : " "
+    if (word.indexOf(c) != 0 - 1) { cur = cur.concat(c) }
+    else {
+      out = out.concat(tk_nominal_word(cur, env, depth))
+      cur = ""
+      if (j < ft.length()) { out = out.concat(c) }
+    }
+    j += 1
+  }
+  return out
+}
+
+fn tk_nominal_word(w: Str, env: List[Bind], depth: Int) -> Str {
+  if (w == "" || "ABCDEFGHIJKLMNOPQRSTUVWXYZ".indexOf(w.slice(0, 1)) == 0 - 1) { return w }
+  let sub = tk_nominal_shape_at(w, env, depth + 1)
+  return sub == "" ? w : sub
+}
+
+fn tk_nominal_shape_at(t: Str, env: List[Bind], depth: Int) -> Str {
   let pfx = "field ".concat(t).concat(".")
   var seen: List[Str] = []
   var out = ""
@@ -7058,7 +7151,8 @@ fn tk_nominal_shape(t: Str, env: List[Bind]) -> Str {
       let f = nm.slice(pfx.length(), nm.length())
       if (!contains(seen, f)) {
         seen = seen.push(f)
-        out = out.concat(out == "" ? "" : ", ").concat(f).concat(": ").concat(tenv_get(env, nm))
+        out = out.concat(out == "" ? "" : ", ").concat(f).concat(": ")
+          .concat(tk_nominal_field(tenv_get(env, nm), env, depth))
       }
     }
     i += 1
@@ -8508,7 +8602,7 @@ fn check_component(comp: CompD, cx: Ctx, gtys: List[Bind]) -> Verd {
       // wiring verdict and a type one reports the wiring verdict, which is the
       // under-refusing direction.
       let mtv = mth_type_verdict(arrow_typed_body(pm), 0,
-                                 mth_param_tys(pm, decl, 0, setupTys), mcx,
+                                 ct_req_ret_rows(mcx, mth_param_tys(pm, decl, 0, setupTys)), mcx,
                                  tk_solid(taint_strip(decl.ret), gtys), pm.name,
                                  comp.line)
       if (mtv.v != "") { return mtv }
@@ -13857,6 +13951,12 @@ fn tk_call(c: CallN, env: List[Bind]) -> TInf {
   // level, which compounds with nesting.
   let tv = tk_callee(c.target, env)
   if (tv.v != "") { return tv }
+  // Issue #2362: a requirement call in a provide method is typed at its
+  // operation's declared return (`infer_ir` reads a `req` call that way), so
+  // it is held to it inside a larger expression too. Its arguments are
+  // `ct_args`'s, as below.
+  let rq = tk_req_row(c.target, env)
+  if (rq != "") { return tk_ok(rq) }
   // THE HOST-OBJECT CALL, in a component body. An untyped method receiver there
   // is an acquired handle, a requirement handle or a provision alias, and the
   // reference lowers a call on one through the host / provision path — which
@@ -25996,7 +26096,11 @@ fn decl_cases(ts: List[Token], i: Int, a: CaseAcc, al: Map[Str, Str]) -> CaseSte
   if (atk(ts, j, "{")) {
     let bend = close_brace(ts, j)
     if (bend == 0 - 1 || atk(ts, i + 2, "[")) {
-      return { a: a, i: bend == 0 - 1 ? lineHi : bend }
+      // issue #2362: a generic record gets no field rows, only a `grec` mark,
+      // so a record literal meeting it is refused by name (`ct_args`).
+      let marked = bend == 0 - 1 ? a
+        : { binds: a.binds.push({ name: "grec ".concat(nm), ty: nm }), amb: a.amb }
+      return { a: marked, i: bend == 0 - 1 ? lineHi : bend }
     }
     let fields = rec_field_binds(ts, j + 1, bend - 1, nm, a.binds, al)
     return { a: { binds: fields, amb: a.amb }, i: bend }

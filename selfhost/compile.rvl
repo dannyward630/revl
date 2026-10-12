@@ -1794,6 +1794,19 @@ fn tc_admission_text(source: Str, path: Str, own: Str) -> TcText {
 
 // The native gate's verdict on the document's calls to the services it
 // imports: "" when it imports none or the gate admits them, else the refusal.
+// Issue #2362: a type refusal of the document read alone can be the wrong
+// one when it calls an imported service: the reference holds the call to its
+// declaration first, while it lowers the value. So a T1 from the document
+// alone yields to the import admission's verdict when that refuses too.
+fn tc_import_first(source: Str, path: Str, verdict: Str) -> Str {
+  if (path == "" || verdict.slice(0, 3) != "T1|" || source.indexOf("use \"") == 0 - 1) {
+    return verdict
+  }
+  let own = lower_to_ir_refs(source, rf_ref_rows(source, path))
+  let calls = tc_admit_imports(source, path, own)
+  return calls == "" ? verdict : calls
+}
+
 fn tc_admit_imports(source: Str, path: Str, own: Str) -> Str {
   if (path == "") { return "" }
   let built = tc_admission_text(source, path, own)
@@ -1893,7 +1906,7 @@ fn rf_ref_rows(source: Str, path: Str) -> List[Str] {
 pub fn compile_to_at(source: Str, tier: Str, path: Str) -> Str {
   if (!supported_tier(tier)) { return "UNKNOWN_TIER|".concat(tier) }
   let verdict = admit_src(source)
-  if (verdict != "") { return "REFUSED|".concat(verdict) }
+  if (verdict != "") { return "REFUSED|".concat(tc_import_first(source, path, verdict)) }
   // FULLY NATIVE from here: native IR producer → use linking → parse → emitter.
   // Issue #2089: the producer also takes the document's host-ref WIRE, so an
   // extern's `refs` survive the native chain and the emitters can see them.
