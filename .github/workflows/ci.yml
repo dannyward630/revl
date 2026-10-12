@@ -590,8 +590,14 @@ jobs:
     # tests that probe for go by hand. Every pytest step of a job that runs
     # setup-go must require go; tests/test_env_gated_skips_run_somewhere.py
     # ::test_every_pytest_step_in_a_job_that_installs_go_requires_go checks it.
+    #
+    # Issue #2210: rust is required too. This runner image ships cargo, and the
+    # cargo-backed tests (tests/test_component_name_2200.py, test_run_rust.py)
+    # resolve cordis-rs from crates.io. If cargo or that resolution ever goes
+    # missing, the repository-root conftest.py turns their skip into a failure
+    # instead of a green run that measured nothing.
     env:
-      REVL_REQUIRE_TIERS: "go"
+      REVL_REQUIRE_TIERS: "go,rust"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
@@ -928,9 +934,11 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     # Issue #2264: this job installs go, so go is required on every pytest
-    # step (see the `frontend` job for why).
+    # step (see the `frontend` job for why). Issue #2210: rust is required too,
+    # for the same reason (see `frontend`): this is the job that runs
+    # tests/test_component_name_2200.py when a pull request touches it.
     env:
-      REVL_REQUIRE_TIERS: "go"
+      REVL_REQUIRE_TIERS: "go,rust"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:

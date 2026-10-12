@@ -1695,3 +1695,27 @@ def test_a_gate_ci_sets_but_the_local_gate_cannot_is_reported(
                   encoding="utf-8")
     gaps = _local_gate_gaps(ci_values, mod.ci_suites(ci), mod)
     assert bool(gaps) is gap, gaps
+
+
+#: Files whose rust skip is a module-level `skipif` on `rust_runtime_reason()`
+#: or a hand `which("cargo")`, not a `revl.test` runner. The tier check above
+#: cannot see them, so each is named and must be run by a CI step that sets
+#: `REVL_REQUIRE_TIERS` for rust; the root conftest.py then fails their skip
+#: (issue #2210).
+_HAND_PROBED_RUST_FILES = ("tests/test_component_name_2200.py",)
+
+
+@pytest.mark.parametrize("rel", _HAND_PROBED_RUST_FILES)
+def test_a_hand_probed_rust_test_is_run_where_rust_is_required(rel):
+    text = (ROOT / rel).read_text(encoding="utf-8")
+    assert re.search(r"which\(\s*[\"']cargo[\"']\s*\)|rust_runtime_reason\(", text), (
+        f"{rel} no longer probes for cargo by hand; drop it from "
+        "_HAND_PROBED_RUST_FILES"
+    )
+    covered = [job for job, run, required in _require_steps()
+               if "rust" in required
+               and any(_covers(target, rel) for target in _pytest_targets(run))]
+    assert covered, (
+        f"{rel} skips when cargo or cordis-rs is missing, and no CI step that "
+        f"runs it sets {_REQUIRE_ENV} for rust, so that skip reads green."
+    )
