@@ -323,12 +323,28 @@ impl RevlWal {
         let mut line = serde_json::to_string(rec)
             .unwrap_or_else(|e| panic!("revl: write-ahead log record could not be encoded: {e}"));
         line.push('\n');
+        let start = self.file.metadata().map(|m| m.len()).ok();
         if let Err(e) = self.file.write_all(line.as_bytes()) {
+            self.cut(start);
             panic!("revl: write-ahead log write failed: {e}");
         }
         if let Err(e) = self.file.sync_all() {
             if !self.unsynced {
+                self.cut(start);
                 panic!("revl: write-ahead log fsync failed: {e}");
+            }
+        }
+    }
+
+    /// Drop a record whose write or fsync failed (issue #2345), as the py
+    /// WriteAheadLog and the wasm drain do, so recovery reads it as absent,
+    /// then fsync the cut so a power loss cannot bring it back. Best effort:
+    /// the caller panics either way, and on a target that refused the
+    /// record's fsync this fsync fails too.
+    fn cut(&mut self, start: Option<u64>) {
+        if let Some(start) = start {
+            if self.file.set_len(start).is_ok() {
+                let _ = self.file.sync_all();
             }
         }
     }

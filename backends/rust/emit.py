@@ -6170,7 +6170,8 @@ def _emit_compensation_registration(env: "_Env", compensate_node: dict, label_te
     level and `"self.ctx"` (fire-and-forget, `propagate=False`, matching every
     other method-body registration) inside a provide method."""
     pad = "    " * indent
-    call = _expr(compensate_node, env, rename=rename)
+    call = _journal_service_comp(compensate_node, env,
+                                 _expr(compensate_node, env, rename=rename))
     if env.v3_ctx().ui_scope:
         # issue #1369: inside a UI scope the entry is the scope's until the
         # call returns
@@ -9192,7 +9193,9 @@ def _service_emission(node, requires: dict):
 def _has_service_emits(node) -> bool:
     """Whether any `emit` in the components crosses through a service."""
     if isinstance(node, dict):
-        if node.get("step") == "emit" and _service_emission(node.get("expr"), {}):
+        if node.get("step") == "emit" and (
+                _service_emission(node.get("expr"), {})
+                or _service_emission(node.get("compensate"), {})):
             return True
         return any(_has_service_emits(v) for v in node.values())
     if isinstance(node, list):
@@ -9217,6 +9220,25 @@ def _journal_service_emit(node, env, rendered: str) -> str:
     return (f"{{ let _revl_em = RevlEmission::start({_string(key)}, "
             f"{_string(method)}, {svc}); let _revl_v = {rendered}; "
             f"_revl_em.complete(); _revl_v }}")
+
+
+def _is_emission_method(services: dict, service, method: str) -> bool:
+    """Whether `service.method` is declared `emission` in the service table:
+    a compensation through a service is journalled only then, as py's
+    `_ServiceProxy` wraps only the service's `emission` methods."""
+    spec = (((services or {}).get(service) or {}).get("methods") or {}).get(method)
+    return bool(isinstance(spec, dict) and spec.get("emission"))
+
+
+def _journal_service_comp(node, env, rendered: str) -> str:
+    """A compensation through a service `emission` method, journalled like an
+    `emit` (issue #2345); any other compensation is left as it is."""
+    requires = getattr(env, "requires_raw", None) or {}
+    desc = _service_emission(node, requires)
+    if desc is None or not _is_emission_method(
+            getattr(env, "services", None) or {}, desc[2], desc[1]):
+        return rendered
+    return _journal_service_emit(node, env, rendered)
 
 
 def _journalled_emission(name: str, params: str, forward: str,
@@ -10439,12 +10461,28 @@ def _revl_record_preamble() -> list[str]:
         "        let mut line = serde_json::to_string(rec)",
         '            .unwrap_or_else(|e| panic!("revl: write-ahead log record could not be encoded: {e}"));',
         "        line.push('\\n');",
+        "        let start = self.file.metadata().map(|m| m.len()).ok();",
         "        if let Err(e) = self.file.write_all(line.as_bytes()) {",
+        "            self.cut(start);",
         '            panic!("revl: write-ahead log write failed: {e}");',
         "        }",
         "        if let Err(e) = self.file.sync_all() {",
         "            if !self.unsynced {",
+        "                self.cut(start);",
         '                panic!("revl: write-ahead log fsync failed: {e}");',
+        "            }",
+        "        }",
+        "    }",
+        "",
+        "    /// Drop a record whose write or fsync failed (issue #2345), as the py",
+        "    /// WriteAheadLog and the wasm drain do, so recovery reads it as absent,",
+        "    /// then fsync the cut so a power loss cannot bring it back. Best effort:",
+        "    /// the caller panics either way, and on a target that refused the",
+        "    /// record's fsync this fsync fails too.",
+        "    fn cut(&mut self, start: Option<u64>) {",
+        "        if let Some(start) = start {",
+        "            if self.file.set_len(start).is_ok() {",
+        "                let _ = self.file.sync_all();",
         "            }",
         "        }",
         "    }",

@@ -304,19 +304,44 @@ public final class Components {
             return;
         }
         synchronized (revlWalLock) {
+            long start = -1;
+            try {
+                start = revlWalChannel.size();
+            } catch (java.io.IOException size) {
+                start = -1;
+            }
             try {
                 revlWalOut.write((json + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
                 revlWalOut.flush();
             } catch (java.io.IOException write) {
+                revlWalCut(start);
                 throw new java.io.UncheckedIOException("revl: write-ahead log write failed", write);
             }
             try {
                 revlWalChannel.force(true);
             } catch (java.io.IOException sync) {
                 if (!revlWalUnsynced) {
+                    revlWalCut(start);
                     throw new java.io.UncheckedIOException("revl: write-ahead log fsync failed", sync);
                 }
             }
+        }
+    }
+
+    // revlWalCut drops a record whose write or fsync failed (issue #2345), as the
+    // py WriteAheadLog and the wasm drain do, so recovery reads it as absent, then
+    // fsyncs the cut so a power loss cannot bring it back. Best effort: the caller
+    // throws either way, and on a target that refused the record's fsync this
+    // fsync fails too.
+    private static void revlWalCut(long start) {
+        if (start < 0) {
+            return;
+        }
+        try {
+            revlWalChannel.truncate(start);
+            revlWalChannel.force(true);
+        } catch (java.io.IOException cut) {
+            // the record stays, unsynced; the run still stops on the caller's throw
         }
     }
 

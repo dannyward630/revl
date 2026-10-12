@@ -2194,7 +2194,7 @@ def _emit_method_body(body, env: _Env, out, indent, ret_surface=None):
             # site-spelled clause, else the extern's own declared one (item
             # 254, issues #1592 and #1902).
             for comp_node in _emit_compensations(step):
-                compensate_call = _expr(comp_node, env)
+                compensate_call = _journal_service_comp(comp_node, _expr(comp_node, env))
                 key, method = _call_descriptor(comp_node)
                 frame = env.ui_scope or "%s.revlFrame" % env.receiver
                 # By-value capture for the offset, on the same footing as an
@@ -4259,7 +4259,7 @@ def _emit_component_step(comp, step, services, env: _Env, out, indent=3):
         # it.
         compensations = _emit_compensations(step)
         for index, comp_node in enumerate(compensations):
-            compensate_call = _expr(comp_node, env)
+            compensate_call = _journal_service_comp(comp_node, _expr(comp_node, env))
             key, method = _call_descriptor(comp_node)
             out.append("%sif err := ctx.Effect(func() stc.Inverse {" % pad)
             if index == 0:
@@ -4316,7 +4316,8 @@ def _emit_component_step(comp, step, services, env: _Env, out, indent=3):
             for comp_node in _emit_compensations(em):
                 key, method = _call_descriptor(comp_node)
                 out.append("%s\t_revlFrame.registerMethodCompensation(%s, %s, func() error { %s; return nil })"
-                           % (inner, _go_string(key), _go_string(method), _expr(comp_node, env)))
+                           % (inner, _go_string(key), _go_string(method),
+                              _journal_service_comp(comp_node, _expr(comp_node, env))))
                 _COMP_NEEDS_TEARDOWN = True
                 _COMP_NEEDS_METHOD_WITNESSED = True
         out.append("%s})" % inner)
@@ -8405,6 +8406,23 @@ def _journal_service_emit(node, emit_call: str) -> str:
         _go_string(key), _go_string(method), _go_string(service), emit_call)
 
 
+def _is_emission_method(services: dict, service, method: str) -> bool:
+    """Whether `service.method` is declared `emission` in the service table:
+    a compensation through a service is journalled only then, as py's
+    `_ServiceProxy` wraps only the service's `emission` methods."""
+    spec = (((services or {}).get(service) or {}).get("methods") or {}).get(method)
+    return bool(isinstance(spec, dict) and spec.get("emission"))
+
+
+def _journal_service_comp(node, call: str) -> str:
+    """A compensation through a service `emission` method, journalled like an
+    `emit` (issue #2345); any other compensation is left as it is."""
+    desc = _service_emission(node) if _RECORD_MODE else None
+    if desc is None or not _is_emission_method(_SERVICES, desc[2], desc[1]):
+        return call
+    return _journal_service_emit(node, call)
+
+
 def _emit_v3_go_journalled_emission(name: str, params: str, arg_list: str,
                                      sig_ret: str) -> tuple[list[str], str]:
     """Issue #2345: in record mode an `extern emission fn` is journalled before
@@ -9047,12 +9065,33 @@ func (w *revlWAL) write(rec map[string]any) {
 	if err != nil {
 		panic("revl: write-ahead log record could not be encoded: " + err.Error())
 	}
+	start := int64(-1)
+	if info, err := w.f.Stat(); err == nil {
+		start = info.Size()
+	}
 	if _, err := w.f.Write(append(line, '\\n')); err != nil {
+		w.cut(start)
 		panic("revl: write-ahead log write failed: " + err.Error())
 	}
 	if err := w.f.Sync(); err != nil && !w.unsynced {
+		w.cut(start)
 		panic("revl: write-ahead log fsync failed: " + err.Error())
 	}
+}
+
+// cut drops a record whose write or fsync failed (issue #2345), as the py
+// WriteAheadLog and the wasm drain do, so recovery reads it as absent, then
+// fsyncs the cut so a power loss cannot bring it back. Best effort: the
+// caller panics either way, and on a target that refused the record's fsync
+// this fsync fails too.
+func (w *revlWAL) cut(start int64) {
+	if start < 0 {
+		return
+	}
+	if err := w.f.Truncate(start); err != nil {
+		return
+	}
+	_ = w.f.Sync()
 }
 
 // revlRecordTransactional appends the discharge-descriptor for one witnessed

@@ -604,3 +604,300 @@ def test_wasm_cut_is_fsynced(tmp_path, monkeypatch):
             run_wasm.write_wal_record(handle, run_wasm.wal_discharge([0]))
         monkeypatch.undo()
     assert calls == ["fsync", "ftruncate", "fsync"]
+
+
+# ---- slice 4: the compiled sinks cut a record they could not make durable ----
+#
+# A file-size limit (RLIMIT_FSIZE, with SIGXFSZ ignored) makes the second
+# record's write fail part way, a real fault that leaves a torn record behind
+# unless the sink cuts it. The cut is the same `cut` the sink runs after a
+# failed fsync.
+
+
+def _limited(limit: int):
+    def preexec():
+        import resource  # noqa: PLC0415
+        import signal  # noqa: PLC0415
+        signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+    return preexec
+
+
+def _go_build(tmp_path: Path, ir: dict) -> Path:
+    if GO is None:
+        pytest.skip("go toolchain not available")
+    module = tmp_path / "go_mod"
+    module.mkdir()
+    for name in ("go.mod", "go.sum"):
+        shutil.copy(GO_SCENARIOS / name, module / name)
+    pkg = module / "crashproof"
+    pkg.mkdir()
+    shutil.copy(GO_SCENARIOS / "crashproof" / "crash_proof_test.go", pkg)
+    (pkg / "gen_crash_recovery_test.go").write_text(
+        _load_emitter("go").emit(ir, "crashrecovery", record=True), encoding="utf-8")
+    out = module / "crashproof.test"
+    env = {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+    build = subprocess.run([GO, "test", "-c", "-o", str(out), "./crashproof/"],
+                           cwd=str(module), capture_output=True, text=True, env=env)
+    assert build.returncode == 0, build.stderr
+    return out
+
+
+def _java_build(tmp_path: Path, ir: dict) -> tuple[str, str]:
+    from revl.run_java import JAVAC_RELEASE, _working_jdk_bin, java_runtime_reason  # noqa: PLC0415
+    reason = java_runtime_reason()
+    if reason is not None:
+        pytest.skip(f"java runtime unavailable: {reason}")
+    jdk_bin = Path(_working_jdk_bin())
+    gen = tmp_path / "revl"
+    gen.mkdir()
+    (gen / "Components.java").write_text(
+        _load_emitter("java").emit(ir, "revl", record=True), encoding="utf-8")
+    out = tmp_path / "classes"
+    out.mkdir()
+    stubs = [str(p) for p in (JAVA_DIR / "stubs").rglob("*.java")]
+    compiled = subprocess.run(
+        [str(jdk_bin / "javac"), "--release", JAVAC_RELEASE, "-d", str(out), *stubs,
+         str(gen / "Components.java"),
+         str(JAVA_DIR / "scenarios" / "crashproof" / "CrashProducer.java")],
+        capture_output=True, text=True)
+    assert compiled.returncode == 0, compiled.stderr
+    return str(out), str(jdk_bin / "java")
+
+
+def _assert_torn_record_is_cut(run, tmp_path: Path) -> None:
+    """Run once unlimited to learn where the second record starts, then again
+    with the file limited to a few bytes past that point."""
+    full = tmp_path / "full.wal"
+    first = run(full, None)
+    assert first.returncode == 0, first.stdout + first.stderr
+    lines = full.read_bytes().split(b"\n")
+    assert len(lines) > 2, lines
+    header_end = len(lines[0]) + 1
+    wal = tmp_path / "torn.wal"
+    proc = run(wal, header_end + 7)
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "write-ahead log write failed" in proc.stdout + proc.stderr
+    # the torn second record was cut: the file is exactly the header
+    assert wal.read_bytes() == lines[0] + b"\n"
+
+
+def test_go_sink_cuts_a_record_it_could_not_write(tmp_path):
+    binary = _go_build(tmp_path, _crashproof_ir("go"))
+
+    def run(wal, limit):
+        return subprocess.run(
+            [str(binary), "-test.run", "TestGoCrashRecoveryProducer"],
+            env={"REVL_WAL": str(wal), "PATH": "/usr/bin:/bin"},
+            capture_output=True, text=True,
+            preexec_fn=_limited(limit) if limit else None)
+    _assert_torn_record_is_cut(run, tmp_path)
+
+
+def test_rust_sink_cuts_a_record_it_could_not_write(tmp_path_factory, tmp_path):
+    binary = _rust_crate(tmp_path_factory, "cut_rust", _crashproof_ir("rust"))
+
+    def run(wal, limit):
+        return subprocess.run(
+            [str(binary)],
+            env={"REVL_WAL": str(wal), "PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+            capture_output=True, text=True,
+            preexec_fn=_limited(limit) if limit else None)
+    _assert_torn_record_is_cut(run, tmp_path)
+
+
+def test_java_sink_cuts_a_record_it_could_not_write(tmp_path):
+    classpath, java = _java_build(tmp_path, _crashproof_ir("java"))
+
+    def run(wal, limit):
+        return subprocess.run(
+            [java, "-XX:-UsePerfData", "-Xshare:off", "-cp", classpath, "CrashProducer"],
+            env={"REVL_WAL": str(wal), "PATH": "/usr/bin:/bin"},
+            capture_output=True, text=True,
+            preexec_fn=_limited(limit) if limit else None)
+    _assert_torn_record_is_cut(run, tmp_path)
+
+
+# ---- slice 4: a compensation through a service emission method --------------
+
+
+def _ir_with_service_compensation(tier: str, compensate: str) -> dict:
+    """`emit log.write("hi") compensate log.<compensate>("hi")`: `retract` is
+    an `emission` method, `note` is not."""
+    ir = _ir_with_service_emission(tier)
+    ir["services"]["Log"]["methods"]["retract"] = {
+        "params": [{"name": "msg", "type": "Str"}], "returns": None, "emission": True}
+    ir["services"]["Log"]["methods"]["note"] = {
+        "params": [{"name": "msg", "type": "Str"}], "returns": None, "emission": False}
+    ir["components"][0]["body"][0]["compensate"] = {
+        "kind": "call", "target": {"kind": "req", "name": "log"}, "method": compensate,
+        "args": [{"kind": "lit", "value": "hi"}]}
+    return ir
+
+
+SERVICE_START = {
+    "go": 'revlJournalEmission("log", "{m}", "Log"',
+    "rust": 'RevlEmission::start("log", "{m}", Some("Log"))',
+    "java": 'revlRecordEmissionStart("log", "{m}", "Log")',
+}
+
+
+def _emit_tier(tier: str, ir: dict) -> str:
+    if tier == "go":
+        return _load_emitter("go").emit(ir, "crashrecovery", record=True)
+    if tier == "rust":
+        return _rust_source(ir)
+    return _load_emitter("java").emit(ir, "revl", record=True)
+
+
+@pytest.mark.parametrize("tier", ["go", "rust", "java"])
+def test_service_compensation_is_journalled_only_for_an_emission_method(tier):
+    src = _emit_tier(tier, _ir_with_service_compensation(tier, "retract"))
+    assert SERVICE_START[tier].format(m="retract") in src
+    src = _emit_tier(tier, _ir_with_service_compensation(tier, "note"))
+    assert SERVICE_START[tier].format(m="write") in src
+    assert SERVICE_START[tier].format(m="note") not in src
+
+
+def test_go_service_compensation_compiles(tmp_path):
+    ir = _ir_with_service_compensation("go", "retract")
+    assert SERVICE_START["go"].format(m="retract") in _emit_tier("go", ir)
+    if GO is None:
+        pytest.skip("go toolchain not available")
+    module = tmp_path / "comp_go"
+    module.mkdir()
+    for name in ("go.mod", "go.sum"):
+        shutil.copy(GO_SCENARIOS / name, module / name)
+    pkg = module / "crashproof"
+    pkg.mkdir()
+    (pkg / "gen_crash_recovery_test.go").write_text(_emit_tier("go", ir), encoding="utf-8")
+    env = {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+    build = subprocess.run([GO, "test", "-c", "-o", str(module / "x.test"), "./crashproof/"],
+                           cwd=str(module), capture_output=True, text=True, env=env)
+    assert build.returncode == 0, build.stderr
+
+
+def test_rust_service_compensation_compiles(tmp_path):
+    from revl.run_rust import rust_runtime_reason  # noqa: PLC0415
+    ir = _ir_with_service_compensation("rust", "retract")
+    src = _rust_source(ir)
+    assert SERVICE_START["rust"].format(m="retract") in src
+    reason = rust_runtime_reason()
+    if reason is not None:
+        pytest.skip(f"cordis-rs runtime not available: {reason}")
+    crate = tmp_path / "comp_rust"
+    (crate / "src").mkdir(parents=True)
+    shutil.copy(RUST_SCENARIO / "Cargo.toml", crate / "Cargo.toml")
+    shutil.copytree(RUST_SCENARIO / "src" / "bin", crate / "src" / "bin")
+    (crate / "src" / "lib.rs").write_text(src, encoding="utf-8")
+    target = Path(os.environ.get("CARGO_TARGET_DIR") or (crate / "target"))
+    build = subprocess.run(
+        ["cargo", "build", "--lib", "--manifest-path", str(crate / "Cargo.toml")],
+        capture_output=True, text=True, env={**os.environ, "CARGO_TARGET_DIR": str(target)})
+    assert build.returncode == 0, build.stderr
+
+
+def test_java_service_compensation_compiles(tmp_path):
+    from revl.run_java import JAVAC_RELEASE, _working_jdk_bin, java_runtime_reason  # noqa: PLC0415
+    ir = _ir_with_service_compensation("java", "retract")
+    src = _emit_tier("java", ir)
+    assert SERVICE_START["java"].format(m="retract") in src
+    reason = java_runtime_reason()
+    if reason is not None:
+        pytest.skip(f"java runtime unavailable: {reason}")
+    jdk_bin = Path(_working_jdk_bin())
+    gen = tmp_path / "revl"
+    gen.mkdir()
+    (gen / "Components.java").write_text(src, encoding="utf-8")
+    out = tmp_path / "classes"
+    out.mkdir()
+    stubs = [str(p) for p in (JAVA_DIR / "stubs").rglob("*.java")]
+    compiled = subprocess.run(
+        [str(jdk_bin / "javac"), "--release", JAVAC_RELEASE, "-d", str(out), *stubs,
+         str(gen / "Components.java")], capture_output=True, text=True)
+    assert compiled.returncode == 0, compiled.stderr
+
+
+# ---- slice 4: a wired provider, end to end on go ----------------------------
+
+E2E_SOURCE = """
+extern emission fn note(msg: Str) -> Unit = @go {
+\tprintln("NOTE-RAN " + msg)
+\treturn
+}
+
+service Log { emission fn write(msg: Str) }
+
+component Logger provides log: Log {
+  provide log {
+    fn write(msg) {
+      emit note(msg)
+    }
+  }
+}
+
+component Caller requires log: Log {
+  emit log.write("hi")
+}
+"""
+
+E2E_HARNESS = """package crashrecovery
+
+import (
+\tstdctx "context"
+\t"testing"
+
+\tstc "github.com/0xdenny218/stc-go"
+)
+
+func TestServiceEmissionEndToEnd(t *testing.T) {
+\troot := stc.New()
+\tif err := LoadLogger(root).Ready(stdctx.Background()); err != nil {
+\t\tt.Fatalf("boot Logger: %v", err)
+\t}
+\tif err := LoadCaller(root).Ready(stdctx.Background()); err != nil {
+\t\tt.Fatalf("boot Caller: %v", err)
+\t}
+}
+"""
+
+
+def test_go_service_emission_runs_journalled_end_to_end(tmp_path):
+    """A Caller emits through a Logger it requires; the provider's body
+    (itself an extern emission) runs, and the WAL holds the service crossing
+    and the nested extern crossing, each started and completed."""
+    from revl.compiler import compile_source  # noqa: PLC0415
+    ir = compile_source(E2E_SOURCE, "e2e.rvl")
+    src = _load_emitter("go").emit(ir, "crashrecovery", record=True)
+    assert 'revlJournalEmission("log", "write", "Log"' in src
+    if GO is None:
+        pytest.skip("go toolchain not available")
+    module = tmp_path / "e2e_go"
+    module.mkdir()
+    for name in ("go.mod", "go.sum"):
+        shutil.copy(GO_SCENARIOS / name, module / name)
+    pkg = module / "crashproof"
+    pkg.mkdir()
+    (pkg / "gen_crash_recovery_test.go").write_text(src, encoding="utf-8")
+    (pkg / "e2e_test.go").write_text(E2E_HARNESS, encoding="utf-8")
+    out = module / "e2e.test"
+    env = {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+    build = subprocess.run([GO, "test", "-c", "-o", str(out), "./crashproof/"],
+                           cwd=str(module), capture_output=True, text=True, env=env)
+    assert build.returncode == 0, build.stderr
+    wal = tmp_path / "e2e.wal"
+    proc = subprocess.run([str(out), "-test.run", "TestServiceEmissionEndToEnd", "-test.v"],
+                          env={"REVL_WAL": str(wal), "PATH": "/usr/bin:/bin"},
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "NOTE-RAN hi" in proc.stdout + proc.stderr
+    records = _records(wal)
+    starts = {r["label"]: r for r in records
+              if r.get("record") == "effect" and r.get("kind") == "emission"}
+    assert set(starts) == {"log.write", "note"}, records
+    assert starts["log.write"]["boundary"]["detail"]["service"] == "Log"
+    # the service crossing starts first, and its body's crossing nests inside
+    assert starts["log.write"]["seq"] < starts["note"]["seq"]
+    for start in starts.values():
+        assert {"record": "emission-complete", "seq": start["seq"]} in records
+    assert wal_core.unresolved_crossings(records) == []

@@ -64,7 +64,9 @@ def _crashproof_ir(tier: str) -> dict:
 
 def test_go_sink_checks_the_sync_error():
     src = _load_emitter("go").emit(_crashproof_ir("go"), "crashrecovery", record=True)
-    assert "_ = w.f.Sync()" not in src
+    # the record's own fsync; the best-effort fsync after a cut lives in `cut`
+    write = src[src.index("func (w *revlWAL) write("):]
+    assert "_ = w.f.Sync()" not in write[:write.index("\n}\n")]
     assert "if err := w.f.Sync(); err != nil && !w.unsynced {" in src
     assert 'panic("revl: write-ahead log fsync failed: " + err.Error())' in src
     assert '"REVL_WAL_ALLOW_UNSYNCED"' in src
@@ -73,7 +75,9 @@ def test_go_sink_checks_the_sync_error():
 
 def test_rust_sink_checks_the_sync_error():
     src = _load_emitter("rust").emit(_crashproof_ir("rust"), record=True)
-    assert "let _ = self.file.sync_all()" not in src
+    # the record's own fsync; the best-effort fsync after a cut lives in `cut`
+    write = src[src.index("fn write(&mut self"):]
+    assert "let _ = self.file.sync_all()" not in write[:write.index("\n    }\n")]
     assert "if let Err(e) = self.file.sync_all() {" in src
     assert 'panic!("revl: write-ahead log fsync failed: {e}");' in src
     assert '"REVL_WAL_ALLOW_UNSYNCED"' in src

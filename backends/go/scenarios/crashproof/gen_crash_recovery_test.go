@@ -783,12 +783,33 @@ func (w *revlWAL) write(rec map[string]any) {
 	if err != nil {
 		panic("revl: write-ahead log record could not be encoded: " + err.Error())
 	}
+	start := int64(-1)
+	if info, err := w.f.Stat(); err == nil {
+		start = info.Size()
+	}
 	if _, err := w.f.Write(append(line, '\n')); err != nil {
+		w.cut(start)
 		panic("revl: write-ahead log write failed: " + err.Error())
 	}
 	if err := w.f.Sync(); err != nil && !w.unsynced {
+		w.cut(start)
 		panic("revl: write-ahead log fsync failed: " + err.Error())
 	}
+}
+
+// cut drops a record whose write or fsync failed (issue #2345), as the py
+// WriteAheadLog and the wasm drain do, so recovery reads it as absent, then
+// fsyncs the cut so a power loss cannot bring it back. Best effort: the
+// caller panics either way, and on a target that refused the record's fsync
+// this fsync fails too.
+func (w *revlWAL) cut(start int64) {
+	if start < 0 {
+		return
+	}
+	if err := w.f.Truncate(start); err != nil {
+		return
+	}
+	_ = w.f.Sync()
 }
 
 // revlRecordTransactional appends the discharge-descriptor for one witnessed

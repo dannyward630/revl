@@ -3877,7 +3877,9 @@ def _service_emission(node, requires: dict):
 def _has_service_emits(node) -> bool:
     """Whether any `emit` in the components crosses through a service."""
     if isinstance(node, dict):
-        if node.get("step") == "emit" and _service_emission(node.get("expr"), {}):
+        if node.get("step") == "emit" and (
+                _service_emission(node.get("expr"), {})
+                or _service_emission(node.get("compensate"), {})):
             return True
         return any(_has_service_emits(v) for v in node.values())
     if isinstance(node, list):
@@ -3901,6 +3903,14 @@ def _journal_service_stmt(node, env, call: str) -> str:
             f"{_string(method)}, {svc}); try {{ {call}; }} catch (Throwable _revlT) "
             f"{{ revlRecordEmissionFailed(_revlEm, _revlT); throw _revlT; }} "
             f"revlRecordEmissionOutcome(_revlEm, \"emission-complete\"); }}")
+
+
+def _is_emission_method(services: dict, service, method: str) -> bool:
+    """Whether `service.method` is declared `emission` in the service table:
+    a compensation through a service is journalled only then, as py's
+    `_ServiceProxy` wraps only the service's `emission` methods."""
+    spec = (((services or {}).get(service) or {}).get("methods") or {}).get(method)
+    return bool(isinstance(spec, dict) and spec.get("emission"))
 
 
 def _has_emission_externs(externs: list) -> bool:
@@ -7667,19 +7677,44 @@ private static void revlWalWrite(String json) {
         return;
     }
     synchronized (revlWalLock) {
+        long start = -1;
+        try {
+            start = revlWalChannel.size();
+        } catch (java.io.IOException size) {
+            start = -1;
+        }
         try {
             revlWalOut.write((json + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
             revlWalOut.flush();
         } catch (java.io.IOException write) {
+            revlWalCut(start);
             throw new java.io.UncheckedIOException("revl: write-ahead log write failed", write);
         }
         try {
             revlWalChannel.force(true);
         } catch (java.io.IOException sync) {
             if (!revlWalUnsynced) {
+                revlWalCut(start);
                 throw new java.io.UncheckedIOException("revl: write-ahead log fsync failed", sync);
             }
         }
+    }
+}
+
+// revlWalCut drops a record whose write or fsync failed (issue #2345), as the
+// py WriteAheadLog and the wasm drain do, so recovery reads it as absent, then
+// fsyncs the cut so a power loss cannot bring it back. Best effort: the caller
+// throws either way, and on a target that refused the record's fsync this
+// fsync fails too.
+private static void revlWalCut(long start) {
+    if (start < 0) {
+        return;
+    }
+    try {
+        revlWalChannel.truncate(start);
+        revlWalChannel.force(true);
+    } catch (java.io.IOException cut) {
+        // the record stays, unsynced; the run still stops on the caller's throw
     }
 }
 
@@ -8287,6 +8322,15 @@ def _emit_compensation_track(
     ever violated (matching the honest-degrade spirit of the contract, not a
     reachable path)."""
     compensate_expr = _expr(compensate, v3_ctx, rename, env)
+    # issue #2345: a compensation through a service `emission` method is
+    # journalled like an `emit`; the lambda then takes a block body
+    desc = _service_emission(compensate, (getattr(env, "component", None) or {})
+                             .get("requires") or {})
+    if desc is not None and _is_emission_method(
+            getattr(env, "services", None) or {}, desc[2], desc[1]):
+        journalled = _journal_service_stmt(compensate, env, compensate_expr)
+        if journalled != f"{compensate_expr};":
+            compensate_expr = "{ " + journalled + " }"
     if frame_expr is None:  # pragma: no cover — _component_needs_frame forces frame_expr
         out.append(f"{pad}fx.track(Disposables.of(() -> {compensate_expr}));")
         return
