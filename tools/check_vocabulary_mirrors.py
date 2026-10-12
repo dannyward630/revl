@@ -325,7 +325,9 @@ def sites_in_source(source: str, module: str) -> list[Site]:
 # it parses, in order, compared whole rather than through a digest. Any edit,
 # addition, removal or rename under the roots is a miss, and the scan runs
 # again over the bytes just read. One entry per root; a hit returns a fresh
-# list, so a caller that changes its result cannot change the cache.
+# list, so a caller that changes its result cannot change the cache. The key
+# does not cover this module's own settings (`SCAN_ROOTS`, `MIN_TOKENS`,
+# `CLAIM_CUES`, `CLAIM_SLACK`): a caller that changes one clears both caches.
 _SCAN_CACHE: dict[str, tuple[tuple, tuple[Site, ...]]] = {}
 _CLAIM_CACHE: dict[str, tuple[tuple, tuple[Claim, ...]]] = {}
 
@@ -352,15 +354,15 @@ def scan_key(root: pathlib.Path = REPO_ROOT) -> tuple:
 
 def scan(root: pathlib.Path = REPO_ROOT) -> list[Site]:
     """Every vocabulary site under the scanned roots, in a stable order."""
-    files = _scanned_files(root)
-    cached = _SCAN_CACHE.get(str(root))
+    where, files = scan_key(root)
+    cached = _SCAN_CACHE.get(where)
     if cached is not None and cached[0] == files:
         return list(cached[1])
     found: list[Site] = []
     for rel, data in files:
         found.extend(sites_in_source(_text(data), rel))
     found.sort(key=lambda s: (s.module, s.name))
-    _SCAN_CACHE[str(root)] = (files, tuple(found))
+    _SCAN_CACHE[where] = (files, tuple(found))
     return found
 
 

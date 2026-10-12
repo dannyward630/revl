@@ -582,7 +582,11 @@ def _test_files(root: Path):
         return _list_test_files(root)
     hit = _TEST_FILES_CACHE.get(key)
     if hit is None:
-        hit = _TEST_FILES_CACHE[key] = tuple(_list_test_files(root))
+        hit = tuple(_list_test_files(root))
+        # Stored only when the names did not move under the glob, so a
+        # listing is never filed under a key it was not taken from.
+        if _test_listing_key(root) == key:
+            _TEST_FILES_CACHE[key] = hit
     return list(hit)
 
 
