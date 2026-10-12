@@ -1415,6 +1415,41 @@ def test_an_expression_bodied_fn_is_named_unsupported_not_malformed(compile_rvl,
     assert "not supported by the self-host" in got
     assert "expected {" not in got
 
+
+def test_a_malformed_fn_before_an_expression_bodied_one_keeps_the_plain_refusal(compile_rvl):
+    """The expression-fn message is given only when that fn is the one the
+    program grammar refuses: a malformed fn earlier in the module keeps the
+    plain refusal, at its own line."""
+    text = ("pub fn broken(x: Int) -> Int\n\n"
+            "pub fn twice(x: Int) -> Int = x * 2\n\n" + _LIB_STORE)
+    assert compile_rvl["ad_module_refusal"](text) == "line 1: expected { after fn signature"
+
+
+# A diamond (doc -> a, b -> c): `c.rvl` is read once, it is no cycle, and the
+# link carries every extern the way `compile_files` merges them.
+_DIAMOND = {
+    "doc.rvl": ('use "./a.rvl" { a_one }\nuse "./b.rvl" { b_one }\n\n'
+                "extern pure fn d_own(x: Int) -> Int = @py { return x }\n"),
+    "a.rvl": ('use "./c.rvl" { c_one }\n\n'
+              "pub extern pure fn a_one(x: Int) -> Int = @py { return x + 1 }\n"),
+    "b.rvl": ('use "./c.rvl" { c_one }\n\n'
+              "pub extern pure fn b_one(x: Int) -> Int = @py { return x + 2 }\n"),
+    "c.rvl": "pub extern pure fn c_one(x: Int) -> Int = @py { return x * 3 }\n",
+}
+
+
+def test_native_driver_compiles_a_diamond_import_like_the_reference(
+        compile_rvl, reference_emit, tmp_path):
+    """The positive control of the depth-first walk: a module two imports
+    reach is no cycle, and the document compiles as the reference compiles it."""
+    for name, text in _DIAMOND.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    want = reference_emit["py"](compile_files([str(doc)]))
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
+    assert got == want
+
+
 # Issue #2343: the whitespace the reference lexer skips between an `@backend`
 # name and its `{` is Python's `str.isspace`, newlines included in any order.
 _HOST_GAPS = {"space": " ", "form_feed": "\x0c", "vertical_tab": "\x0b",
@@ -1573,6 +1608,238 @@ def test_native_driver_links_the_truc_cli_as_the_reference_does(
     want = reference_emit[tier](compile_files([str(doc)]))
     got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
     assert got == want, got[:200]
+
+
+# Issue #2329: a document's call to an operation of a service it imports, the
+# module that declares the service, and what the native chain must give:
+# "T1", the reference checker's own message as a native gate refusal; "LINK", a
+# `REFUSED|LINK|` refusal that starts with the given text; "emit", the
+# reference's bytes. The reference checker types the call against the module's
+# declaration; the native gate used to read only the document.
+_IMPORTED_CALLS = {
+    # The issue's reproducer. The reference refuses a `Str` (and an `Int`) for
+    # the private alias `Id`, which is out of the document's scope. Natively the
+    # type link (issue #2308) refuses the module first, since the producer keeps
+    # no `types` entry for an alias, so the gate never types this call: these
+    # two pin that the alias stays refused by that link.
+    "private_alias_str": ("type Id = Int\npub service Store { fn put(id: Id) -> Str }\n",
+                          'store.put("x")', "LINK|type `Id`"),
+    "private_alias_int": ("type Id = Int\npub service Store { fn put(id: Id) -> Str }\n",
+                          "store.put(1)", "LINK|type `Id`"),
+    # The gap itself: built-in and carried parameter types the gate types.
+    "int_given_str": ("pub service Store { fn put(id: Int) -> Str }\n", 'store.put("x")',
+                      "T1"),
+    "list_given_wrong_items": ("pub service Store { fn put(xs: List[Int]) -> Str }\n",
+                               'store.put(["a"])', "T1"),
+    "record_given_int": ("pub type Row = { id: Int }\n"
+                         "pub service Store { fn put(r: Row) -> Str }\n", "store.put(1)",
+                         "T1"),
+    # A brace in a comment ahead of the declaration does not hide it: a scan
+    # that read the comment would stop at its `}` and refuse with LINK.
+    "after_comment_brace": ("// } service Store {\n"
+                            "pub service Store { fn put(id: Int) -> Str }\n",
+                            'store.put("x")', "T1"),
+    # Positive controls: the reference admits these, and the native output
+    # must stay its bytes.
+    "after_comment_brace_ok": ("// } service Store {\n"
+                               "pub service Store { fn put(id: Int) -> Str }\n",
+                               "store.put(1)", "emit"),
+    "int_given_int": ("pub service Store { fn put(id: Int) -> Str }\n", "store.put(1)",
+                      "emit"),
+    "list_given_list": ("pub service Store { fn put(xs: List[Int]) -> Str }\n",
+                        "store.put([1, 2])", "emit"),
+    "record_given_record": ("pub type Row = { id: Int }\n"
+                            "pub service Store { fn put(r: Row) -> Str }\n",
+                            "store.put({ id: 1 })", "emit"),
+}
+
+
+def _write_imported_call(tmp_path, case):
+    lib, call, _expect = _IMPORTED_CALLS[case]
+    (tmp_path / "lib.rvl").write_text(lib, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    doc.write_text('use "./lib.rvl" { Store }\n\n'
+                   + _STORE_COMPONENT.replace("store.put(%s)", call), encoding="utf-8")
+    return doc
+
+
+@pytest.mark.parametrize("case", sorted(_IMPORTED_CALLS))
+def test_native_driver_types_calls_to_an_imported_service(
+        compile_rvl, reference_emit, tmp_path, case):
+    """Issue #2329: where the reference refuses a call to an imported
+    service's operation, the native chain refuses too and never emits, with
+    the reference's own message where the native gate is what refuses. Where
+    the reference admits, the native output is its bytes."""
+    expect = _IMPORTED_CALLS[case][2]
+    doc = _write_imported_call(tmp_path, case)
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
+    if expect == "emit":
+        assert got == reference_emit["py"](compile_files([str(doc)])), got[:200]
+        return
+    with pytest.raises(RevlError) as refused:
+        compile_files([str(doc)])
+    if expect == "T1":
+        assert got == "REFUSED|T1|" + refused.value.message, got[:200]
+    else:
+        assert got.startswith("REFUSED|" + expect), got[:200]
+
+
+# Issue #2362: three call-site rules the native gate did not decide, in a
+# single document and through an imported service. Each case is (the module's
+# declarations, the provide method after `fn go()`, the outcome): "T1" is the
+# reference's own message as a native T1 refusal, "emit" the reference's bytes.
+_CALL_SITE_RULES = {
+    "arity_extra": ("pub service Store { fn put(id: Int) -> Str }\n",
+                    "= store.put(1, 2)", "T1"),
+    "arity_missing": ("pub service Store { fn put(id: Int) -> Str }\n",
+                      "= store.put()", "T1"),
+    "arity_in_let": ("pub service Store { fn put(id: Int) -> Str }\n",
+                     "{\n      let x = store.put(1, 2)\n      return x\n    }", "T1"),
+    "return_arrow": ("pub service Store { fn put(id: Int) -> Int }\n",
+                     "= store.put(1)", "T1"),
+    "return_block": ("pub service Store { fn put(id: Int) -> Int }\n",
+                     "{\n      return store.put(1)\n    }", "T1"),
+    "return_literal_arrow": ("pub service Store { fn put(id: Int) -> Int }\n",
+                             "= 1", "T1"),
+    "argument_in_return": ("pub service Store { fn put(id: Int) -> Str }\n",
+                           '{\n      return store.put("x")\n    }', "T1"),
+    "record_field_type": ("pub type Row = { id: Int }\n"
+                          "pub service Store { fn put(r: Row) -> Str }\n",
+                          '= store.put({ id: "x" })', "T1"),
+    "record_extra_field": ("pub type Row = { id: Int }\n"
+                           "pub service Store { fn put(r: Row) -> Str }\n",
+                           "= store.put({ id: 1, b: 2 })", "T1"),
+    # the requirement call is decided before the return's own check
+    "arity_under_compare": ("pub service Store { fn put(id: Int) -> Int }\n",
+                            "= store.put(1, 2) == 1", "T1"),
+    "argument_in_list": ("pub service Store { fn put(id: Int) -> Str }\n",
+                         '{\n      return [store.put("x")]\n    }', "T1"),
+    # a nested record field is held field-wise too
+    "record_nested_field": ("pub type In = { a: Int }\npub type Row = { i: In }\n"
+                            "pub service Store { fn put(r: Row) -> Str }\n",
+                            '= store.put({ i: { a: "x" } })', "T1"),
+    "record_list_field": ("pub type In = { a: Int }\npub type Row = { i: List[In] }\n"
+                          "pub service Store { fn put(r: Row) -> Str }\n",
+                          '= store.put({ i: [{ a: "x" }] })', "T1"),
+    "record_opt_field": ("pub type In = { a: Int }\npub type Row = { i: Opt[In] }\n"
+                         "pub service Store { fn put(r: Row) -> Str }\n",
+                         '= store.put({ i: { a: "x" } })', "T1"),
+    "record_opt_param": ("pub type Row = { id: Int }\n"
+                         "pub service Store { fn put(r: Opt[Row]) -> Str }\n",
+                         '= store.put({ id: "x" })', "T1"),
+    "record_list_param": ("pub type Row = { id: Int }\n"
+                          "pub service Store { fn put(r: List[Row]) -> Str }\n",
+                          '= store.put([{ id: "x" }])', "T1"),
+    "record_deep_field": ("pub type R0 = { a: R1 }\npub type R1 = { a: R2 }\npub type R2 = { a: R3 }\npub type R3 = { a: R4 }\npub type R4 = { a: R5 }\npub type R5 = { a: Int }\npub service Store { fn put(r: R0) -> Str }\n",
+                          '= store.put({ a: { a: { a: { a: { a: { a: "x" } } } } } })', "T1"),
+    # a requirement call inside a larger expression is typed at its return
+    "nested_call_operand": ("pub service Store { fn put(id: Int) -> Int }\n",
+                            "= store.put(1) + 1", "T1"),
+    "nested_call_in_let": ("pub service Store { fn put(id: Int) -> Int }\n",
+                           "{\n      let n = store.put(1) + 1\n      return n\n    }", "T1"),
+    # a record literal for a variant or a generic record parameter
+    "variant_param": ("pub type Shape = Dot | Box(Int)\n"
+                      "pub service Store { fn put(r: Shape) -> Str }\n",
+                      "= store.put({ a: 1 })", "T1"),
+    "generic_param": ("pub type Cell[T] = { v: T }\n"
+                      "pub service Store { fn put(r: Cell[Int]) -> Str }\n",
+                      '= store.put({ v: "x" })', "T1"),
+    # Positive controls: admitted by the reference, and by the native gate.
+    "record_nested_matches": ("pub type In = { a: Int }\npub type Row = { i: In }\n"
+                              "pub service Store { fn put(r: Row) -> Str }\n",
+                              "= store.put({ i: { a: 1 } })", "emit"),
+    "record_container_matches": ("pub type In = { a: Int }\n"
+                                 "pub type Row = { i: Opt[In], j: List[In] }\n"
+                                 "pub service Store { fn put(r: Row) -> Str }\n",
+                                 "= store.put({ i: { a: 1 }, j: [{ a: 2 }] })", "emit"),
+    "record_opt_param_matches": ("pub type Row = { id: Int }\n"
+                                 "pub service Store { fn put(r: Opt[Row]) -> Str }\n",
+                                 "= store.put({ id: 1 })", "emit"),
+    "record_list_param_matches": ("pub type Row = { id: Int }\n"
+                                  "pub service Store { fn put(r: List[Row]) -> Str }\n",
+                                  "= store.put([{ id: 1 }])", "emit"),
+    "nested_call_int_return": ("pub service Store { fn put(id: Int) -> Int }\n",
+                               "= (store.put(1) + 1).to_str()", "emit"),
+    "nested_call_matches": ("pub service Store { fn put(id: Int) -> Str }\n",
+                            '= store.put(1).concat("x")', "emit"),
+    "return_matches": ("pub service Store { fn put(id: Int) -> Str }\n",
+                       "= store.put(1)", "emit"),
+    "record_matches": ("pub type Row = { id: Int, n: Str }\n"
+                       "pub service Store { fn put(r: Row) -> Str }\n",
+                       '= store.put({ n: "a", id: 1 })', "emit"),
+}
+
+# In one document the native gate does not type a record literal against a
+# generic record parameter; it refuses by name instead of emitting.
+_CALL_SITE_NAMED_IN_ONE_DOC = {
+    "generic_param": "TYPE|`store.put` argument `r`",
+    "record_deep_field": "TYPE|`store.put` argument `r`: a record literal nested",
+}
+
+# Through an import these refuse by name where the reference has an answer:
+# a literal deeper than the shape expansion, and an operator whose operand
+# type only the imported declaration gives (the IR would lack `operands`).
+_CALL_SITE_NAMED_THROUGH_IMPORT = {
+    "record_deep_field": "REFUSED|TYPE|`store.put` argument `r`: a record literal nested",
+    "nested_call_int_return": "REFUSED|LINK|an operator on an imported service call",
+}
+
+_CALL_SITE_COMPONENT = (
+    "service Front { fn go() -> Str }\n\n"
+    "component App requires store: Store provides front: Front {\n"
+    "  provide front {\n"
+    "    fn go() %s\n"
+    "  }\n"
+    "}\n")
+
+
+def _reference_message(compile_one):
+    try:
+        compile_one()
+    except RevlError as e:
+        return e.message
+    return ""
+
+
+@pytest.mark.parametrize("case", sorted(_CALL_SITE_RULES))
+def test_native_gate_decides_the_call_site_rules_in_one_document(
+        admit, compile_rvl, reference_emit, case):
+    """Issue #2362, single document: the service declared in the same text."""
+    decls, body, expect = _CALL_SITE_RULES[case]
+    src = decls + "\n" + _CALL_SITE_COMPONENT % body
+    want = _reference_message(lambda: compile_source(src, "doc.rvl"))
+    if expect == "emit":
+        assert want == ""
+        assert admit(src) == ""
+        got = compile_rvl["compile_to"](src, "py")
+        assert got == reference_emit["py"](compile_source(src, "doc.rvl")), got[:200]
+    elif case in _CALL_SITE_NAMED_IN_ONE_DOC:
+        assert want != ""
+        assert admit(src).startswith(_CALL_SITE_NAMED_IN_ONE_DOC[case])
+    else:
+        assert want != ""
+        assert admit(src) == "T1|" + want
+
+
+@pytest.mark.parametrize("case", sorted(_CALL_SITE_RULES))
+def test_native_driver_decides_the_call_site_rules_through_an_import(
+        compile_rvl, reference_emit, tmp_path, case):
+    """Issue #2362, imported: the service and the record it carries live in
+    the module the document imports the service from."""
+    decls, body, expect = _CALL_SITE_RULES[case]
+    (tmp_path / "lib.rvl").write_text(decls, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    doc.write_text('use "./lib.rvl" { Store }\n\n' + _CALL_SITE_COMPONENT % body,
+                   encoding="utf-8")
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
+    if case in _CALL_SITE_NAMED_THROUGH_IMPORT:
+        assert got.startswith(_CALL_SITE_NAMED_THROUGH_IMPORT[case]), got[:200]
+    elif expect == "emit":
+        assert got == reference_emit["py"](compile_files([str(doc)])), got[:200]
+    else:
+        want = _reference_message(lambda: compile_files([str(doc)]))
+        assert want != ""
+        assert got == "REFUSED|T1|" + want, got[:200]
 
 
 def test_six_way_composition_co_compiles(compile_rvl):
@@ -2005,3 +2272,205 @@ def test_native_tiers_rename_a_predeclared_arrow_parameter_in_the_signature(
         assert got == want, "native %s diverged from the reference" % tier
         line = next(l for l in got.splitlines() if declared in l)
         assert line.count(renamed) >= 2, (tier, line)
+
+
+# Issue #2359: every examples/rejections/ program the reference refuses at
+# PARSE time. The self-host front end read statement bodies and type
+# declarations too loosely to see the statement-level rules, so the native
+# gate admitted 11 of them and the used-module admission 15, and emitted code.
+def _reference_parse_refusals():
+    from revl.parser import parse_text
+    out = []
+    for path in sorted((ROOT / "examples" / "rejections").glob("*.rvl")):
+        text = path.read_text(encoding="utf-8")
+        try:
+            parse_text(text, str(path))
+        except RevlError:
+            out.append(path.name)
+    return out
+
+
+_PARSE_REFUSED = _reference_parse_refusals()
+
+
+def test_the_rejection_corpus_has_parse_refusals():
+    assert len(_PARSE_REFUSED) >= 30
+
+
+@pytest.mark.parametrize("name", _PARSE_REFUSED)
+def test_the_native_gate_refuses_every_reference_parse_refusal(compile_rvl, name):
+    """The document path (`admit_src`, through `compile_to`) and the used-module
+    path (`ad_module_refusal`) both refuse what the reference parser refuses."""
+    text = (ROOT / "examples" / "rejections" / name).read_text(encoding="utf-8")
+    got = compile_rvl["compile_to"](text, "py")
+    assert got.startswith("REFUSED|"), got[:120]
+    assert compile_rvl["ad_module_refusal"](text) != ""
+
+
+def _reference_parseable_examples():
+    from revl.parser import parse_text
+    out = []
+    corpora = [ROOT / "examples", ROOT / "stdlib"] + sorted(
+        (ROOT / "tests" / "fixtures").glob("emit_*_corpus"))
+    for base in corpora:
+        for path in sorted(base.rglob("*.rvl")):
+            text = path.read_text(encoding="utf-8")
+            try:
+                parse_text(text, str(path))
+            except RevlError:
+                continue
+            out.append((path.relative_to(ROOT).as_posix(), text))
+    return out
+
+
+def test_the_statement_parse_rules_refuse_nothing_the_reference_parses(compile_rvl):
+    """Issue #2359, the positive control: the statement-level parse rules
+    refuse no program of examples/, stdlib/ or the emit corpora that the
+    reference parses (optional calls `a?.m()`, `??` inside parentheses,
+    classified externs, lifecycle words used as names, and so on)."""
+    docs = _reference_parseable_examples()
+    assert len(docs) > 300
+    lex = compile_rvl["lex_src"]
+    scan = compile_rvl["stmt_parse_scan"]
+    refused = {rel: v["v"] for rel, text in docs if (v := scan(lex(text)))["v"] != ""}
+    assert refused == {}
+
+
+@pytest.mark.parametrize("text", [
+    'extern pure fn h() -> Int = @py { return 1 }\nuse "./m.rvl" { abort }\n',
+    'extern pure fn h() -> Int = @py { return 1 }\nuse "./m.rvl" { load call }\n',
+    "fn f(a: Opt[Int], w: Bool, z: Bool) -> Bool {\n  let v = a ?? 0\n  return w && z\n}\n",
+])
+def test_the_statement_parse_rules_read_only_statement_bodies(compile_rvl, text):
+    """An extern's `fn` opens no body, so the braces of a `use` list after it
+    are no fn body, and a `??` does not reach across a statement boundary."""
+    from revl.parser import parse_text
+    parse_text(text, "x.rvl")
+    assert compile_rvl["parse_refusal"](text) == ""
+
+
+# Issue #2359, the statement grammar. Outside examples/rejections/, model
+# attempts under bench/results/ that the reference refuses at parse time: a
+# bare call in a provide method body, a stray `undo` line, a `provides key {`
+# header with no service, an untyped `fn` parameter, a plain `let` in an
+# activation body, a `'` string in a host body. Before the statement grammar
+# was read, the document path admitted 9 of them and the used-module path 21.
+def _bench_parse_refusals():
+    from revl.parser import parse_text
+    out = []
+    for path in sorted((ROOT / "bench" / "results").rglob("*.rvl")):
+        text = path.read_text(encoding="utf-8")
+        try:
+            parse_text(text, str(path))
+        except RevlError:
+            out.append(path.relative_to(ROOT).as_posix())
+    return out
+
+
+_BENCH_PARSE_REFUSED = _bench_parse_refusals()
+
+
+def test_the_bench_results_have_parse_refusals():
+    assert len(_BENCH_PARSE_REFUSED) >= 30
+
+
+@pytest.mark.parametrize("rel", _BENCH_PARSE_REFUSED)
+def test_the_native_gate_refuses_every_bench_parse_refusal(compile_rvl, rel):
+    text = (ROOT / rel).read_text(encoding="utf-8")
+    got = compile_rvl["compile_to"](text, "py")
+    assert got.startswith("REFUSED|"), got[:120]
+    assert compile_rvl["ad_module_refusal"](text) != ""
+
+
+_SVC = "service K { fn put(k: Str) -> Int }\n"
+
+_STMT_GRAMMAR_REFUSED = {
+    "bare_call_in_method": _SVC + (
+        "component C requires kv: K provides s: K {\n"
+        "  provide s {\n    fn put(k: Str) -> Int {\n      kv.put(k)\n"
+        "      return 1\n    }\n  }\n}\n"),
+    "stray_undo_line": _SVC + (
+        "component C requires kv: K provides s: K {\n"
+        "  provide s {\n    fn put(k: Str) -> Int {\n"
+        "      let r = kv.put(k)\n      undo kv.put(k)\n      return r\n"
+        "    }\n  }\n}\n"),
+    "header_provision_without_service": _SVC + (
+        "component C requires kv: K provides s {\n"
+        "  provide s { fn put(k: Str) -> Int = 1 }\n}\n"),
+    "untyped_fn_parameter": "fn add(a, b) -> Int { return 1 }\n",
+    "plain_let_in_activation_body": _SVC + (
+        "component C requires kv: K {\n  let n = 1\n}\n"),
+    "statement_after_method_equals": _SVC + (
+        "component C requires kv: K provides s: K {\n"
+        "  provide s { fn put(k: Str) -> Int = let n = 1 }\n}\n"),
+    "statement_in_record_undo": _SVC + (
+        "component C requires kv: K {\n"
+        "  let h = effect { kv.put(\"a\") }\n    undo { emit kv.put(\"b\") }\n}\n"),
+    "match_statement_in_method": _SVC + (
+        "component C requires kv: K provides s: K {\n"
+        "  provide s {\n    fn put(k: Str) -> Int {\n"
+        "      match k { _ => 1 }\n      return 1\n    }\n  }\n}\n"),
+    "semicolon_only_if_guard": _SVC + (
+        "component C requires kv: K {\n  if (true) { ; }\n}\n"),
+    "empty_else_guard": _SVC + (
+        "component C requires kv: K {\n  if (true) { fail \"no\" } else { }\n}\n"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_STMT_GRAMMAR_REFUSED))
+def test_the_statement_grammar_refuses_what_the_reference_refuses(compile_rvl, name):
+    from revl.parser import parse_text
+    text = _STMT_GRAMMAR_REFUSED[name]
+    with pytest.raises(RevlError):
+        parse_text(text, "x.rvl")
+    assert compile_rvl["parse_refusal"](text) != ""
+    assert compile_rvl["compile_to"](text, "py").startswith("REFUSED|")
+
+
+_STMT_GRAMMAR_READ = {
+    "if_and_match_tails": _SVC + (
+        "component C requires kv: K provides s: K {\n"
+        "  provide s {\n    fn put(k: Str) -> Int {\n"
+        "      let o = Some(1)\n"
+        "      let x = match o { Some(v) => { let z = v + 1; z }, None => 0 }\n"
+        "      if (x > 1) { return x }\n"
+        "      return if (x > 0) { 1 } else { 2 }\n    }\n  }\n}\n"),
+    "method_loops_and_assignment": _SVC + (
+        "component C requires kv: K provides s: K {\n"
+        "  provide s {\n    fn put(k: Str) -> Int {\n      var n = 0\n"
+        "      while (n < 3) { n += 1\n if (n == 2) { break } }\n"
+        "      for (c of [1, 2]) { n = n + c }\n      return n\n"
+        "    }\n  }\n}\n"),
+    "activation_steps": _SVC + (
+        "component C requires kv: K provides s: K {\n"
+        "  isolate kv in realm(\"r\")\n"
+        "  let h = effect kv.put(\"a\") undo kv.put(\"b\")\n"
+        "  emit kv.put(\"c\")\n  if (true) { fail \"no\" }\n"
+        "  provide s { fn put(k) = 1 }\n}\n"),
+    "defaulted_parameters": "fn f(a: Int, b: Int = 2) -> Int { return a + b }\n",
+    "extern_parameters": "extern pure fn g(a: Int) -> Int = @py { return a }\n",
+}
+
+
+@pytest.mark.parametrize("name", sorted(_STMT_GRAMMAR_READ))
+def test_the_statement_grammar_refuses_nothing_the_reference_reads(compile_rvl, name):
+    from revl.parser import parse_text
+    text = _STMT_GRAMMAR_READ[name]
+    parse_text(text, "x.rvl")
+    scan = compile_rvl["stmt_parse_scan"](compile_rvl["lex_src"](text))
+    assert scan["v"] == ""
+    assert compile_rvl["rl_lex_refusal"](text) == ""
+
+
+def test_a_host_body_the_self_host_lexer_closes_elsewhere_is_refused(compile_rvl):
+    """`'` is a string in a ts host body, so `/'/g` opens one the reference
+    lexer reads to the end of the text, while the self-host lexer, which skips
+    only `"` strings, closed the body at its brace and admitted the module."""
+    from revl.parser import parse_text
+    text = ("extern pure fn q(s: Str) -> Str\n"
+            "  = @ts { return s.replace(/'/g, \"x\") }\n"
+            "  = @py { return s }\n")
+    with pytest.raises(RevlError):
+        parse_text(text, "x.rvl")
+    assert compile_rvl["ad_module_refusal"](text) != ""
+    assert compile_rvl["compile_to"](text, "py").startswith("REFUSED|")
