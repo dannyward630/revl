@@ -163,6 +163,9 @@ describe('#2313: a scan stays linear whatever else the loop body reads', () => {
   // factor of two of headroom. Each size is timed over enough repetitions to
   // pass 20 ms, and the MINIMUM of five trials is used: load on a shared box
   // only ever adds time, so the minimum is the least disturbed sample.
+  // These are not duplicates of the count cases above: an ASCII string
+  // materialises no array at all, so its count is 0 whether the scan is linear
+  // or not, and only the clock can see a quadratic BMP-only scan.
   function growth(run: (n: number) => () => void, n: number): number {
     const small = run(n)
     const large = run(4 * n)
