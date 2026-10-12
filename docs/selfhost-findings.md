@@ -1043,7 +1043,7 @@ Both modern fixtures are byte-identical across the provider-class shape
 ctors, `_config_default_lit`/`_zero_java_value`), and the `apply` effect-scope /
 `ctx.get` / A8 self-revert try-catch. A host-`Map` `let-effect` component
 (`demo/components/user_cache.rvl`) routes to the loud
-`<<DEFER-component-nonsimple:UserCache>>` marker instead of mis-emitting — the
+`<<UNSUPPORTED-component-nonsimple:UserCache>>` marker instead of mis-emitting — the
 `_emit_host_stubs` `HashMap<String,V>` per-site inference stays slice 4+.
 
 ---

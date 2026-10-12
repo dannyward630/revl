@@ -287,7 +287,7 @@ def test_fn_type_param_refused(emitted, reference):
     lowers (in the frontend) to a `list_*` free function with a function-value
     parameter, and a declared function type is not representable on this tier.
     The reference RAISES EmitError; a pure self-host emitter fn cannot `fail`, so
-    it refuses within the subset with a loud `<<DEFER-fn-type>>` marker instead of
+    it refuses within the subset with a loud `<<UNSUPPORTED-fn-type>>` marker instead of
     silently emitting a mis-typed signature. Both refuse the same construct, so
     tests/fixtures/emit_*_corpus/transforms.rvl stays OUT of the byte-identity
     CORPUS above (the reference would raise there) and is checked only here."""
@@ -295,12 +295,12 @@ def test_fn_type_param_refused(emitted, reference):
     with pytest.raises(reference.EmitError, match="function type"):
         reference.emit(ir)
     got = emitted["emit_wasm_src"](ir)
-    assert "<<DEFER-fn-type>>" in got
+    assert "<<UNSUPPORTED-fn-type>>" in got
 
 
 @pytest.mark.parametrize("source, reference_token, port_token", [
     pytest.param("fn f(x: Opt[Int]) -> Int { return x ?? 0 }",
-                 "i64.load", "<<DEFER-coalesce>>", id="tagged-coalesce"),
+                 "i64.load", "<<UNSUPPORTED-coalesce>>", id="tagged-coalesce"),
     pytest.param("fn f(x: Result[Int, Str]) -> Int { return match x { Ok(v) => v, Err(e) => 0 } }",
                  "i64.load", "<<UNSUPPORTED-EXPR:match>>", id="tagged-match"),
     pytest.param('fn f(s: Str) -> Int { return s.indexOf("x") }',
