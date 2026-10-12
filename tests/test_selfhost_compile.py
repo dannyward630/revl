@@ -46,6 +46,7 @@ a stage.
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1140,6 +1141,316 @@ def test_native_driver_refuses_what_it_cannot_link(compile_rvl, tmp_path, case):
     got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
     assert got.startswith("REFUSED|LINK|"), got[:120]
     assert why in got
+
+
+_STORE_DOC = ('use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT)
+
+# Issue #2332: case -> (the reference's parse error, files). The reference loads
+# and parses every used module, at any depth, before it links anything, so each
+# document below is a parse error there. The native link used to read only what
+# it carries out of `lib.rvl` and emitted code for every one of them.
+_MODULE_DOES_NOT_PARSE = {
+    "comma_between_operations": ("expected fn, found ','", {
+        "doc.rvl": _STORE_DOC % "1",
+        "lib.rvl": "pub service Store { fn put(x: Int) -> Str, fn get() -> Int }\n",
+    }),
+    "where_after_a_record_type": ("expected a top-level declaration, found 'where'", {
+        "doc.rvl": _STORE_DOC % "1",
+        "lib.rvl": (
+            'pub type St = { s: Str } where s != ""\n'
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+    }),
+    "a_line_that_is_no_declaration": ("expected a top-level declaration, found 'this'", {
+        "doc.rvl": _STORE_DOC % "1",
+        "lib.rvl": "pub service Store { fn put(x: Int) -> Str }\nthis is not revl\n",
+    }),
+    "block_comment_before_a_private_alias": ("expected a top-level declaration, found '/'", {
+        "doc.rvl": _STORE_DOC % "[]",
+        "lib.rvl": (
+            "/* c */ type Id = Int\n"
+            "pub type Row = { id: Id }\n"
+            "pub service Store {\n  fn put(xs: List[Row]) -> Str\n}\n"),
+    }),
+    "block_comment_before_a_public_type": ("expected a top-level declaration, found '/'", {
+        "doc.rvl": _STORE_DOC % "[]",
+        "lib.rvl": (
+            "/* c */ pub type Row = { id: Int }\n"
+            "pub service Store {\n  fn put(xs: List[Row]) -> Str\n}\n"),
+    }),
+    # One `use` further down: the reference parses the module `lib.rvl` uses
+    # too, though nothing of it is carried.
+    "a_module_two_uses_away": ("expected a top-level declaration, found 'this'", {
+        "doc.rvl": _STORE_DOC % "1",
+        "lib.rvl": (
+            'use "./inner.rvl" { Tool }\n\n'
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+        "inner.rvl": "pub service Tool { fn run() -> Int }\nthis is not revl\n",
+    }),
+}
+
+
+@pytest.mark.parametrize("tier", ("py", "go", "java", "rust"))
+@pytest.mark.parametrize("case", sorted(_MODULE_DOES_NOT_PARSE))
+def test_native_driver_refuses_a_used_module_that_does_not_parse(
+        compile_rvl, tmp_path, case, tier):
+    """Issue #2332: a used module the reference does not parse makes the native
+    driver refuse with `REFUSED|BAD|<module>: ...` before it links anything, so
+    a document the reference rejects is never turned into emitted code."""
+    message, files = _MODULE_DOES_NOT_PARSE[case]
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    with pytest.raises(RevlError, match=message):
+        compile_files([str(doc)])
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
+    assert got.startswith("REFUSED|BAD|"), got[:120]
+    assert ".rvl: " in got, got[:200]
+
+
+def _modules_the_reference_parses():
+    from revl.parser import parse_text
+    out = []
+    for path in sorted((ROOT / "stdlib").glob("*.rvl")) + sorted(
+            (ROOT / "src" / "revl" / "truc" / "components").glob("*.rvl")):
+        text = path.read_text(encoding="utf-8")
+        parse_text(text, str(path))
+        out.append((path.relative_to(ROOT).as_posix(), text))
+    return out
+
+
+def test_native_module_admission_reads_every_stdlib_and_truc_module(compile_rvl):
+    """Issue #2332, the positive control: the admission a used module now
+    passes reads every stdlib module and every truc component (multi-line
+    import lists, variants spread over lines, aliases, function types)
+    without a refusal, so the check does not refuse what the reference
+    parses on the modules documents actually import."""
+    modules = _modules_the_reference_parses()
+    assert len(modules) > 20
+    refused = {name: why for name, text in modules
+               if (why := compile_rvl["ad_module_refusal"](text)) != ""}
+    assert refused == {}
+
+
+# Issue #2363: case -> (the reference's refusal, files). Each document is
+# refused by `compile_files`, and the native driver used to emit code for it.
+# `doc.rvl` is written into `sub/`, so `use "./lib.rvl"` names a module that
+# sits only in the PARENT directory: the reference resolves a `use` relative to
+# the importer and then on its search path, never up through the importer's
+# ancestors.
+_IMPORT_REFUSED = {
+    "module_only_in_the_parent_directory": ("cannot find imported module `./lib.rvl`", {
+        "sub/doc.rvl": _STORE_DOC % "1",
+        "lib.rvl": "pub service Store { fn put(x: Int) -> Str }\n",
+    }),
+    "a_name_the_module_does_not_declare": ("`Nope` is not a public declaration in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, Nope }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": "pub service Store { fn put(x: Int) -> Str }\n",
+    }),
+    "a_private_fn": ("`helper` is module-private in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, helper }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "fn helper() -> Int { return 1 }\n\n"
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+    }),
+    "a_private_type": ("`Row` is module-private in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, Row }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "type Row = { id: Int }\n\n"
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+    }),
+    "a_private_extern": ("`raw` is module-private in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, raw }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "extern pure fn raw(x: Int) -> Int = @py { return x }\n\n"
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+    }),
+    "a_component": ("`Impl` is not a public declaration in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, Impl }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "pub service Store { fn put(x: Int) -> Str }\n\n"
+            "component Impl provides store: Store {\n"
+            "  provide store {\n"
+            '    fn put(x: Int) = "a"\n'
+            "  }\n"
+            "}\n"),
+    }),
+    # The colour marker sits between `fn` and the extern's name (item 388), so
+    # the private `helper` after it is still private.
+    "a_private_fn_after_a_colour_polymorphic_extern": ("`helper` is module-private in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, send, helper }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "pub extern emission fn|async send(x: Str) -> Str = @py { return x }\n\n"
+            "fn helper() -> Int { return 1 }\n\n"
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+    }),
+    "an_event": ("`Placed` is module-private in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, Placed }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "event Placed(key: id) { id: Str }\n\n"
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+    }),
+    # One `use` further down: the reference checks the names `lib.rvl` imports
+    # too, though nothing of `inner.rvl` is carried.
+    "a_private_fn_two_uses_away": ("`hidden` is module-private in", {
+        "sub/doc.rvl": _STORE_DOC % "1",
+        "sub/lib.rvl": (
+            'use "./inner.rvl" { hidden }\n\n'
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+        "sub/inner.rvl": "fn hidden() -> Int { return 1 }\n",
+    }),
+}
+
+
+_LIB_STORE = "pub service Store { fn put(x: Int) -> Str }\n"
+
+# Review of #2358: case -> (the reference's error, the self-host's, files). The
+# reference loader refuses a `use` that resolves to nothing and an import
+# cycle before it links anything; the native walk used to skip both and emit.
+_MODULE_WALK_REFUSALS = {
+    "missing_module_at_the_root": ("cannot find imported module", {
+        "doc.rvl": 'use "./nope.rvl" { Gone }\n' + _STORE_DOC % "1",
+        "lib.rvl": _LIB_STORE,
+    }),
+    "missing_module_nested": ("cannot find imported module", {
+        "doc.rvl": _STORE_DOC % "1",
+        "lib.rvl": 'use "./nope.rvl" { Gone }\n\n' + _LIB_STORE,
+    }),
+    "direct_import_cycle": ("import cycle", {
+        "doc.rvl": _STORE_DOC % "1",
+        "lib.rvl": 'use "./lib.rvl" { Store }\n\n' + _LIB_STORE,
+    }),
+    "indirect_import_cycle": ("import cycle", {
+        "doc.rvl": _STORE_DOC % "1",
+        "lib.rvl": 'use "./inner.rvl" { Tool }\n\n' + _LIB_STORE,
+        "inner.rvl": ('use "./lib.rvl" { Store }\n\n'
+                      "pub service Tool { fn run() -> Int }\n"),
+    }),
+}
+
+
+@pytest.mark.parametrize("tier", ("py", "go", "java", "rust"))
+@pytest.mark.parametrize("case", sorted(_IMPORT_REFUSED))
+def test_native_driver_refuses_an_import_the_reference_refuses(
+        compile_rvl, tmp_path, monkeypatch, case, tier):
+    """Issue #2363: a `use` target the reference does not find, or an imported
+    name the module does not export, makes the native driver refuse with
+    `REFUSED|BAD|<importer>: line N: <the reference's message>` instead of
+    emitting code for a document the reference rejects."""
+    monkeypatch.delenv("REVL_IMPORT_PATH", raising=False)
+    message, files = _IMPORT_REFUSED[case]
+    for name, text in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    doc = tmp_path / "sub" / "doc.rvl"
+    with pytest.raises(RevlError, match=re.escape(message)):
+        compile_files([str(doc)])
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
+    assert got.startswith("REFUSED|BAD|"), got[:160]
+    assert message in got, got[:300]
+
+
+@pytest.mark.parametrize("tier", ("py", "rust"))
+def test_native_driver_resolves_a_use_on_the_import_path(
+        compile_rvl, reference_emit, tmp_path, monkeypatch, tier):
+    """Issue #2363, the positive control: a module that is not beside the
+    importer resolves through `REVL_IMPORT_PATH` exactly as the reference
+    resolves it, and the native output is the reference's bytes."""
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "store.rvl").write_text(
+        "pub service Store { fn put(x: Int) -> Str }\n", encoding="utf-8")
+    (tmp_path / "app").mkdir()
+    doc = tmp_path / "app" / "doc.rvl"
+    doc.write_text('use "store.rvl" { Store }\n\n' + _STORE_COMPONENT % "1",
+                   encoding="utf-8")
+    monkeypatch.setenv("REVL_IMPORT_PATH", str(tmp_path / "lib"))
+    want = reference_emit[tier](compile_files([str(doc)]))
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
+    assert got == want
+
+
+def test_native_import_check_passes_every_stdlib_and_truc_module(compile_rvl):
+    """Issue #2363, the positive control: every `use` of every stdlib module
+    and truc component resolves and names only what its module exports, so the
+    check does not refuse an import the reference accepts."""
+    modules = _modules_the_reference_parses()
+    refused = {name: why for name, text in modules
+               if (why := compile_rvl["ad_imports_refusal"](text, str(ROOT / name))) != ""}
+    assert refused == {}
+
+
+@pytest.mark.parametrize("case", sorted(_MODULE_WALK_REFUSALS))
+def test_native_driver_refuses_a_missing_module_and_an_import_cycle(
+        compile_rvl, tmp_path, case):
+    """A `use` that resolves to nothing, at the document or in a used module,
+    and an import cycle, direct or through another module, refuse with the
+    reference loader's reason instead of emitting code."""
+    message, files = _MODULE_WALK_REFUSALS[case]
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    with pytest.raises(RevlError, match=message):
+        compile_files([str(doc)])
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
+    assert got.startswith("REFUSED|BAD|"), got[:160]
+    assert message in got, got[:200]
+
+
+def test_a_used_module_refusal_names_its_line(compile_rvl):
+    """A program-grammar refusal of a used module says which line it is about."""
+    text = "pub service Store { fn put(x: Int) -> Str }\nthis is not revl\n"
+    assert compile_rvl["ad_module_refusal"](text).startswith("line 2: ")
+
+
+def test_an_expression_bodied_fn_is_named_unsupported_not_malformed(compile_rvl, tmp_path):
+    """`fn f(x: Int) -> Int = x` is valid revl, so a used module that declares
+    one is refused as unsupported by the self-host, not as a user error."""
+    (tmp_path / "doc.rvl").write_text(_STORE_DOC % "1", encoding="utf-8")
+    (tmp_path / "lib.rvl").write_text(
+        "pub fn twice(x: Int) -> Int = x * 2\n\n" + _LIB_STORE, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    compile_files([str(doc)])
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
+    assert got.startswith("REFUSED|BAD|"), got[:160]
+    assert "line 1: an expression-bodied fn" in got, got[:200]
+    assert "not supported by the self-host" in got
+    assert "expected {" not in got
+
+# Issue #2343: the whitespace the reference lexer skips between an `@backend`
+# name and its `{` is Python's `str.isspace`, newlines included in any order.
+_HOST_GAPS = {"space": " ", "form_feed": "\x0c", "vertical_tab": "\x0b",
+              "file_separator": "\x1c", "nbsp": " ", "newline_then_space": "\n "}
+
+
+@pytest.mark.parametrize("gap", sorted(_HOST_GAPS))
+def test_native_compile_reads_any_isspace_gap_before_a_host_body(
+        compile_to, reference_emit, gap):
+    """Issue #2343, single file: `@py<gap>{ ... }` is a host body for the
+    reference whatever `str.isspace` character the gap holds, and the native
+    compile is the reference's, byte for byte."""
+    src = "extern pure fn f() -> Int = @py" + _HOST_GAPS[gap] + "{ return 1 }\n"
+    assert compile_to(src, "py") == reference_emit["py"](compile_source(src))
+
+
+@pytest.mark.parametrize("tier", ("py", "go"))
+@pytest.mark.parametrize("gap", sorted(_HOST_GAPS))
+def test_native_link_reads_any_isspace_gap_before_a_host_body(
+        compile_rvl, reference_emit, tmp_path, gap, tier):
+    """Issue #2343, across a `use`: when the gap after `@py` was not read as
+    whitespace, the backtick in the host comment opened a revl template that
+    ran to the one on the `//` line and hid `Row`, so the native link emitted
+    ir_version 1 without the type the reference carries."""
+    (tmp_path / "doc.rvl").write_text(_STORE_DOC % "[]", encoding="utf-8")
+    (tmp_path / "lib.rvl").write_text(
+        "pub extern pure fn e(x: Int) -> Int = @py" + _HOST_GAPS[gap]
+        + "{\n    return x  # `\n}\n"
+        "pub type Row = { id: Int }\n"
+        "// `\n"
+        "pub service Store { fn put(xs: List[Row]) -> Str }\n", encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    reference_ir = compile_files([str(doc)])
+    assert "Row" in reference_ir["types"]
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
+    assert got == reference_emit[tier](reference_ir), got[:200]
 
 
 # case -> (tiers, files). The tiers are those whose native emitter covers the

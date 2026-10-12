@@ -150,6 +150,18 @@
 
 ["function", "issue-2009-host-map-journal-arm-no-go-corpus-document", "_node_writes_host_map", 13, 13]
 
+["reason", "issue-2345-record-mode-emission-journal", "Issue #2345: record-mode emission journalling. In `--record` the go, rust and java sinks wrap each `extern emission fn` and each `emit` or `compensate` through a service `emission` method so its start record is durable before the body runs. These helpers run only under `emit(ir, record=True)`; the byte-agreement oracle drives the default `emit(ir)`, and the self-host port carries no WAL sink, so no corpus document reaches them. Pinned by tests/test_wal_emission_start_record_2345.py. Plus, issue #2345: the record-mode statements that journal an emission (an `extern emission fn` wrapper, a service emission or compensation site, or the WAL sink they need), which run only under `emit(ir, record=True)`; the oracle drives the default `emit(ir)` and the self-host port carries no WAL sink."]
+
+["function", "issue-2345-record-mode-emission-journal", "_emit_v3_go_journalled_emission", 11, 11]
+
+["function", "issue-2345-record-mode-emission-journal", "_is_emission_method", 2, 2]
+
+["function", "issue-2345-record-mode-emission-journal", "_journal_service_comp", 1, 1]
+
+["function", "issue-2345-record-mode-emission-journal", "_journal_service_emit", 3, 3]
+
+["function", "issue-2345-record-mode-emission-journal", "_service_emission", 15, 15]
+
 ["reason", "issue-721-issue-1321-component-is-observable-decides", "issue #721 / issue #1321: `_component_is_observable` decides whether a document that declares a top-level `fn`/`type`/`extern`/plain `test` beside a component takes the pure typed-core path (which routes PAST the component) or `_emit_v3_combined` (which renders both). A corpus document cannot reach it: an emit_go_corpus document declares no component, and one that did would take the combined path, which selfhost/emit_go.rvl has none of, so it would flip the byte-agreement oracle RED rather than cover the line. `_refuse_pure_path_component_drop` is gone from this bucket because issue #1321 removed it: the refusal PR #1317 added is unreachable once the combined path carries the document. The predicate is pinned by tests/test_548_control_flow_in_provide_methods.py::test_go_carries_a_component_the_pure_path_would_drop and by tests/test_selfhost_emit_go.py::test_an_observable_component_on_the_pure_path_is_named_by_the_port, with both boundaries (the live path still carries the same component, and a component with nothing to drop is still routed past silently) pinned beside them."]
 
 ["function", "issue-721-issue-1321-component-is-observable-decides", "_component_is_observable", 4, 4]
@@ -254,11 +266,11 @@
 
 ["function", "placement-interop-bridge-entry-point-emits-wire-codecs", "emit_placement", 3, 3]
 
-["reason", "refusals-and-fallbacks-of-the-pure-typed-core", "Refusals and fallbacks of the pure typed-core path that the frontend never reaches, left after issue #106 ported the rest of the path: the empty-document refusal (`_emit_v3_go`), the missing-`@go`-body refusal (`_emit_v3_go_externs`), the unknown-step refusal (`_go_v3_stmt`), an optional-chaining receiver that is not an Opt (`_go_v3_optchain`), the unknown-builtin refusal and the `to_str` row for an Int32 receiver, which the checker rejects (`_go_v3_builtin`), a `lookup` on a receiver that is not a Map and an unknown method (`_v3_builtin_ret_type`), a variant case given the wrong payload arity, an argument to `None`, an unknown constructor, and an `Ok`/`Err` with neither an expected type nor an argument (`_go_v3_construct`), and a named type the document does not declare (`_go_v3_type`). Each is rejected by the parser or the checker before the emitter runs."]
+["reason", "refusals-and-fallbacks-of-the-pure-typed-core", "Refusals and fallbacks of the pure typed-core path that the frontend never reaches, left after issue #106 ported the rest of the path: the empty-document refusal (`_emit_v3_go`), the missing-`@go`-body refusal (`_emit_v3_go_externs`), the unknown-step refusal (`_go_v3_stmt`), an optional-chaining receiver that is not an Opt (`_go_v3_optchain`), the unknown-builtin refusal and the `to_str` row for an Int32 receiver, which the checker rejects (`_go_v3_builtin`), a `lookup` on a receiver that is not a Map and an unknown method (`_v3_builtin_ret_type`), a variant case given the wrong payload arity, an argument to `None`, an unknown constructor, and an `Ok`/`Err` with neither an expected type nor an argument (`_go_v3_construct`), and a named type the document does not declare (`_go_v3_type`). Each is rejected by the parser or the checker before the emitter runs. Plus, issue #2345: the record-mode statements that journal an emission (an `extern emission fn` wrapper, a service emission or compensation site, or the WAL sink they need), which run only under `emit(ir, record=True)`; the oracle drives the default `emit(ir)` and the self-host port carries no WAL sink."]
 
 ["function", "refusals-and-fallbacks-of-the-pure-typed-core", "_emit_v3_go", 1, 1]
 
-["function", "refusals-and-fallbacks-of-the-pure-typed-core", "_emit_v3_go_externs", 1, 1]
+["function", "refusals-and-fallbacks-of-the-pure-typed-core", "_emit_v3_go_externs", 4, 4]
 
 ["function", "refusals-and-fallbacks-of-the-pure-typed-core", "_go_v3_builtin", 2, 2]
 

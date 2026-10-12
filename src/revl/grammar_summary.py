@@ -39,6 +39,8 @@ service T { fn m(a: Str) -> Int }
 extern pure fn conn_close(c: Conn) = @py { return None }
 extern acquire fn conn_open(url: Str) -> Conn undo conn_close(result) = @py { return 1 }
 
+// a capability declares the dimensions a token may bind (path, discrete, ceiling)
+capability net.send(account: discrete)
 // a secret is a name bound to a capability; the value is never in source
 secret api_key for net.send
 extern emission[net.send] fn post(m: Str) -> Int = @py { return len(api_key) }
@@ -73,6 +75,9 @@ Rules that reject code: mutation needs `undo` or `emit` (G4); reads must be
 declared (G1); no cycles or duplicate providers (G2/G3); teardown cannot
 register effects (G5); expressions are pure (G6); `null` has no type —
 absence is Opt[T]; declared types are checked at every boundary.
+`grant` is not a program declaration: a composition writes it to name the
+keys a row may reach. Its forms, and every other declaration, are in
+`revl grammar --prompt`.
 """
 
 PROMPT_GRAMMAR = """\

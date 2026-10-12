@@ -667,13 +667,12 @@ pub fn issue_admission(source: &str) -> Admission {
 /// layer and therefore withheld here. And no component it declares may take the
 /// name of one the wire NAMES: a same-name component is a REPLACEMENT, whose
 /// handoff and unmet-consumer reasoning belongs to the fold and to item 53's
-/// relation. A running component the wire names nowhere carries no provision and
-/// no requirement row, so replacing it hands off no state and strands no
-/// consumer. Names are compared folded (letter case and underscores dropped).
-/// Caveat: a candidate whose name folds onto a running component the wire names
-/// nowhere is refused by the reference but still certified here, because the
-/// wire does not carry that component. That false admission is open as a
-/// follow-up.
+/// relation. A running component named only by a presence row (its bare name,
+/// issue #2289) carries no provision, requirement or state, so replacing it
+/// under the same name hands off no state and strands no consumer and is still
+/// certified. Names are compared folded (letter case and underscores dropped),
+/// and the wire names every running component, so a candidate whose name folds
+/// onto any of them under another spelling is withheld.
 ///
 /// In exchange the manifest is what makes an AMBIENT requirement admissible at
 /// all: the item-186 wire's SERVICE BLOCK is a `!services` header followed by

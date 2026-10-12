@@ -86,7 +86,10 @@
 // Ground truth is the reference; on the covered surface any divergence is a defect
 // in a stage.
 
-use "./lower.rvl" { admit_src, admit_ambient, lower_to_ir, lower_to_ir_refs }
+// One line: the self-host program grammar reads a `use` by its first line.
+use "./lower.rvl" { admit_src, admit_ambient, lower_to_ir, lower_to_ir_refs, parse_prog, foreign_scan }
+use "./lexer.rvl" { Token, lex_src }
+use "./parser.rvl" { type_at, is_record_key }
 use "./emit_py.rvl" { emit_py_src }
 use "./emit_rust.rvl" { emit_rust_src }
 use "./emit_ts.rvl" { emit_ts_src }
@@ -176,29 +179,36 @@ fn emit_ir(ir: Any, tier: Str) -> Str {
 
 // The FIRST host crossing of this driver: find, then read, the module a `use`
 // names. `base` is the importing document's path ("" when the caller had none),
-// `target` the literal `use` target. Resolution follows the reference loader: the
-// target as written, relative to the importing document's directory, then the
-// same relative path walked up through the document's ancestors, which is how
-// `cli.rvl`'s sibling imports and the canary's `stdlib/json.rvl` both resolve.
-// The answer is the module's ABSOLUTE path (the reference loader's module key,
-// `os.path.abspath`, so two spellings of one module are one module and the
-// closure below sorts exactly as `compile_files` does), or "" when nothing is
-// there, so an unresolvable import is skipped rather than fatal.
+// `target` the literal `use` target. Resolution follows the reference loader
+// (`compiler.py::resolve_use`): the target relative to the importing document's
+// directory, then each search-path entry in order, `REVL_IMPORT_PATH` and then
+// the parent of the toolchain's `stdlib/`, which is how `cli.rvl`'s sibling
+// imports and a fixture's `stdlib/json.rvl` resolve. The first candidate that
+// exists wins. Issue #2363: nothing walks up through the document's ancestors,
+// since the reference never does and a module found that way is one it refuses
+// as "cannot find imported module". The answer is the module's ABSOLUTE path
+// (the reference loader's module key, `os.path.abspath`, so two spellings of
+// one module are one module and the closure below sorts exactly as
+// `compile_files` does), or "" when nothing is there. `ad_used_modules_refusal`
+// refuses such a `use` by the reference's message before anything is linked.
 extern pure fn module_path(base: Str, target: Str) -> Str = @py {
     import os
     if base == "" or target == "":
         return ""
-    cur = os.path.dirname(base)
-    for _ in range(0, 12):
-        cand = os.path.join(cur, target) if cur else target
-        if os.path.isfile(cand):
+    roots = [os.path.dirname(os.path.abspath(base))]
+    for entry in os.environ.get("REVL_IMPORT_PATH", "").split(os.pathsep):
+        entry = entry.strip()
+        if entry:
+            roots.append(entry)
+    try:
+        from revl._paths import stdlib_root
+        roots.append(str(stdlib_root().parent))
+    except ImportError:
+        pass
+    for root in roots:
+        cand = os.path.join(root, target)
+        if os.path.exists(cand):
             return os.path.abspath(cand)
-        if not cur:
-            break
-        parent = os.path.dirname(cur)
-        if parent == cur:
-            break
-        cur = parent
     return ""
 }
 
@@ -299,14 +309,19 @@ fn ul_find(s: Str, sub: Str, start: Int) -> Int {
 
 // `revl` string literals carry no `\n` escape (a `"\n"` is backslash + `n`, the
 // lexer's no-escape semantics), so whitespace is recognised by code point and
-// the newline comes from `stdlib/str.rvl`'s `str_newline()`.
+// the newline comes from `stdlib/str.rvl`'s `str_newline()`. The set is
+// Python's `str.isspace`, which is what the reference lexer skips between
+// tokens and between an `@backend` name and its `{` (issue #2343): VT, FF,
+// 0x1c-0x1f, NEL, NBSP and the Unicode spaces, beyond space, tab, LF and CR.
 fn ul_is_ws(c: Str) -> Bool {
   if (c == "") { return false }
   let k = c.charCodeAt(0)
-  if (k == 32) { return true }
-  if (k == 9) { return true }
-  if (k == 10) { return true }
-  return k == 13
+  if ((k == 32) || ((k >= 9) && (k <= 13))) { return true }
+  if ((k >= 28) && (k <= 31)) { return true }
+  if ((k == 133) || (k == 160) || (k == 5760)) { return true }
+  if ((k >= 8192) && (k <= 8202)) { return true }
+  if ((k == 8232) || (k == 8233) || (k == 8239)) { return true }
+  return (k == 8287) || (k == 12288)
 }
 
 fn ul_trim(s: Str) -> Str {
@@ -740,7 +755,7 @@ fn ul_dquote_end(s: Str, at: Int) -> Int {
 }
 
 // The index just past the `@backend { … }` host body whose `@` is at `at`, read
-// as the self-host lexer's `scan_host_body` reads it: spaces, then newlines, may
+// as the self-host lexer's `scan_host_body` reads it: any `str.isspace` run may
 // sit before the `{`, and the body closes on brace depth with a `"` string
 // skipped. When no host body starts at `at`, the index just past the `@`. The
 // reference lexer also skips `'` strings, triple quotes, block comments and
@@ -752,8 +767,7 @@ fn ul_host_body_end(s: Str, at: Int) -> Int {
   if (!ul_is_word_start(s.slice(at + 1, at + 2))) { return at + 1 }
   var j = at + 2
   while ((j < n) && ul_is_word_char(s.slice(j, j + 1))) { j += 1 }
-  while ((j < n) && ul_is_ws(s.slice(j, j + 1)) && (s.slice(j, j + 1).charCodeAt(0) != 10)) { j += 1 }
-  while ((j < n) && (s.slice(j, j + 1).charCodeAt(0) == 10)) { j += 1 }
+  while ((j < n) && ul_is_ws(s.slice(j, j + 1))) { j += 1 }
   if (s.slice(j, j + 1) != "{") { return at + 1 }
   var depth = 1
   var k = j + 1
@@ -1646,6 +1660,526 @@ fn rf_ref_rows(source: Str, path: Str) -> List[Str] {
   return out
 }
 
+// ============================================================ module admission
+// Issue #2332. The reference loads every module a document `use`s, at any
+// depth, and PARSES it whole before anything is linked (`_Loader.load`,
+// src/revl/compiler.py), so a used module that does not parse makes the whole
+// compile a parse error. The native link above reads only what it carries out
+// of a module (a service row, the externs, the carried types) and so used to
+// link a module the reference refuses: a service whose operations are
+// separated by `,`, a line of text that is no declaration, or a `where` after
+// a record type all emitted code. So every used module is ADMITTED first, its
+// whole text read by the self-host front end, and the first one that does not
+// read refuses the document with `REFUSED|BAD|<module>: <message>`.
+//
+// What admission reads, all native:
+//   * the lexer's error tokens and the top-level program grammar
+//     (`lower.rvl::parse_prog`): a top-level token that heads no declaration,
+//     a malformed fn, extern, service or component;
+//   * the foreign-construct redirects (`lower.rvl::foreign_scan`);
+//   * every top-level `type` declaration against the reference grammar
+//     (`parser.py::type_decl`), which `parse_prog` steps over unread: a record
+//     body, a function type, an alias or `|`-separated cases, each followed by
+//     a top-level declaration or the end of the text.
+
+// The token at `i` of `ts`, or an `eof` token past either end.
+fn ad_tok(ts: List[Token], i: Int) -> Token {
+  if ((i >= 0) && (i < ts.length())) { return ts[i] }
+  return { kind: "eof", text: "", line: 0 }
+}
+
+fn ad_kind(ts: List[Token], i: Int, k: Str) -> Bool { return ad_tok(ts, i).kind == k }
+
+// Whether `ts[i]` is the keyword `w`.
+fn ad_kw(ts: List[Token], i: Int, w: Str) -> Bool {
+  let t = ad_tok(ts, i)
+  return (t.kind == "kw") && (t.text == w)
+}
+
+// Whether `ts[i]` is the identifier `w` (a contextual word).
+fn ad_word(ts: List[Token], i: Int, w: Str) -> Bool {
+  let t = ad_tok(ts, i)
+  return (t.kind == "ident") && (t.text == w)
+}
+
+// Whether a top-level declaration, or the end of the text, starts at `i`: the
+// heads the reference's program loop dispatches on, with the contextual ones
+// (`boot component`, `event`, a qualified test, `model role`/`model council`,
+// `secret NAME for`) read as `lower.rvl::at_top_decl` reads them.
+fn ad_decl_head(ts: List[Token], i: Int) -> Bool {
+  let t = ad_tok(ts, i)
+  if (t.kind == "eof") { return true }
+  if (t.kind == "kw") {
+    let w = t.text
+    if ((w == "type") || (w == "fn") || (w == "extern") || (w == "service")) { return true }
+    return (w == "component") || (w == "use") || (w == "test") || (w == "pub")
+  }
+  if (t.kind != "ident") { return false }
+  if (t.text == "boot") { return ad_kw(ts, i + 1, "component") }
+  if (t.text == "event") { return ad_kind(ts, i + 1, "ident") }
+  if ((t.text == "prop") || (t.text == "lifecycle") || (t.text == "fault")) {
+    return ad_kw(ts, i + 1, "test")
+  }
+  if (t.text == "model") { return ad_word(ts, i + 1, "role") || ad_word(ts, i + 1, "council") }
+  if (t.text == "secret") { return ad_kind(ts, i + 1, "ident") && ad_word(ts, i + 2, "for") }
+  return false
+}
+
+// The index just past the type spelling at `i`, or -1 when none parses there.
+fn ad_type_end(ts: List[Token], i: Int) -> Int {
+  let r = type_at(ts, i)
+  if (!r.ok || (r.i <= i)) { return 0 - 1 }
+  return r.i
+}
+
+// The index just past the record body whose `{` is at `i`, or -1: `key: Type`
+// rows, each optionally followed by `,`, up to `}` (`type_decl`'s record arm).
+fn ad_record_end(ts: List[Token], i: Int) -> Int {
+  var j = i + 1
+  while (!ad_kind(ts, j, "}")) {
+    if (!is_record_key(ad_tok(ts, j))) { return 0 - 1 }
+    if (!ad_kind(ts, j + 1, ":")) { return 0 - 1 }
+    j = ad_type_end(ts, j + 2)
+    if (j < 0) { return 0 - 1 }
+    if (ad_kind(ts, j, ",")) { j += 1 }
+  }
+  return j + 1
+}
+
+// The index just past the right-hand side of a `type` declaration at `i`, or
+// -1: a record body, a function type, an alias (`List[Row]`, `Row?`, not
+// followed by `|`), or one or more `Case` / `Case(Type)` joined by `|`.
+fn ad_type_rhs_end(ts: List[Token], i: Int) -> Int {
+  if (ad_kind(ts, i, "{")) { return ad_record_end(ts, i) }
+  if (ad_kind(ts, i, "(")) { return ad_type_end(ts, i) }
+  var j = i
+  var first = true
+  while (true) {
+    if (!ad_kind(ts, j, "ident")) { return 0 - 1 }
+    if (first && (ad_kind(ts, j + 1, "[") || ad_kind(ts, j + 1, "?"))) {
+      let e = ad_type_end(ts, j)
+      if ((e < 0) || ad_kind(ts, e, "|")) { return 0 - 1 }
+      return e
+    }
+    first = false
+    j += 1
+    if (ad_kind(ts, j, "(")) {
+      j = ad_type_end(ts, j + 1)
+      if ((j < 0) || !ad_kind(ts, j, ")")) { return 0 - 1 }
+      j += 1
+    }
+    if (!ad_kind(ts, j, "|")) { return j }
+    j += 1
+  }
+  return 0 - 1
+}
+
+// Why the `type` declaration whose keyword is at `i` does not read as the
+// reference reads it, or "".
+fn ad_type_refusal(ts: List[Token], i: Int) -> Str {
+  let name = ad_tok(ts, i + 1)
+  let at_line = "line ".concat(ad_tok(ts, i).line.to_str()).concat(": ")
+  if (name.kind != "ident") { return at_line.concat("a `type` declaration has no name") }
+  var j = i + 2
+  if (ad_kind(ts, j, "[")) {
+    j += 1
+    while (!ad_kind(ts, j, "]")) {
+      if (!ad_kind(ts, j, "ident")) {
+        return at_line.concat("the type parameters of `").concat(name.text).concat("` do not parse")
+      }
+      j += 1
+      if (ad_kind(ts, j, ",")) { j += 1 }
+    }
+    j += 1
+  }
+  if (!ad_kind(ts, j, "=")) {
+    return at_line.concat("expected `=` in the declaration of type `").concat(name.text).concat("`")
+  }
+  var end = ad_type_rhs_end(ts, j + 1)
+  if (end < 0) {
+    return at_line.concat("the declaration of type `").concat(name.text).concat("` does not parse")
+  }
+  // a run of `;` between top-level declarations is no declaration of its own
+  // (`_skip_semis` in the program loop, item 157)
+  while (ad_kind(ts, end, ";")) { end += 1 }
+  if (!ad_decl_head(ts, end)) {
+    let t = ad_tok(ts, end)
+    return "line ".concat(t.line.to_str()).concat(": expected a top-level declaration, found `")
+      .concat(t.text).concat("` after type `").concat(name.text).concat("`")
+  }
+  return ""
+}
+
+// The first lexer error token of `ts`, as a refusal message, or "".
+fn ad_lex_refusal(ts: List[Token]) -> Str {
+  var i = 0
+  while (i < ts.length()) {
+    if (ts[i].kind == "error") {
+      return "line ".concat(ts[i].line.to_str()).concat(": ").concat(ts[i].text)
+    }
+    i += 1
+  }
+  return ""
+}
+
+// The index just past the `use` declaration whose keyword is at `i`, or -1
+// when it does not read as `parser.py::use_decl` reads it: a non-empty path
+// string, then `{` names separated by optional `,` `}`, or `as` and a name.
+fn ad_use_end(ts: List[Token], i: Int) -> Int {
+  let path = ad_tok(ts, i + 1)
+  if ((path.kind != "string") || (path.text == "")) { return 0 - 1 }
+  if (ad_kw(ts, i + 2, "as")) {
+    if (!ad_kind(ts, i + 3, "ident")) { return 0 - 1 }
+    return i + 4
+  }
+  if (!ad_kind(ts, i + 2, "{")) { return 0 - 1 }
+  var j = i + 3
+  while (!ad_kind(ts, j, "}")) {
+    if (!ad_kind(ts, j, "ident")) { return 0 - 1 }
+    j += 1
+    if (ad_kind(ts, j, ",")) { j += 1 }
+  }
+  return j + 1
+}
+
+// `source` with the lines `lo` to `hi` (1-based, inclusive) emptied, so the
+// line numbers of everything else are kept.
+fn ad_blank_lines(source: Str, lo: Int, hi: Int) -> Str {
+  let lines = source.split(str_newline())
+  var out = ""
+  var k = 0
+  while (k < lines.length()) {
+    if (k > 0) { out = out.concat(str_newline()) }
+    if (((k + 1) < lo) || ((k + 1) > hi)) { out = out.concat(lines[k]) }
+    k += 1
+  }
+  return out
+}
+
+// Why the module text `source` does not read as the reference reads it, or "".
+// `parse_prog` steps over a `use` by its first line, so an import list written
+// over several lines is checked here (`ad_use_end`) and its lines emptied
+// before the program grammar reads the rest; one that shares a line with
+// another declaration is left to `parse_prog`, which then refuses it.
+fn ad_module_refusal(source: Str) -> Str {
+  let ts = lex_src(source)
+  let lexed = ad_lex_refusal(ts)
+  if (lexed != "") { return lexed }
+  let fgn = foreign_scan(source)
+  if (fgn != "") { return fgn }
+  var program = source
+  var depth = 0
+  var i = 0
+  while (i < ts.length()) {
+    let k = ts[i].kind
+    if ((k == "{") || (k == "[") || (k == "(")) { depth += 1 }
+    if ((k == "}") || (k == "]") || (k == ")")) { depth -= 1 }
+    if ((depth == 0) && (k == "kw") && (ts[i].text == "type")) {
+      let why = ad_type_refusal(ts, i)
+      if (why != "") { return why }
+    }
+    if ((depth == 0) && (k == "kw") && (ts[i].text == "use")) {
+      let end = ad_use_end(ts, i)
+      if (end < 0) {
+        return "line ".concat(ts[i].line.to_str()).concat(": a `use` declaration does not parse")
+      }
+      let lo = ts[i].line
+      let hi = ad_tok(ts, end - 1).line
+      let next_tok = ad_tok(ts, end)
+      if ((hi > lo) && (ad_tok(ts, i - 1).line < lo) && ((next_tok.kind == "eof") || (next_tok.line > hi))) {
+        program = ad_blank_lines(program, lo, hi)
+      }
+    }
+    i += 1
+  }
+  let bad = parse_prog(program).bad
+  if (bad == "") { return "" }
+  let lambda = ad_expr_fn_line(ts)
+  if ((bad == "expected { after fn signature") && (lambda > 0)) {
+    return "line ".concat(lambda.to_str())
+      .concat(": an expression-bodied fn (`fn f(...) = expr`) is not supported by the self-host compiler")
+  }
+  let line = ad_bad_line(ts, program, bad)
+  if (line <= 0) { return bad }
+  return "line ".concat(line.to_str()).concat(": ").concat(bad)
+}
+
+// The line of the first top-level `fn` whose body is `= expr` rather than a
+// block (valid revl the self-host program grammar does not read), or 0.
+fn ad_expr_fn_line(ts: List[Token]) -> Int {
+  var depth = 0
+  var i = 0
+  while (i < ts.length()) {
+    let k = ts[i].kind
+    if ((k == "{") || (k == "[") || (k == "(")) { depth += 1 }
+    if ((k == "}") || (k == "]") || (k == ")")) { depth -= 1 }
+    if ((depth == 0) && ad_kw(ts, i, "fn") && !ad_extern_head(ts, i)) {
+      var d = 0
+      var j = i + 1
+      while ((j < ts.length()) && !((d == 0) && (ad_kind(ts, j, "{") || ad_kind(ts, j, "=")))) {
+        let kj = ts[j].kind
+        if ((kj == "(") || (kj == "[")) { d += 1 }
+        if ((kj == ")") || (kj == "]")) { d -= 1 }
+        j += 1
+      }
+      if (ad_kind(ts, j, "=")) { return ts[i].line }
+    }
+    i += 1
+  }
+  return 0
+}
+
+// Whether the `fn` at `i` belongs to an `extern` declaration, whose `= @backend`
+// body is no expression body: an `extern` earlier on its line.
+fn ad_extern_head(ts: List[Token], i: Int) -> Bool {
+  var j = i - 1
+  while ((j >= 0) && (ts[j].line == ts[i].line)) {
+    if (ad_kw(ts, j, "extern")) { return true }
+    j -= 1
+  }
+  return false
+}
+
+// The line `parse_prog`'s refusal `bad` of `program` is about, or 0 when it
+// cannot be placed: the first line, among those a top-level token that is no
+// keyword starts, whose removal changes the refusal. `parse_prog` reports no
+// position, and only such a line can hold a token at the top level that heads
+// no declaration.
+fn ad_bad_line(ts: List[Token], program: Str, bad: Str) -> Int {
+  var depth = 0
+  var i = 0
+  while (i < ts.length()) {
+    let t = ts[i]
+    let starts = (i == 0) || (ts[i - 1].line < t.line)
+    if ((depth == 0) && starts && (t.kind != "kw") && (t.kind != "eof")) {
+      if (parse_prog(ad_blank_lines(program, t.line, t.line)).bad != bad) { return t.line }
+    }
+    if ((t.kind == "{") || (t.kind == "[") || (t.kind == "(")) { depth += 1 }
+    if ((t.kind == "}") || (t.kind == "]") || (t.kind == ")")) { depth -= 1 }
+    i += 1
+  }
+  return 0
+}
+
+// The `use` targets of `source` as written, in order: every `use` keyword at
+// bracket depth 0 followed by a string, with or without an import list.
+fn ad_use_targets(source: Str) -> List[Str] {
+  let ts = lex_src(source)
+  var out: List[Str] = []
+  var depth = 0
+  var i = 0
+  while (i < ts.length()) {
+    let k = ts[i].kind
+    if ((k == "{") || (k == "[") || (k == "(")) { depth += 1 }
+    if ((k == "}") || (k == "]") || (k == ")")) { depth -= 1 }
+    if ((depth == 0) && (k == "kw") && (ts[i].text == "use") && ad_kind(ts, i + 1, "string")) {
+      out = out.push(ts[i + 1].text)
+    }
+    i += 1
+  }
+  return out
+}
+
+// `REFUSED|BAD|<module>: <message>` for the first module, depth first from
+// the document `source` at `path` and each module once, whose text does not
+// read (`ad_module_refusal`), or "" when every used module reads. The document
+// itself was admitted by `admit_src` already. As in the reference loader
+// (`compiler.py::resolve_use` and `load`), a target that resolves to nothing
+// refuses with "cannot find imported module", and a module reached again
+// while it is still being read refuses with "import cycle".
+fn ad_used_modules_refusal(source: Str, path: Str) -> Str {
+  if (path == "") { return "" }
+  // the DFS path from the document, as module keys, with each frame's text
+  // and the index of its next `use` target; `done` holds every module read
+  var stack: List[Str] = [ad_module_key(path)]
+  var texts: List[Str] = [source]
+  var next: List[Int] = [0]
+  var done: List[Str] = []
+  while (stack.length() > 0) {
+    let top = stack.length() - 1
+    let targets = ad_use_targets(texts[top])
+    let t = next[top]
+    if (t >= targets.length()) {
+      done = done.push(stack[top])
+      stack = stack.slice(0, top)
+      texts = texts.slice(0, top)
+      next = next.slice(0, top)
+    } else {
+      next = next.slice(0, top).push(t + 1)
+      let dep = module_path(stack[top], targets[t])
+      if (dep == "") {
+        return "REFUSED|BAD|".concat(stack[top]).concat(": cannot find imported module `")
+          .concat(targets[t]).concat("`")
+      }
+      if (ul_has(stack, dep)) {
+        return "REFUSED|BAD|".concat(dep).concat(": import cycle: ")
+          .concat(stack.slice(ul_index(stack, dep), stack.length()).push(dep).join(" -> "))
+      }
+      if (!ul_has(done, dep)) {
+        let text = read_module_text(dep)
+        let why = ad_module_refusal(text)
+        if (why != "") { return "REFUSED|BAD|".concat(dep).concat(": ").concat(why) }
+        stack = stack.push(dep)
+        texts = texts.push(text)
+        next = next.push(0)
+      }
+    }
+  }
+  return ""
+}
+
+// Issue #2363: the top-level names of a module, split the way the reference
+// loader splits them. `open` holds every name another module may import: a
+// `pub fn`, a `pub type`, a `pub extern` and every `service`, `pub` or not
+// (`_LoadedModule.public_fns`, `public_types`, `public_externs`, `services`).
+// `fns`, `types` and `externs` hold the names declared without `pub`.
+type AdDecls = { open: List[Str], fns: List[Str], types: List[Str], externs: List[Str] }
+
+// `decls` with the name `name` of a declaration of kind `kind` ("fn", "type",
+// "extern" or "service") added, open when `public` says so.
+fn ad_add_decl(decls: AdDecls, kind: Str, name: Str, public: Bool) -> AdDecls {
+  if (public || (kind == "service")) {
+    return { open: decls.open.push(name), fns: decls.fns, types: decls.types, externs: decls.externs }
+  }
+  if (kind == "fn") {
+    return { open: decls.open, fns: decls.fns.push(name), types: decls.types, externs: decls.externs }
+  }
+  if (kind == "type") {
+    return { open: decls.open, fns: decls.fns, types: decls.types.push(name), externs: decls.externs }
+  }
+  return { open: decls.open, fns: decls.fns, types: decls.types, externs: decls.externs.push(name) }
+}
+
+// The declarations of the module tokens `ts`. Every head is read at bracket
+// depth 0: `pub` marks the next declaration public, `type NAME`, `service NAME`
+// and `fn NAME` name one, and `extern ... fn NAME` names an extern (its class,
+// `emission[...]` scope and the like sit between `extern` and `fn`). A `fn`
+// that is not followed by a name is a function type and names nothing, and
+// `fn|async NAME` is named past its colour marker. An `event NAME` names a
+// private type, as the reference parser records it. The
+// module parsed already (`ad_used_modules_refusal`), so no head is malformed.
+fn ad_decls(ts: List[Token]) -> AdDecls {
+  var out: AdDecls = { open: [], fns: [], types: [], externs: [] }
+  var depth = 0
+  var public = false
+  var in_extern = false
+  var i = 0
+  while (i < ts.length()) {
+    let k = ts[i].kind
+    if ((k == "{") || (k == "[") || (k == "(")) { depth += 1 }
+    if ((k == "}") || (k == "]") || (k == ")")) { depth -= 1 }
+    if ((depth == 0) && (k == "kw")) {
+      let w = ts[i].text
+      // `fn|async NAME`: the caller-decided colour marker sits between `fn`
+      // and the name (item 388).
+      let poly = (ad_tok(ts, i + 1).text == "|") && ad_kw(ts, i + 2, "async")
+      let at_name = poly ? i + 3 : i + 1
+      let named = ad_kind(ts, at_name, "ident")
+      if (w == "fn") {
+        if (named) {
+          out = ad_add_decl(out, in_extern ? "extern" : "fn", ts[at_name].text, public)
+        }
+        public = false
+        in_extern = false
+      }
+      if (((w == "type") || (w == "service")) && named) {
+        out = ad_add_decl(out, w, ts[i + 1].text, public)
+        public = false
+      }
+      if (w == "extern") { in_extern = true }
+      if (w == "pub") { public = true }
+      if ((w == "use") || (w == "component") || (w == "test")) {
+        public = false
+        in_extern = false
+      }
+    }
+    // `event NAME(...)` / `event NAME { ... }` declares a private type.
+    if ((depth == 0) && (k == "ident") && (ts[i].text == "event") && ad_kind(ts, i + 1, "ident")
+        && (ad_kind(ts, i + 2, "(") || ad_kind(ts, i + 2, "{"))) {
+      out = ad_add_decl(out, "type", ts[i + 1].text, false)
+    }
+    i += 1
+  }
+  return out
+}
+
+// The reference loader's verdict on importing `name` from the module whose
+// declarations are `decls` at `dep` (`compiler.py::_import_named`), or "".
+fn ad_name_refusal(decls: AdDecls, name: Str, dep: Str) -> Str {
+  if (ul_has(decls.open, name)) { return "" }
+  let place = "`".concat(dep).concat("`")
+  if (ul_has(decls.fns, name) || ul_has(decls.types, name) || ul_has(decls.externs, name)) {
+    return "`".concat(name).concat("` is module-private in ").concat(place).concat(" and cannot be imported (G1)")
+  }
+  return "`".concat(name).concat("` is not a public declaration in ").concat(place)
+}
+
+// Why one `use` of the module tokens `ts` at `path` does not import as the
+// reference imports it, or "": the `use` at token `i` names a target that
+// resolves nowhere, or lists a name its module does not export.
+fn ad_use_refusal(ts: List[Token], i: Int, path: Str) -> Str {
+  let target = ts[i + 1].text
+  let at = "line ".concat(ts[i].line.to_str()).concat(": ")
+  let dep = module_path(path, target)
+  if (dep == "") {
+    return at.concat("cannot find imported module `").concat(target).concat("`")
+  }
+  if (!ad_kind(ts, i + 2, "{")) { return "" }
+  let decls = ad_decls(lex_src(read_module_text(dep)))
+  var j = i + 3
+  while (ad_kind(ts, j, "ident")) {
+    let why = ad_name_refusal(decls, ts[j].text, dep)
+    if (why != "") { return at.concat(why) }
+    j += 1
+    if (ad_kind(ts, j, ",")) { j += 1 }
+  }
+  return ""
+}
+
+// `REFUSED|BAD|<module>: line N: <message>` for the first `use`, breadth first
+// from the document `source` at `path` and each module once, that the reference
+// loader refuses: a target it cannot find (issue #2363: relative to the
+// importer, then on the search path, `module_path`), or an imported name the
+// module does not export. "" when every `use` imports. The reference loads
+// depth first, so with two such faults in one document it may name the other
+// one; it refuses the document either way.
+fn ad_imports_refusal(source: Str, path: Str) -> Str {
+  if (path == "") { return "" }
+  var paths: List[Str] = [path]
+  var srcs: List[Str] = [source]
+  var q = 0
+  while (q < paths.length()) {
+    let ts = lex_src(srcs[q])
+    var depth = 0
+    var i = 0
+    while (i < ts.length()) {
+      let k = ts[i].kind
+      if ((k == "{") || (k == "[") || (k == "(")) { depth += 1 }
+      if ((k == "}") || (k == "]") || (k == ")")) { depth -= 1 }
+      if ((depth == 0) && ad_kw(ts, i, "use") && ad_kind(ts, i + 1, "string")) {
+        let why = ad_use_refusal(ts, i, paths[q])
+        if (why != "") { return "REFUSED|BAD|".concat(paths[q]).concat(": ").concat(why) }
+        let dep = module_path(paths[q], ts[i + 1].text)
+        if (!ul_has(paths, dep)) {
+          paths = paths.push(dep)
+          srcs = srcs.push(read_module_text(dep))
+        }
+      }
+      i += 1
+    }
+    q += 1
+  }
+  return ""
+}
+
+// The module key of the document at `path`: its absolute path when it is on
+// disk (the key `module_path` gives every module it resolves), else `path`.
+fn ad_module_key(path: Str) -> Str {
+  let segs = path.split("/")
+  let key = module_path(path, segs[segs.length() - 1])
+  return key == "" ? path : key
+}
+
 // The path-taking driver — the honest multi-file native compile. Identical to
 // `compile_to` except that `path` names the document on disk, so its `use`
 // declarations resolve and the imported service rows are spliced into the IR
@@ -1660,6 +2194,12 @@ pub fn compile_to_at(source: Str, tier: Str, path: Str) -> Str {
   if (!supported_tier(tier)) { return "UNKNOWN_TIER|".concat(tier) }
   let verdict = admit_src(source)
   if (verdict != "") { return "REFUSED|".concat(verdict) }
+  // Issue #2332: every used module reads whole, or nothing is linked.
+  let unread = ad_used_modules_refusal(source, path)
+  if (unread != "") { return unread }
+  // Issue #2363: every `use` resolves, and imports only what its module exports.
+  let unimported = ad_imports_refusal(source, path)
+  if (unimported != "") { return unimported }
   // FULLY NATIVE from here: native IR producer → use linking → parse → emitter.
   // Issue #2089: the producer also takes the document's host-ref WIRE, so an
   // extern's `refs` survive the native chain and the emitters can see them.

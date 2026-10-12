@@ -888,6 +888,44 @@ def _reject_running_component_name_folds(components: list, retained: list,
         )
 
 
+def _reject_running_service_name_folds(services: list, running: dict,
+                                       filename: str, source_of=None) -> None:
+    """Refuse an incoming service whose name agrees under `component_name_fold`
+    with a running service under a different spelling (issue #2334), naming
+    both. An admission never withdraws a running service: an incoming service
+    of the SAME name redeclares it, gated by the replacement relation, and every
+    other running service stays in the composition. So without this a hot-swap
+    leaves the composition holding `KVStore` and `Kvstore`, the pair a single
+    compile refuses. `source_of` gives the file a declaration came from."""
+    held: dict[str, str] = {}
+    for name in running:
+        if isinstance(name, str):
+            held.setdefault(component_name_fold(name), name)
+    for svc in services:
+        # an exact name is a redeclaration, even in a composition that already
+        # holds a second spelling of it
+        if svc.name in running:
+            continue
+        stays = held.get(component_name_fold(svc.name))
+        if stays is None:
+            continue
+        where = (source_of(svc) if source_of is not None else None) or filename
+        raise RevlError(
+            where, svc.line,
+            _fold_collision_message("service", svc.name,
+                                    f"running service `{stays}`",
+                                    "in the manifest"),
+            hint=f"the running composition declares `{stays}`, and an admission "
+                 f"does not withdraw a running service, so the composition "
+                 f"would hold two names this close, which breaks the tiers that "
+                 f"derive file and symbol names from a service name (the rust "
+                 f"dispatch fn, a java interface class file on a "
+                 f"case-insensitive file system). To change `{stays}`, "
+                 f"redeclare it under that exact name; otherwise rename "
+                 f"`{svc.name}`.",
+        )
+
+
 def compile_source(source: str, filename: str = "<string>",
                    manifest: dict | None = None,
                    replacing: tuple[str, ...] = (),
@@ -1510,6 +1548,9 @@ def compile_files(paths: list[str], manifest: dict | None = None,
                        source_of=lambda svc: seen_services.get(svc.name))
     _reject_component_name_folds(merged.components, merged.filename)
     if ambient is not None:
+        _reject_running_service_name_folds(
+            merged.services, ambient["services"], merged.filename,
+            source_of=lambda svc: seen_services.get(svc.name))
         _reject_running_component_name_folds(
             merged.components, ambient["components"], merged.filename)
     document = check_and_lower(
