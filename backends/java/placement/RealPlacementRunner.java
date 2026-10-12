@@ -287,10 +287,12 @@ public final class RealPlacementRunner {
             root.inject(deps, ctx -> {
                 serveCtx = ctx;
                 List<Disposable> domains = new ArrayList<>();
+                List<String> domainNames = new ArrayList<>();
                 for (Object comp : components) {
                     String cname = (String) comp;
                     try {
                         domains.add(loadPlugin(container, cname, config).apply(REALMS.track(ctx, cname)));
+                        domainNames.add(cname);
                         log("load", cname, "ACTIVE (reactive)");
                     } catch (Exception e) {
                         throw new RuntimeException(e);
@@ -304,7 +306,11 @@ public final class RealPlacementRunner {
                     REALMS.clear();
                     log("withdraw", "deactivated", "consumer unloaded reactively; inverses run");
                     for (int i = domains.size() - 1; i >= 0; i--) {
-                        try { domains.get(i).dispose(); } catch (Throwable ignored) {}
+                        try {
+                            domains.get(i).dispose();
+                        } catch (Throwable failure) {
+                            unconfirm(domainNames.get(i), failure);
+                        }
                     }
                 };
             });
@@ -365,6 +371,7 @@ public final class RealPlacementRunner {
 
         startEstopWatcher();
         mainLoop(events, bindings, endpoint, served, container);
+        if (!UNCONFIRMED.isEmpty()) haltTeardownIncomplete();
         System.out.println("[" + name + "] DOWN");
         System.out.flush();
         DOWN_PRINTED.countDown();
@@ -410,8 +417,10 @@ public final class RealPlacementRunner {
                 // REVL_WAL, stamp the WAL's discharge + terminal marker via the
                 // emitted sink so `revl recover` rolls this activation FORWARD
                 // (an abrupt death before this leaves no marker -> roll-back) —
-                // the real-cordis4j sibling of RunOnce.recordCleanUnload.
-                recordCleanUnload(container);
+                // the real-cordis4j sibling of RunOnce.recordCleanUnload. Not
+                // when a dispose was unconfirmed: that unwind is not a clean
+                // unload, and `run` refuses to say `DOWN` for it (issue #2339).
+                if (UNCONFIRMED.isEmpty()) recordCleanUnload(container);
                 return;
             }
             Disposable binding = bindings.remove((String) event);
@@ -469,11 +478,44 @@ public final class RealPlacementRunner {
         watcher.start();
     }
 
+    // The fibers whose dispose threw (or otherwise could not be confirmed). A
+    // dispose that throws stops its own inverse chain part-way, so the unwind is
+    // not finished and `run` must not print `DOWN`, which the conductor reads as
+    // proof the LIFO unwind completed (issue #2339). The java dispose is
+    // synchronous, so there is no wait to bound; a dispose that never returns
+    // already leaves no `DOWN` (the shutdown hook's 25 s wait then lets the JVM go).
+    static final List<String> UNCONFIRMED = java.util.Collections.synchronizedList(new ArrayList<>());
+
+    static void unconfirm(String label, Throwable failure) {
+        UNCONFIRMED.add(label.startsWith("comp:") ? label.substring("comp:".length()) : label);
+        log("swap", label, "dispose NOT confirmed: " + failure.getClass().getSimpleName());
+    }
+
+    // Keeps going past a failing dispose so every other binding still gets its
+    // own; the failure is recorded in UNCONFIRMED rather than swallowed.
     static void teardown(Map<String, Disposable> bindings) {
+        List<String> labels = new ArrayList<>(bindings.keySet());
         List<Disposable> all = new ArrayList<>(bindings.values());
         for (int i = all.size() - 1; i >= 0; i--) {
-            try { all.get(i).dispose(); } catch (Throwable ignored) {}
+            try {
+                all.get(i).dispose();
+            } catch (Throwable failure) {
+                unconfirm(labels.get(i), failure);
+            }
         }
+    }
+
+    // One scrubbed FATAL line naming the fibers, no `DOWN`, non-zero exit. `halt`,
+    // not `exit`: `exit` would run the shutdown hook, which waits on the `DOWN`
+    // latch this path must never trip. `halt` is permitted from inside a shutdown
+    // (the hook only waits), and it skips the flush `exit` would do.
+    static void haltTeardownIncomplete() {
+        String message = "teardown incomplete: dispose not confirmed for "
+                + String.join(", ", new ArrayList<>(UNCONFIRMED));
+        System.out.flush();
+        System.err.println("[" + name + "] FATAL " + redactFatal(message));
+        System.err.flush();
+        Runtime.getRuntime().halt(1);
     }
 
     // item 322 Slice 2: stamp the WAL commit-path proof + terminal marker via the

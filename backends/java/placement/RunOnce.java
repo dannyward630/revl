@@ -186,12 +186,26 @@ public final class RunOnce {
 
         // 3. teardown, consumers before providers (reverse load order) — the
         //    same LIFO contract run.py's _dispose_all and the rust runner enforce
+        //    A dispose that threw stopped its own inverse chain part-way, so the
+        //    unwind is not finished (issue #2339): keep going so every other
+        //    fiber still gets its dispose, then print no residue verdict and no
+        //    `DOWN` (the conductor reads `DOWN` as proof the LIFO unwind
+        //    completed). The java dispose is synchronous, so there is no wait to
+        //    bound.
+        List<String> unconfirmed = new ArrayList<>();
         for (int idx = fibers.size() - 1; idx >= 0; idx--) {
             try {
                 fibers.get(idx).dispose();
-            } catch (Throwable ignored) {
+            } catch (Throwable failure) {
+                unconfirmed.add(order.get(idx));
+                log("swap", order.get(idx), "dispose NOT confirmed: "
+                        + failure.getClass().getSimpleName());
+                continue;
             }
             log("swap", order.get(idx), "dispose -> inverses replay (LIFO)");
+        }
+        if (!unconfirmed.isEmpty()) {
+            PlacementRunner.haltTeardownIncomplete(name, unconfirmed);
         }
 
         // 4. no-residue proof: after teardown no provision still resolves, each

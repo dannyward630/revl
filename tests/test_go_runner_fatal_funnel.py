@@ -69,6 +69,7 @@ present) so none can pass on an empty line.
 from __future__ import annotations
 
 import json
+import os
 import selectors
 import shutil
 import socket
@@ -684,3 +685,70 @@ def test_held_teardown_waits_for_the_inverse_before_down(tmp_path):
     assert out.index("MARK applied") < out.index("MARK INVERSE-RAN") < out.index("] DOWN"), out
     impl = [line for line in out.splitlines() if "| Impl " in line and "dispose" in line]
     assert impl and all("inverses replay" in line for line in impl), out
+
+
+# ---------------------------------------------------------------------------
+# an unconfirmed dispose is not a clean unwind (issue #2339)
+# ---------------------------------------------------------------------------
+
+# The inverse never returns, so the bounded wait for its dispose runs out.
+_STUCK_UNDO_DOC = '''
+service Vault { fn show(user: Str) -> Str }
+
+extern pure fn mark(what: Str) -> Str = @go {
+	if what == "INVERSE-RAN" {
+		println("MARK STUCK")
+		select {}
+	}
+	println("MARK " + what)
+	return what
+}
+
+component Impl provides vault: Vault {
+  let slot = effect mark("applied") undo mark("INVERSE-RAN")
+
+  provide vault {
+    fn show(user) { return "shown " + user }
+  }
+}
+'''
+
+
+@pytest.mark.parametrize("once", [False, True], ids=["held", "once"])
+def test_an_unconfirmed_dispose_is_not_reported_as_a_clean_teardown(tmp_path, once):
+    """`src/revl/placement.py` reads `DOWN` as proof that the LIFO unwind
+    finished. When a dispose is not confirmed inside its bound the runner must
+    not say `DOWN` (nor a residue verdict): one scrubbed FATAL line on stderr
+    naming the fiber, and a non-zero exit, so the conductor reports the child
+    as exited without saying DOWN."""
+    binary = _build(tmp_path, doc=_STUCK_UNDO_DOC)
+    spec = tmp_path / "stuck.json"
+    spec.write_text(json.dumps({**_SPEC, "probe": [], "once": once}))
+    done = subprocess.run([binary, str(spec)], capture_output=True, text=True,
+                          timeout=300, stdin=subprocess.DEVNULL)
+    both = done.stdout + done.stderr
+    assert "MARK STUCK" in both, both
+    assert "dispose NOT confirmed" in both, both
+    assert "] DOWN" not in done.stdout, done.stdout
+    assert "NO-RESIDUE" not in done.stdout, done.stdout
+    fatal = [line for line in done.stderr.splitlines() if "] FATAL " in line]
+    assert len(fatal) == 1 and "Impl" in fatal[0], done.stderr
+    assert done.returncode == 1, both
+
+
+def test_the_teardown_bound_follows_revl_teardown_grace(tmp_path):
+    """The conductor's stranded-teardown report tells a user to raise
+    REVL_TEARDOWN_GRACE, so the runner's own dispose bound reads it (seconds)
+    and keeps 5s only as the default. With a never-settling inverse and a
+    1 second grace the runner gives up well before the 5 second default."""
+    binary = _build(tmp_path, doc=_STUCK_UNDO_DOC)
+    spec = tmp_path / "grace.json"
+    spec.write_text(json.dumps({**_SPEC, "probe": [], "once": False}))
+    started = time.monotonic()
+    done = subprocess.run([binary, str(spec)], capture_output=True, text=True,
+                          timeout=300, stdin=subprocess.DEVNULL,
+                          env={**os.environ, "REVL_TEARDOWN_GRACE": "1"})
+    elapsed = time.monotonic() - started
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "dispose NOT confirmed" in done.stdout + done.stderr
+    assert elapsed < 4.0, elapsed

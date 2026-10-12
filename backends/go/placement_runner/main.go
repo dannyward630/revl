@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -191,7 +192,7 @@ func fatalLine(name string, fatal any) {
 func fatalBoot(name, message string, fibers []labeledFiber,
 	log func(channel, subject, detail string)) {
 	fatalLine(name, message)
-	bootCtx, bootCancel := stdctx.WithTimeout(stdctx.Background(), 5*time.Second)
+	bootCtx, bootCancel := stdctx.WithTimeout(stdctx.Background(), teardownBound())
 	for i := len(fibers) - 1; i >= 0; i-- {
 		disposeAwaited(bootCtx, fibers[i], log)
 	}
@@ -199,24 +200,46 @@ func fatalBoot(name, message string, fibers []labeledFiber,
 	os.Exit(1)
 }
 
+// defaultTeardownBound is how long the teardown waits for the disposes to
+// settle when REVL_TEARDOWN_GRACE is not set.
+const defaultTeardownBound = 5 * time.Second
+
+// teardownBound is the wait the teardown gives its disposes: the conductor's
+// REVL_TEARDOWN_GRACE (seconds, the variable the stranded-teardown report tells
+// a user to raise) when it is a positive finite number, else the default.
+func teardownBound() time.Duration {
+	raw := os.Getenv("REVL_TEARDOWN_GRACE")
+	if raw == "" {
+		return defaultTeardownBound
+	}
+	secs, err := strconv.ParseFloat(raw, 64)
+	if err != nil || !(secs > 0) || secs > 86400 {
+		return defaultTeardownBound
+	}
+	return time.Duration(secs * float64(time.Second))
+}
+
 // disposeAwaited disposes one fiber and waits (bounded by ctx) for the
 // teardown to settle, then logs what was confirmed: the inverses replayed, the
 // state the fiber ended in (`Gone` also returns for a fiber that had already
 // FAILED, which replays nothing), or that it did not settle in time. Shared by
 // the boot-failure path and the normal teardown so the two cannot drift
-// (issue #2336).
+// (issue #2336). It returns false only when the dispose did not settle in time:
+// the inverses may still be pending, so the caller must not call the unwind
+// complete (issue #2339).
 func disposeAwaited(ctx stdctx.Context, lf labeledFiber,
-	log func(channel, subject, detail string)) {
+	log func(channel, subject, detail string)) bool {
 	lf.fiber.Dispose()
 	if err := lf.fiber.Gone(ctx); err != nil {
 		log("swap", lf.label, "dispose NOT confirmed: "+err.Error())
-		return
+		return false
 	}
 	if state := lf.fiber.State(); state != stc.StateGone {
 		log("swap", lf.label, "dispose -> ended "+state.String())
-		return
+		return true
 	}
 	log("swap", lf.label, "dispose -> inverses replay (LIFO)")
+	return true
 }
 
 // guard returns the deferred function that funnels a failure of the goroutine
@@ -527,16 +550,29 @@ func main() {
 	//    awaited (bounded) in both modes: the inverses of a held composition
 	//    must replay before `DOWN`, and in once mode the residue proof below
 	//    reads a settled runtime, not an in-flight one.
-	goneCtx, cancel := stdctx.WithTimeout(stdctx.Background(), 5*time.Second)
+	goneCtx, cancel := stdctx.WithTimeout(stdctx.Background(), teardownBound())
 	defer cancel()
+	var unconfirmed []string
 	for i := len(fibers) - 1; i >= 0; i-- {
-		disposeAwaited(goneCtx, fibers[i], log)
+		if !disposeAwaited(goneCtx, fibers[i], log) {
+			unconfirmed = append(unconfirmed, fibers[i].label)
+		}
 	}
 	if listener != nil {
 		listener.Close()
 	}
 	for _, c := range clients {
 		c.Close()
+	}
+	// A dispose that did not settle may still have inverses pending, so this
+	// is not a finished unwind: no residue verdict and no `DOWN` (the
+	// conductor reads `DOWN` as proof the LIFO unwind completed), one scrubbed
+	// FATAL line naming the fibers, and a non-zero exit. `os.Exit` skips the
+	// deferred `cancel`, which is harmless at process end (issue #2339).
+	if len(unconfirmed) > 0 {
+		fatalLine(name, "teardown incomplete: dispose not confirmed before the bound expired for "+
+			strings.Join(unconfirmed, ", "))
+		os.Exit(1)
 	}
 
 	// 7. no-residue proof (once mode): after a full LIFO teardown the live

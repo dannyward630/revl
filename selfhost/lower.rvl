@@ -12958,6 +12958,44 @@ fn ext_decl_verdict(ts: List[Token], i: Int, declared: List[Str],
 // Top-level only — the scan counts braces, so an `extern` in a nested block is
 // not scanned (the reference's grammar has no such position).
 fn extern_decl_refusal(ts: List[Token], pg: Prog) -> Verd {
+  // the PARSE-stage half first: the reference's parser refuses every extern's
+  // classification word before `_lower_externs` judges any declaration's
+  // slots, so a later unclassified extern outranks an earlier one's G4.
+  let pv = extern_parse_refusal(ts, pg)
+  if (pv.v != "") { return pv }
+  return extern_lower_refusal(ts, pg)
+}
+
+// The first G8 any top-level extern declaration draws, in source order: the
+// refusals the reference raises while PARSING the declaration (the missing
+// classification word, and the ui-family capability rule), which no lowering
+// refusal of an earlier declaration can precede.
+fn extern_parse_refusal(ts: List[Token], pg: Prog) -> Verd {
+  let declared = ext_declared_names(ts, pg)
+  let al = alias_map(ts)
+  let gtys = sig_binds(ts, case_binds(ts, al), al)
+  var seen: List[Str] = []
+  var d = 0
+  var i = 0
+  while (i < ts.length()) {
+    if (atk(ts, i, "{")) {
+      d += 1
+    } else if (atk(ts, i, "}")) {
+      d -= 1
+    } else if (d == 0 && atw(ts, i, "extern")) {
+      let nm = ext_decl_name(ts, i)
+      if (nm == "" || !contains(seen, nm)) {
+        let v = ext_decl_verdict(ts, i, declared, gtys, al)
+        if (v.v.slice(0, 3) == "G8|") { return v }
+      }
+      if (nm != "") { seen = seen.push(nm) }
+    }
+    i += 1
+  }
+  return no_verd()
+}
+
+fn extern_lower_refusal(ts: List[Token], pg: Prog) -> Verd {
   let declared = ext_declared_names(ts, pg)
   let al = alias_map(ts)
   let gtys = sig_binds(ts, case_binds(ts, al), al)
@@ -18589,6 +18627,152 @@ fn collect_refusals(ts: List[Token], pg: Prog) -> List[Verd] {
   return append_verds(nl.refs, link_refusals(pg, [], [], [], []))
 }
 
+// ============================================================ name folds
+//
+// Issues #2224 and #2275 (one program) and #2309 and #2334 (a hot swap against
+// a running manifest), mirrored here by issue #2351. The reference refuses two
+// component names, or two service names, that differ only in letter case or
+// underscores, because the rust and java tiers derive file and symbol names
+// from them and land two such names on one. It raises these in
+// `revl.compiler.compile_source` / `compile_files` BEFORE `check_and_lower`, so
+// here each rides alone, ahead of every collected refusal, in the reference's
+// order: the program's services, its components, then (against a manifest)
+// the running services and the running components. Every sentence is the
+// reference's `_fold_collision_message`, byte for byte, under the tag `FOLD`.
+//
+// What the wire cannot carry stays open: a running component with no
+// provision and no requirement row is absent from the row wire, so a name
+// folded onto one is not seen here (the gate crate's certifier has the same
+// caveat), and a wire with no `!services` header names no running service.
+
+type NmLn = { name: Str, line: Int }
+
+fn nf_char(c: Str) -> Str {
+  let k = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".indexOf(c)
+  if (k == 0 - 1) { return c }
+  return "abcdefghijklmnopqrstuvwxyz".slice(k, k + 1)
+}
+
+// `revl.compiler.component_name_fold`: the name with letter case and
+// underscores dropped. Folding ASCII only is exact, because a revl identifier
+// is ASCII (the reference lexer refuses any other character in one).
+fn name_fold(s: Str) -> Str {
+  var out = ""
+  var i = 0
+  while (i < s.length()) {
+    let c = s.slice(i, i + 1)
+    if (c != "_") { out = out.concat(nf_char(c)) }
+    i += 1
+  }
+  return out
+}
+
+// `revl.compiler._fold_collision_message`.
+fn fold_msg(kind: Str, name: Str, other: Str, wh: Str) -> Str {
+  return kind.concat(" `").concat(name).concat("` collides with ")
+    .concat(other).concat(" (").concat(wh)
+    .concat("): the two names differ only in letter case or underscores, ")
+    .concat("and both reduce to `").concat(name_fold(name)).concat("`")
+}
+
+// Every top-level `service <Name>` declaration with its line, in source order:
+// the reference's `program.services`, which `SvcD` does not carry lines for.
+fn svc_decl_lines(ts: List[Token]) -> List[NmLn] {
+  var out: List[NmLn] = []
+  var depth = 0
+  var i = 0
+  while (i < ts.length()) {
+    let t = ts[i]
+    if (t.kind == "{") {
+      depth += 1
+    } else if (t.kind == "}") {
+      depth -= 1
+    } else if (depth == 0 && atw(ts, i, "service") && atk(ts, i + 1, "ident")) {
+      out = out.push({ name: tkc(ts, i + 1).text, line: t.line })
+    }
+    i += 1
+  }
+  return out
+}
+
+fn comp_decl_lines(cs: List[CompD]) -> List[NmLn] {
+  var out: List[NmLn] = []
+  var i = 0
+  while (i < cs.length()) {
+    out = out.push({ name: cs[i].name, line: cs[i].line })
+    i += 1
+  }
+  return out
+}
+
+// `revl.compiler._reject_name_folds` over ONE program: each declaration is
+// compared with the FIRST declaration of its fold key, and an exact repeat is
+// left to the duplicate-declaration refusal.
+fn fold_in_program(kind: Str, ds: List[NmLn]) -> Str {
+  var j = 0
+  while (j < ds.length()) {
+    let key = name_fold(ds[j].name)
+    var p = 0
+    while (p < j && name_fold(ds[p].name) != key) { p += 1 }
+    if (p < j && ds[p].name != ds[j].name) {
+      return tagged("FOLD", fold_msg(kind, ds[j].name,
+        kind.concat(" `").concat(ds[p].name).concat("`"),
+        "line ".concat(ds[p].line.to_str())))
+    }
+    j += 1
+  }
+  return ""
+}
+
+// `revl.compiler._reject_running_service_name_folds` (issue #2334) and
+// `_reject_running_component_name_folds` (issue #2309): an incoming name
+// against the running names the admission KEEPS, the first running spelling of
+// each fold key. An exact match is a redeclaration (a service) or was
+// withdrawn before this is asked (a component), never a fold.
+fn fold_running(kind: Str, ds: List[NmLn], held: List[Str]) -> Str {
+  var j = 0
+  while (j < ds.length()) {
+    if (!contains(held, ds[j].name)) {
+      let key = name_fold(ds[j].name)
+      var k = 0
+      while (k < held.length() && name_fold(held[k]) != key) { k += 1 }
+      if (k < held.length()) {
+        return tagged("FOLD", fold_msg(kind, ds[j].name,
+          "running ".concat(kind).concat(" `").concat(held[k]).concat("`"),
+          "in the manifest"))
+      }
+    }
+    j += 1
+  }
+  return ""
+}
+
+// A fold refusal, unless the reference's PARSER refuses the program first:
+// an unclassified extern (G8) is raised while parsing, before the fold check,
+// but the gate decides it inside `collect_nonlink`. Only consulted when there
+// is a fold, so a program without one is byte-identical.
+fn fold_after_parse(ts: List[Token], pg: Prog, fold: Str) -> Str {
+  if (fold == "") { return "" }
+  let ev = extern_parse_refusal(ts, pg)
+  if (ev.v != "") { return ev.v }
+  return fold
+}
+
+fn program_name_folds(ts: List[Token], pg: Prog) -> Str {
+  let sv = fold_in_program("service", svc_decl_lines(ts))
+  if (sv != "") { return fold_after_parse(ts, pg, sv) }
+  return fold_after_parse(ts, pg,
+    fold_in_program("component", comp_decl_lines(pg.comps)))
+}
+
+fn running_name_folds(ts: List[Token], pg: Prog, svcs: List[Str],
+                      kept: List[Str]) -> Str {
+  let sv = fold_running("service", svc_decl_lines(ts), svcs)
+  if (sv != "") { return fold_after_parse(ts, pg, sv) }
+  return fold_after_parse(ts, pg,
+    fold_running("component", comp_decl_lines(pg.comps), kept))
+}
+
 pub fn admit_src(src: Str) -> Str {
   let ts = lex_src(src)
   // item 384: the foreign-construct redirects run first — the reference's
@@ -18616,6 +18800,9 @@ pub fn admit_src(src: Str) -> Str {
   // issue #1728: an unbound realm placeholder is refused before lowering.
   let rph = realm_placeholder_scan(ts)
   if (rph.v != "") { return rph.v }
+  // issue #2351: folded component and service names, ahead of lowering.
+  let fold = program_name_folds(ts, pg)
+  if (fold != "") { return fold }
   // item 419c: collect every recoverable refusal and report the minimum by
   // `(line, seq)` — the reference's `diagnostics[0]`. A single-refusal program
   // yields exactly the wire it did before the sink existed.
@@ -19201,6 +19388,18 @@ fn parse_row(row: Str, man: Manifest) -> Manifest {
                svcs: man.svcs, svcsKnown: man.svcsKnown, svcOps: man.svcOps,
                bad: "" }
     }
+    // the PRESENCE row (issue #2289): a bare component name, `C`, for a
+    // running component that renders no other row. It is a node and nothing
+    // more, so it only joins `mnames`, which the running name fold reads. A
+    // row with any separator left is a garbled wire and falls through.
+    if (bare_ident(row, 0)) {
+      return { provs: man.provs, reqs: man.reqs, routes: man.routes,
+               hands: man.hands,
+               mnames: add_mname(man.mnames, row),
+               repl: man.repl, halted: man.halted,
+               svcs: man.svcs, svcsKnown: man.svcsKnown, svcOps: man.svcOps,
+               bad: "" }
+    }
   }
   return man_bad(man, "unrecognized manifest row `".concat(row).concat("`"))
 }
@@ -19576,6 +19775,12 @@ pub fn admit_ambient(src: Str, manifest: Str) -> Str {
   let keptReqs = keep_reqs(man.reqs, drop, 0, [])
   let keptRoutes = keep_routes(man.routes, drop, 0, [])
   let keptNames = keep_names(man.mnames, drop, 0, [])
+  // issue #2351: folded names, the program's own and then the running ones the
+  // admission keeps, ahead of every collected refusal as in `compile_files`.
+  let pfold = program_name_folds(ts, pg)
+  if (pfold != "") { return pfold }
+  let rfold = running_name_folds(ts, pg, man.svcs, keptNames)
+  if (rfold != "") { return rfold }
   let lost = lost_provs(split_provs(man.provs, drop, true, 0, []),
                         live_provs(live, 0, keptProvs), 0, [])
   // the INTERNAL refusals (per-component G1/G4/A1/PRELUDE, module fn, spawn,

@@ -138,9 +138,9 @@
 
 ["function", "backends-java-emit-py-emit-v2-remaining-branches", "_emit_v2", 4, 4]
 
-["reason", "backends-java-emit-py-emit-v3-externs-extern", "backends/java/emit.py::_emit_v3_externs: Extern method wrappers, witnessed signatures and config-schema bindings require extern declarations, explicitly deferred; strict extern_config and method_witnessed cases retain reproductions. Plus the item-421-F6 `Secret[T]` registry emission behind `_SECRET_MODE`, which no corpus document reaches and selfhost/emit_java.rvl does not port (item-429(d))."]
+["reason", "backends-java-emit-py-emit-v3-externs-extern", "backends/java/emit.py::_emit_v3_externs: Extern method wrappers, witnessed signatures and config-schema bindings require extern declarations, explicitly deferred; strict extern_config and method_witnessed cases retain reproductions. Plus the item-421-F6 `Secret[T]` registry emission behind `_SECRET_MODE`, which no corpus document reaches and selfhost/emit_java.rvl does not port (item-429(d)). Plus, issue #2345: the record-mode statements that journal an emission (an `extern emission fn` wrapper, a service emission or compensation site, or the WAL sink they need), which run only under `emit(ir, record=True)`; the oracle drives the default `emit(ir)` and the self-host port carries no WAL sink."]
 
-["function", "backends-java-emit-py-emit-v3-externs-extern", "_emit_v3_externs", 32, 32]
+["function", "backends-java-emit-py-emit-v3-externs-extern", "_emit_v3_externs", 35, 35]
 
 ["reason", "backends-java-emit-py-emit-v3-lifecycle-tests", "backends/java/emit.py::_emit_v3_lifecycle_tests: Lifecycle test method assembly, load/unload state and conditional REVL_TESTS invocation require in-file lifecycle tests, explicitly deferred. Issue #2009 adds one statement: the generated lifecycle harness arms the provider's `RevlJournal` before each bracketed host-Map write and closes it at the frame's disposer."]
 
@@ -472,6 +472,18 @@
 
 ["function", "issue-2009-host-map-journal-arm-no-java-corpus-document", "_node_writes_host_map", 1, 1]
 
+["reason", "issue-2345-record-mode-emission-journal", "Issue #2345: record-mode emission journalling. In `--record` the go, rust and java sinks wrap each `extern emission fn` and each `emit` or `compensate` through a service `emission` method so its start record is durable before the body runs. These helpers run only under `emit(ir, record=True)`; the byte-agreement oracle drives the default `emit(ir)`, and the self-host port carries no WAL sink, so no corpus document reaches them. Pinned by tests/test_wal_emission_start_record_2345.py. Plus, issue #2345: the record-mode statements that journal an emission (an `extern emission fn` wrapper, a service emission or compensation site, or the WAL sink they need), which run only under `emit(ir, record=True)`; the oracle drives the default `emit(ir)` and the self-host port carries no WAL sink."]
+
+["function", "issue-2345-record-mode-emission-journal", "_has_emission_externs", 1, 1]
+
+["function", "issue-2345-record-mode-emission-journal", "_has_service_emits", 7, 7]
+
+["function", "issue-2345-record-mode-emission-journal", "_journal_service_stmt", 7, 7]
+
+["function", "issue-2345-record-mode-emission-journal", "_journalled_emission", 12, 12]
+
+["function", "issue-2345-record-mode-emission-journal", "_service_emission", 7, 7]
+
 ["reason", "item-458-java-s-div-floor-div-euclid", "Item 458: java's `div_floor`/`div_euclid`/`mod` move from inline `Math.*` expressions to static helpers, because `Math.floorDiv` wraps at Int.MIN / -1 and `Math.abs(Long.MIN_VALUE)` is negative. `_emit_int_arith_helpers` is the block and `_uses_int_arith.walk` the demand scan; no java corpus document calls a named division, and one that did would flip the byte-agreement oracle RED rather than close the gap, because selfhost/emit_java.rvl ports none of this family (item-429(d)). The reference half is executed on all six tiers by tests/test_int_min_edges_cross_tier.py."]
 
 ["function", "item-458-java-s-div-floor-div-euclid", "_emit_int_arith_helpers", 1, 1]
@@ -490,13 +502,13 @@
 
 ["function", "refuse-deferred-emissions-and-refuse-validated-emissions-in", "_refuse_validated_emissions", 8, 8]
 
-["reason", "ui-transaction-unit-item-522-issue-1369", "The UI transaction unit (item 522 slice 3, issue #1369): `_ui_transaction_facts` and `_calls_any` derive the per-method units from revl.ui_transaction, `_emit_component_modern` wraps a unit method's body in a `RevlUi` scope, and `_ui_cross`, `_ui_crossing_statement` and `_declared_compensate` render each computer-use crossing through `RevlUi.cross`; `_emit_compensation_track` registers into the scope. The same branches raise `_component_needs_frame`, `_emit_revl_frame_runtime`, `_emit_witnessed_step`, `_expr` and `_method_body_lines.render` (`_declared_crossing` fell, its compensate rendering moved to `_declared_compensate`). selfhost/emit_java.rvl does not port the unit (the self-host gap of issue #1972), and the corpus has no computer-use document with @java bodies. The runtime proof is backends/java/test_ui_transaction_java_1369.py."]
+["reason", "ui-transaction-unit-item-522-issue-1369", "The UI transaction unit (item 522 slice 3, issue #1369): `_ui_transaction_facts` and `_calls_any` derive the per-method units from revl.ui_transaction, `_emit_component_modern` wraps a unit method's body in a `RevlUi` scope, and `_ui_cross`, `_ui_crossing_statement` and `_declared_compensate` render each computer-use crossing through `RevlUi.cross`; `_emit_compensation_track` registers into the scope. The same branches raise `_component_needs_frame`, `_emit_revl_frame_runtime`, `_emit_witnessed_step`, `_expr` and `_method_body_lines.render` (`_declared_crossing` fell, its compensate rendering moved to `_declared_compensate`). selfhost/emit_java.rvl does not port the unit (the self-host gap of issue #1972), and the corpus has no computer-use document with @java bodies. The runtime proof is backends/java/test_ui_transaction_java_1369.py. Plus, issue #2345: the record-mode statements that journal an emission (an `extern emission fn` wrapper, a service emission or compensation site, or the WAL sink they need), which run only under `emit(ir, record=True)`; the oracle drives the default `emit(ir)` and the self-host port carries no WAL sink."]
 
 ["function", "ui-transaction-unit-item-522-issue-1369", "_calls_any", 7, 7]
 
 ["function", "ui-transaction-unit-item-522-issue-1369", "_declared_compensate", 7, 7]
 
-["function", "ui-transaction-unit-item-522-issue-1369", "_emit_compensation_track", 2, 2]
+["function", "ui-transaction-unit-item-522-issue-1369", "_emit_compensation_track", 3, 3]
 
 ["function", "ui-transaction-unit-item-522-issue-1369", "_ui_cross", 8, 8]
 

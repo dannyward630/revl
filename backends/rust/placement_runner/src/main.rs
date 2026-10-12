@@ -294,6 +294,19 @@ fn spawn_monitor(socket: String, key: String, tx: std::sync::mpsc::Sender<String
     });
 }
 
+/// How long the teardown gives its disposes to settle: the conductor's
+/// `REVL_TEARDOWN_GRACE` (seconds, the variable its stranded-teardown report
+/// tells a user to raise) when it is a positive finite number, else 5 seconds.
+fn teardown_bound() -> std::time::Duration {
+    let default = std::time::Duration::from_secs(5);
+    match std::env::var("REVL_TEARDOWN_GRACE").ok().and_then(|raw| raw.parse::<f64>().ok()) {
+        Some(secs) if secs.is_finite() && secs > 0.0 && secs <= 86400.0 => {
+            std::time::Duration::from_secs_f64(secs)
+        }
+        _ => default,
+    }
+}
+
 fn main() {
     let spec_path = std::env::args().nth(1).expect("usage: revl_placement_runner <spec.json>");
     let spec: J = serde_json::from_str(&std::fs::read_to_string(&spec_path).expect("read spec"))
@@ -316,8 +329,10 @@ fn main() {
     let fatal_boot = |message: String, fibers: &[(String, cordis::Fiber)]| -> ! {
         eprintln!("{}", confidential::revl_redact_text(format!("[{name}] {message}")));
         for (label, fiber) in fibers.iter().rev() {
-            let _ = fiber.dispose();
-            log("swap", label, "dispose");
+            match fiber.dispose() {
+                Ok(()) => log("swap", label, "dispose"),
+                Err(error) => log("swap", label, &format!("dispose NOT confirmed: {error}")),
+            }
         }
         std::process::exit(1)
     };
@@ -561,10 +576,66 @@ fn main() {
         }
     }
 
-    // 6. teardown, consumers first (reverse load order)
+    // 6. teardown, consumers first (reverse load order). Each dispose is
+    //    checked: one that fails, or that does not settle inside the bound,
+    //    leaves inverses that may be pending, so the unwind is not complete and
+    //    `DOWN` (the conductor's proof that it was) must not be printed (issue
+    //    #2339). `dispose` runs on THIS thread (emitted state is thread-local),
+    //    so the bound is a watchdog thread that ends the process when the
+    //    teardown has not finished in time.
+    let incomplete = |detail: &str| -> ! {
+        eprintln!("{}", confidential::revl_redact_text(format!(
+            "[{name}] FATAL teardown incomplete: {detail}")));
+        std::process::exit(1)
+    };
+    // One claim decides the race between the watchdog and the end of the
+    // loop: 0 = open, 1 = the teardown finished, 2 = the bound expired. Whoever
+    // moves it off 0 first wins, so the process never prints FATAL and then
+    // `DOWN` (or the reverse).
+    use std::sync::atomic::{AtomicU8, Ordering};
+    let claim = std::sync::Arc::new(AtomicU8::new(0));
+    let disposing = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    {
+        let (claim, disposing, name) = (claim.clone(), disposing.clone(), name.clone());
+        let deadline = std::time::Instant::now() + teardown_bound();
+        std::thread::spawn(move || {
+            while std::time::Instant::now() < deadline {
+                if claim.load(Ordering::SeqCst) != 0 {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            if claim.compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+                return;
+            }
+            let label = disposing.lock().map(|l| l.clone()).unwrap_or_default();
+            eprintln!("{}", confidential::revl_redact_text(format!(
+                "[{name}] FATAL teardown incomplete: dispose not confirmed before the \
+                 bound expired for {label}")));
+            std::process::exit(1)
+        });
+    }
+    let mut unconfirmed: Vec<String> = Vec::new();
     for (label, fiber) in fibers.iter().rev() {
-        let _ = fiber.dispose();
-        log("swap", label, "dispose");
+        if let Ok(mut current) = disposing.lock() {
+            *current = label.clone();
+        }
+        match fiber.dispose() {
+            Ok(()) => log("swap", label, "dispose"),
+            Err(error) => {
+                log("swap", label, &format!("dispose NOT confirmed: {error}"));
+                unconfirmed.push(label.clone());
+            }
+        }
+    }
+    if claim.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        // the watchdog expired the bound first and is exiting the process
+        loop {
+            std::thread::park();
+        }
+    }
+    if !unconfirmed.is_empty() {
+        incomplete(&format!("dispose not confirmed for {}", unconfirmed.join(", ")));
     }
 
     // 7. no-residue proof (once mode only, so placement's stream is unchanged):

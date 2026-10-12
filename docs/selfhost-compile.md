@@ -159,6 +159,27 @@ corpus need (`cli.rvl` and `backends/typescript/tests/fixtures/fr3_json_int.rvl`
 both resolve importer-relative). A document relying on an environment search path
 is not covered.
 
+Before anything is linked, every used module is admitted (issue #2332,
+`compile.rvl::ad_used_modules_refusal`): depth first from the document, each
+module once, its whole text is read by the self-host front end, and the first
+one that does not read refuses the document with
+`REFUSED|BAD|<module>: <message>`. As in the reference loader, a `use` target
+that resolves to nothing refuses with `cannot find imported module`, and a
+module reached again while it is still being read refuses with `import cycle`.
+A program-grammar refusal names its line where one can be placed, and a
+top-level expression-bodied fn (`fn f(x: Int) -> Int = x`, valid revl) is
+named as not supported by the self-host compiler.
+
+Known gaps of the admission:
+
+- Admitting a used `selfhost/lower.rvl` or `selfhost/emit_rust.rvl` under the
+  python tier's default recursion limit raises `RecursionError` instead of a
+  named refusal: `parse_prog` recurses once per top-level declaration, the depth
+  `admit_src` already has on those files.
+- The upward walk above can find a module the reference does not (it has no
+  ancestor search), and an imported name the module does not export is not
+  refused; both are tracked separately.
+
 ### All six tiers, measured
 
 Item 146 gap 2 finished admitting the tiers. `go`, `java` and `wasm` each exported
