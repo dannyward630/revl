@@ -1301,6 +1301,33 @@ _IMPORT_REFUSED = {
 }
 
 
+_LIB_STORE = "pub service Store { fn put(x: Int) -> Str }\n"
+
+# Review of #2358: case -> (the reference's error, the self-host's, files). The
+# reference loader refuses a `use` that resolves to nothing and an import
+# cycle before it links anything; the native walk used to skip both and emit.
+_MODULE_WALK_REFUSALS = {
+    "missing_module_at_the_root": ("cannot find imported module", {
+        "doc.rvl": 'use "./nope.rvl" { Gone }\n' + _STORE_DOC % "1",
+        "lib.rvl": _LIB_STORE,
+    }),
+    "missing_module_nested": ("cannot find imported module", {
+        "doc.rvl": _STORE_DOC % "1",
+        "lib.rvl": 'use "./nope.rvl" { Gone }\n\n' + _LIB_STORE,
+    }),
+    "direct_import_cycle": ("import cycle", {
+        "doc.rvl": _STORE_DOC % "1",
+        "lib.rvl": 'use "./lib.rvl" { Store }\n\n' + _LIB_STORE,
+    }),
+    "indirect_import_cycle": ("import cycle", {
+        "doc.rvl": _STORE_DOC % "1",
+        "lib.rvl": 'use "./inner.rvl" { Tool }\n\n' + _LIB_STORE,
+        "inner.rvl": ('use "./lib.rvl" { Store }\n\n'
+                      "pub service Tool { fn run() -> Int }\n"),
+    }),
+}
+
+
 @pytest.mark.parametrize("tier", ("py", "go", "java", "rust"))
 @pytest.mark.parametrize("case", sorted(_IMPORT_REFUSED))
 def test_native_driver_refuses_an_import_the_reference_refuses(
@@ -1350,6 +1377,43 @@ def test_native_import_check_passes_every_stdlib_and_truc_module(compile_rvl):
                if (why := compile_rvl["ad_imports_refusal"](text, str(ROOT / name))) != ""}
     assert refused == {}
 
+
+@pytest.mark.parametrize("case", sorted(_MODULE_WALK_REFUSALS))
+def test_native_driver_refuses_a_missing_module_and_an_import_cycle(
+        compile_rvl, tmp_path, case):
+    """A `use` that resolves to nothing, at the document or in a used module,
+    and an import cycle, direct or through another module, refuse with the
+    reference loader's reason instead of emitting code."""
+    message, files = _MODULE_WALK_REFUSALS[case]
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    with pytest.raises(RevlError, match=message):
+        compile_files([str(doc)])
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
+    assert got.startswith("REFUSED|BAD|"), got[:160]
+    assert message in got, got[:200]
+
+
+def test_a_used_module_refusal_names_its_line(compile_rvl):
+    """A program-grammar refusal of a used module says which line it is about."""
+    text = "pub service Store { fn put(x: Int) -> Str }\nthis is not revl\n"
+    assert compile_rvl["ad_module_refusal"](text).startswith("line 2: ")
+
+
+def test_an_expression_bodied_fn_is_named_unsupported_not_malformed(compile_rvl, tmp_path):
+    """`fn f(x: Int) -> Int = x` is valid revl, so a used module that declares
+    one is refused as unsupported by the self-host, not as a user error."""
+    (tmp_path / "doc.rvl").write_text(_STORE_DOC % "1", encoding="utf-8")
+    (tmp_path / "lib.rvl").write_text(
+        "pub fn twice(x: Int) -> Int = x * 2\n\n" + _LIB_STORE, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    compile_files([str(doc)])
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
+    assert got.startswith("REFUSED|BAD|"), got[:160]
+    assert "line 1: an expression-bodied fn" in got, got[:200]
+    assert "not supported by the self-host" in got
+    assert "expected {" not in got
 
 # Issue #2343: the whitespace the reference lexer skips between an `@backend`
 # name and its `{` is Python's `str.isspace`, newlines included in any order.

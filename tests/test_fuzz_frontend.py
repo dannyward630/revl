@@ -461,7 +461,7 @@ def test_unterminated_string_inside_a_host_body(selfhost_lex, src):
     assert any(t["kind"] == "error" for t in selfhost_lex(src))
 
 
-@pytest.mark.parametrize("ws", ["\x0b", "\x0c", "\x1c", "\x85"])
+@pytest.mark.parametrize("ws", ["\x0b", "\x0c", "\x1c", "\x85", "\xa0", "\u2028", "\u3000"])
 def test_the_two_lexers_agree_on_the_whitespace_set(selfhost_lex, ws):
     """A vertical tab between two tokens is whitespace to the reference lexer,
     which asks python `str.isspace()` (yes to `\\x0b`, `\\x0c`, `\\x1c`-`\\x1f`,

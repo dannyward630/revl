@@ -86,8 +86,8 @@
 // Ground truth is the reference; on the covered surface any divergence is a defect
 // in a stage.
 
-use "./lower.rvl" { admit_src, admit_ambient, lower_to_ir, lower_to_ir_refs, parse_prog,
-  foreign_scan }
+// One line: the self-host program grammar reads a `use` by its first line.
+use "./lower.rvl" { admit_src, admit_ambient, lower_to_ir, lower_to_ir_refs, parse_prog, foreign_scan }
 use "./lexer.rvl" { Token, lex_src }
 use "./parser.rvl" { type_at, is_record_key }
 use "./emit_py.rvl" { emit_py_src }
@@ -189,7 +189,7 @@ fn emit_ir(ir: Any, tier: Str) -> Str {
 // as "cannot find imported module". The answer is the module's ABSOLUTE path
 // (the reference loader's module key, `os.path.abspath`, so two spellings of
 // one module are one module and the closure below sorts exactly as
-// `compile_files` does), or "" when nothing is there. `ad_imports_refusal`
+// `compile_files` does), or "" when nothing is there. `ad_used_modules_refusal`
 // refuses such a `use` by the reference's message before anything is linked.
 extern pure fn module_path(base: Str, target: Str) -> Str = @py {
     import os
@@ -1892,7 +1892,73 @@ fn ad_module_refusal(source: Str) -> Str {
     }
     i += 1
   }
-  return parse_prog(program).bad
+  let bad = parse_prog(program).bad
+  if (bad == "") { return "" }
+  let lambda = ad_expr_fn_line(ts)
+  if ((bad == "expected { after fn signature") && (lambda > 0)) {
+    return "line ".concat(lambda.to_str())
+      .concat(": an expression-bodied fn (`fn f(...) = expr`) is not supported by the self-host compiler")
+  }
+  let line = ad_bad_line(ts, program, bad)
+  if (line <= 0) { return bad }
+  return "line ".concat(line.to_str()).concat(": ").concat(bad)
+}
+
+// The line of the first top-level `fn` whose body is `= expr` rather than a
+// block (valid revl the self-host program grammar does not read), or 0.
+fn ad_expr_fn_line(ts: List[Token]) -> Int {
+  var depth = 0
+  var i = 0
+  while (i < ts.length()) {
+    let k = ts[i].kind
+    if ((k == "{") || (k == "[") || (k == "(")) { depth += 1 }
+    if ((k == "}") || (k == "]") || (k == ")")) { depth -= 1 }
+    if ((depth == 0) && ad_kw(ts, i, "fn") && !ad_extern_head(ts, i)) {
+      var d = 0
+      var j = i + 1
+      while ((j < ts.length()) && !((d == 0) && (ad_kind(ts, j, "{") || ad_kind(ts, j, "=")))) {
+        let kj = ts[j].kind
+        if ((kj == "(") || (kj == "[")) { d += 1 }
+        if ((kj == ")") || (kj == "]")) { d -= 1 }
+        j += 1
+      }
+      if (ad_kind(ts, j, "=")) { return ts[i].line }
+    }
+    i += 1
+  }
+  return 0
+}
+
+// Whether the `fn` at `i` belongs to an `extern` declaration, whose `= @backend`
+// body is no expression body: an `extern` earlier on its line.
+fn ad_extern_head(ts: List[Token], i: Int) -> Bool {
+  var j = i - 1
+  while ((j >= 0) && (ts[j].line == ts[i].line)) {
+    if (ad_kw(ts, j, "extern")) { return true }
+    j -= 1
+  }
+  return false
+}
+
+// The line `parse_prog`'s refusal `bad` of `program` is about, or 0 when it
+// cannot be placed: the first line, among those a top-level token that is no
+// keyword starts, whose removal changes the refusal. `parse_prog` reports no
+// position, and only such a line can hold a token at the top level that heads
+// no declaration.
+fn ad_bad_line(ts: List[Token], program: Str, bad: Str) -> Int {
+  var depth = 0
+  var i = 0
+  while (i < ts.length()) {
+    let t = ts[i]
+    let starts = (i == 0) || (ts[i - 1].line < t.line)
+    if ((depth == 0) && starts && (t.kind != "kw") && (t.kind != "eof")) {
+      if (parse_prog(ad_blank_lines(program, t.line, t.line)).bad != bad) { return t.line }
+    }
+    if ((t.kind == "{") || (t.kind == "[") || (t.kind == "(")) { depth += 1 }
+    if ((t.kind == "}") || (t.kind == "]") || (t.kind == ")")) { depth -= 1 }
+    i += 1
+  }
+  return 0
 }
 
 // The `use` targets of `source` as written, in order: every `use` keyword at
@@ -1914,31 +1980,50 @@ fn ad_use_targets(source: Str) -> List[Str] {
   return out
 }
 
-// `REFUSED|BAD|<module>: <message>` for the first module, breadth first from
+// `REFUSED|BAD|<module>: <message>` for the first module, depth first from
 // the document `source` at `path` and each module once, whose text does not
 // read (`ad_module_refusal`), or "" when every used module reads. The document
-// itself was admitted by `admit_src` already. A target that does not resolve
-// is skipped, as the link skips it.
+// itself was admitted by `admit_src` already. As in the reference loader
+// (`compiler.py::resolve_use` and `load`), a target that resolves to nothing
+// refuses with "cannot find imported module", and a module reached again
+// while it is still being read refuses with "import cycle".
 fn ad_used_modules_refusal(source: Str, path: Str) -> Str {
   if (path == "") { return "" }
-  var paths: List[Str] = [path]
-  var srcs: List[Str] = [source]
-  var q = 0
-  while (q < paths.length()) {
-    let targets = ad_use_targets(srcs[q])
-    var t = 0
-    while (t < targets.length()) {
-      let dep = module_path(paths[q], targets[t])
-      if ((dep != "") && !ul_has(paths, dep)) {
+  // the DFS path from the document, as module keys, with each frame's text
+  // and the index of its next `use` target; `done` holds every module read
+  var stack: List[Str] = [ad_module_key(path)]
+  var texts: List[Str] = [source]
+  var next: List[Int] = [0]
+  var done: List[Str] = []
+  while (stack.length() > 0) {
+    let top = stack.length() - 1
+    let targets = ad_use_targets(texts[top])
+    let t = next[top]
+    if (t >= targets.length()) {
+      done = done.push(stack[top])
+      stack = stack.slice(0, top)
+      texts = texts.slice(0, top)
+      next = next.slice(0, top)
+    } else {
+      next = next.slice(0, top).push(t + 1)
+      let dep = module_path(stack[top], targets[t])
+      if (dep == "") {
+        return "REFUSED|BAD|".concat(stack[top]).concat(": cannot find imported module `")
+          .concat(targets[t]).concat("`")
+      }
+      if (ul_has(stack, dep)) {
+        return "REFUSED|BAD|".concat(dep).concat(": import cycle: ")
+          .concat(stack.slice(ul_index(stack, dep), stack.length()).push(dep).join(" -> "))
+      }
+      if (!ul_has(done, dep)) {
         let text = read_module_text(dep)
         let why = ad_module_refusal(text)
         if (why != "") { return "REFUSED|BAD|".concat(dep).concat(": ").concat(why) }
-        paths = paths.push(dep)
-        srcs = srcs.push(text)
+        stack = stack.push(dep)
+        texts = texts.push(text)
+        next = next.push(0)
       }
-      t += 1
     }
-    q += 1
   }
   return ""
 }
@@ -2085,6 +2170,14 @@ fn ad_imports_refusal(source: Str, path: Str) -> Str {
     q += 1
   }
   return ""
+}
+
+// The module key of the document at `path`: its absolute path when it is on
+// disk (the key `module_path` gives every module it resolves), else `path`.
+fn ad_module_key(path: Str) -> Str {
+  let segs = path.split("/")
+  let key = module_path(path, segs[segs.length() - 1])
+  return key == "" ? path : key
 }
 
 // The path-taking driver — the honest multi-file native compile. Identical to
