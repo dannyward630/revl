@@ -4882,7 +4882,7 @@ fn svc_ident(name: Str) -> Str {
 }
 
 fn require_ty(svc: Str) -> Str {
-  if (svc.startsWith("Stream[")) { return `<<UNSUPPORTED-required-stream:${svc}>>` }
+  if (svc.startsWith("Stream[")) { return "<<UNSUPPORTED-REQUIRED-STREAM>>" }
   return svc_ident(svc)
 }
 
@@ -6679,7 +6679,7 @@ pub fn emit_rust_src(ir: Any) -> Str {
   let test_markers = deferred_test_markers(ir)
   if (test_markers.length() > 0) { out = out.concat(test_markers) }
   out = out.concat(deferred_emission_markers(ir)).concat(validated_markers(ir))
-  out = out.concat(host_key_collision_markers(ir))
+  out = out.concat(host_key_collision_markers(ir)).concat(required_stream_markers(ir))
   return rstrip(out.join(newline())).concat(newline())
 }
 
@@ -6718,6 +6718,23 @@ fn validated_markers(ir: Any) -> List[Str] {
   while (i < nodes.length()) {
     if (flag_of(nodes[i], "validated")) { out = out.push(`<<UNSUPPORTED-VALIDATED:${wheres[i]}>>`) }
     i = i + 1
+  }
+  return out
+}
+
+// `_refuse_required_stream`: the reference refuses a required `Stream[T]`
+// coeffect by component and key. `require_ty` puts the bare marker in the
+// type position; this names the requirement, in the spelling every tier uses
+// (issue #2383).
+fn required_stream_markers(ir: Any) -> List[Str] {
+  var out = []
+  for (c of value_list(value_field(ir, "components"))) {
+    let rq = value_field(c, "requires")
+    for (k of value_keys(rq)) {
+      if (value_kind(value_field(rq, k)) == "str" && value_str(value_field(rq, k)).startsWith("Stream[")) {
+        out = out.push(`<<UNSUPPORTED-REQUIRED-STREAM:${value_str(value_field(c, "name"))}.${k}>>`)
+      }
+    }
   }
   return out
 }

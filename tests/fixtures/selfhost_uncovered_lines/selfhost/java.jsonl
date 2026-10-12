@@ -152,10 +152,6 @@
 
 ["function", "selfhost-emit-java-rvl-method-simple-ok-the", "method_simple_ok", 1, 1]
 
-["reason", "selfhost-emit-java-rvl-modern-supported-only-the", "selfhost/emit_java.rvl::modern_supported: Only the false return remains, propagating body_step_supported's existing rejection of setup, nonhost binds and unsupported methods/steps."]
-
-["function", "selfhost-emit-java-rvl-modern-supported-only-the", "modern_supported", 1, 1]
-
 ["reason", "selfhost-emit-java-rvl-newline-the-emitted-python", "selfhost/emit_java.rvl::newline: The emitted Python definition has zero Name-call sites; the newline constant is inlined into every production caller. Its retained wrapper is unreachable from emit_src."]
 
 ["function", "selfhost-emit-java-rvl-newline-the-emitted-python", "newline", 1, 1]

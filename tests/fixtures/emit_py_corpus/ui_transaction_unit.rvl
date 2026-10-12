@@ -28,8 +28,8 @@
 // This document joins the PY and TS oracles only. RUST and JAVA do not join it:
 // each still records a construct this document needs as an open gap in
 // `tests/fixtures/selfhost_blind_spots.json` — rust refuses the declared
-// `compensate` on `type_amount` (`<<DEFER-declared-compensate>>`, issue #1592),
-// java refuses the whole component (`<<DEFER-component-nonsimple:Agent>>`,
+// `compensate` on `type_amount` (`<<UNSUPPORTED-declared-compensate>>`, issue #1592),
+// java refuses the whole component (`<<UNSUPPORTED-component-nonsimple:Agent>>`,
 // because its component renderer admits only `return`/`effect`/`emit` method
 // steps and `act` opens with `let`, and because it does not port the
 // declared-`compensate` registration, issue #1511). See the `CORPUS` comment in

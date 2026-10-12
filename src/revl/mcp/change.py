@@ -87,9 +87,12 @@ def _cascade_names(plan: dict | None) -> list[str]:
     return [entry["component"] for entry in (plan or {}).get("cascade") or []]
 
 
-def cascade_refusal(arguments: dict, plan: dict | None) -> dict | None:
+def cascade_refusal(arguments: dict, plan: dict | None, *,
+                    cold: bool = False) -> dict | None:
     """A withdrawal that would strand dependents, asked for without
-    `cascade: true`: refused from the plan, before anything is applied."""
+    `cascade: true`: refused from the plan, before anything is applied. On a
+    `cold` call the plan came from the composition the call carries (issue
+    #2225), and the refusal says that nothing was loaded either."""
     component, cascade = _withdraw_spec(arguments["withdraw"])
     stranded = (plan or {}).get("cascade") or []
     if cascade or not stranded:
@@ -103,7 +106,10 @@ def cascade_refusal(arguments: dict, plan: dict | None) -> dict | None:
                                         f"provider: {lost}"}],
             "hint": "pass {withdraw: {component, cascade: true}} to withdraw the "
                     "whole cascade together, or replace the dependents first",
-            "note": "verification failed on the plan; nothing was applied"}
+            **({"loaded": False} if cold else {}),
+            "note": "verification failed on the plan; nothing was "
+                    + ("loaded or applied, so the session is still cold"
+                       if cold else "applied")}
 
 
 def edit_arguments(intent: str, arguments: dict, plan: dict | None) -> dict:

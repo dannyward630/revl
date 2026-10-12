@@ -1210,7 +1210,7 @@ def test_a_required_stream_coeffect_the_reference_refuses_is_named_here_too(
         "the reference no longer refuses the coeffect by name"
     )
     got = emitted["emit_rust_src"](ir)
-    assert "<<UNSUPPORTED-required-stream:Stream[OrderCreated]>>" in got
+    assert "<<UNSUPPORTED-REQUIRED-STREAM:Fulfiller.feed>>" in got
     assert "Box<dyn Stream[OrderCreated]>" not in got, (
         "the literal declared type is back in the requirement's type position"
     )
@@ -1224,7 +1224,7 @@ def test_the_required_stream_marker_is_scoped_to_the_stream_requirement(
     ir, _ = _refused_doc(tmp_path, _COEFFECT_DOC, reference)
     got = emitted["emit_rust_src"](ir)
     assert "Box<dyn Ship>" in got, "the service requirement is untouched"
-    assert "<<UNSUPPORTED-required-stream:Ship>>" not in got
+    assert "<<UNSUPPORTED-REQUIRED-STREAM:Fulfiller.ship>>" not in got
 
 
 # --------------------------------------------------------------------------
@@ -1464,7 +1464,7 @@ NAMED_REFUSALS = [
        "both spell the", "<<UNSUPPORTED-HOST-KEY-COLLISION:acme::greeter>>")
       for t in ("go", "java", "py", "rust", "ts")],
     ("emit_rust_refusals/required_stream_coeffect.rvl",
-     "a required `Stream\\[T\\]` coeffect", "<<UNSUPPORTED-required-stream:Stream[OrderCreated]>>"),
+     "a required `Stream\\[T\\]` coeffect", "<<UNSUPPORTED-REQUIRED-STREAM:Fulfiller.feed>>"),
 ]
 
 

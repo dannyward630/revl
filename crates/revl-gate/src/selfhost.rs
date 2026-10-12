@@ -6549,7 +6549,7 @@ fn svc_ident(name: String) -> String {
 
 fn require_ty(svc: String) -> String {
     if svc.revl_starts_with("Stream[") {
-        return format!("<<UNSUPPORTED-required-stream:{}>>", svc);
+        return String::from("<<UNSUPPORTED-REQUIRED-STREAM>>");
     }
     return svc_ident(svc.clone());
 }
@@ -8211,7 +8211,7 @@ pub fn emit_rust_src(ir: Value) -> String {
         out.extend((test_markers).iter().cloned());
     }
     out = (out.revl_concat(&deferred_emission_markers(ir.clone()))).revl_concat(&validated_markers(ir.clone()));
-    out.extend((host_key_collision_markers(ir.clone())).iter().cloned());
+    out = (out.revl_concat(&host_key_collision_markers(ir.clone()))).revl_concat(&required_stream_markers(ir.clone()));
     return rstrip__m1(&(out.revl_join(&newline()))).revl_concat(&newline());
 }
 
@@ -8241,6 +8241,19 @@ fn validated_markers(ir: Value) -> Vec<String> {
             out.push(format!("<<UNSUPPORTED-VALIDATED:{}>>", (wheres)[(i) as usize]));
         }
         i = (i).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return out;
+}
+
+fn required_stream_markers(ir: Value) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for c in value_list(value_field(ir.clone(), String::from("components"))) {
+        let rq = value_field(c.clone(), String::from("requires"));
+        for k in value_keys(rq.clone()) {
+            if ((value_kind(value_field(rq.clone(), k.clone())) == "str") && value_str(value_field(rq.clone(), k.clone())).revl_starts_with("Stream[")) {
+                out.push(format!("<<UNSUPPORTED-REQUIRED-STREAM:{}.{}>>", value_str(value_field(c.clone(), String::from("name"))), k));
+            }
+        }
     }
     return out;
 }
