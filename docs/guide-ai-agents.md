@@ -367,6 +367,16 @@ the revl checkout) gets `revl_check`, `revl_plan` and `revl_swap` by adding
 needs four values: a command, its args, a working directory and an environment
 (no port, no token).
 
+Run `revl mcp serve --print-config` from your project to have the config block
+written for you: it names an absolute interpreter that imports both revl and
+cordis (the runtime venv `setup.sh` builds, else the interpreter running the
+command), the `-P -m revl mcp serve` invocation and a `--root` for the current
+directory (repeat `--root DIR` to name others), then exits without serving. It
+exits 1 and names the fix when no interpreter can import both, and `revl
+doctor` reports the same answer on its `mcp client config` row. Paste the
+output under your client's server list; the manual recipes below are for the
+cases it does not cover (a console script, a `PYTHONPATH` checkout).
+
 If revl is installed in a virtualenv (a wheel, or `sh backends/python/setup.sh`
 in a checkout, which installs revl and the pinned cordis-py editable), the
 shortest config is that venv's console script, and no environment is needed:
