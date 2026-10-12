@@ -18198,6 +18198,47 @@ fn ext_decl_verdict(ts: Vec<Token>, i: i64, declared: Vec<String>, gtys: Vec<Bin
 }
 
 fn extern_decl_refusal(ts: Vec<Token>, pg: Prog) -> Verd {
+    let pv = extern_parse_refusal(ts.clone(), pg.clone());
+    if (pv.v != "") {
+        return pv;
+    }
+    return extern_lower_refusal(ts.clone(), pg.clone());
+}
+
+fn extern_parse_refusal(ts: Vec<Token>, pg: Prog) -> Verd {
+    let declared = ext_declared_names(ts.clone(), pg.clone());
+    let al = alias_map(ts.clone());
+    let gtys = sig_binds(ts.clone(), case_binds(ts.clone(), al.clone()), al.clone());
+    let mut seen: Vec<String> = vec![];
+    let mut d = 0i64;
+    let mut i = 0i64;
+    while (i < ts.revl_length()) {
+        if atk(&ts, i, "{") {
+            d = (d).checked_add(1i64).expect("revl: Int overflow");
+        } else {
+            if atk(&ts, i, "}") {
+                d = (d).checked_sub(1i64).expect("revl: Int overflow");
+            } else {
+                if ((d == 0i64) && atw(&ts, i, "extern")) {
+                    let nm = ext_decl_name(&ts, i);
+                    if ((nm == "") || (!contains__m2(&seen, &nm))) {
+                        let v = ext_decl_verdict(ts.clone(), i, declared.clone(), gtys.clone(), al.clone());
+                        if (v.v.revl_slice(0i64, 3i64) == "G8|") {
+                            return v;
+                        }
+                    }
+                    if (nm != "") {
+                        seen.push(nm.clone());
+                    }
+                }
+            }
+        }
+        i = (i).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return no_verd();
+}
+
+fn extern_lower_refusal(ts: Vec<Token>, pg: Prog) -> Verd {
     let declared = ext_declared_names(ts.clone(), pg.clone());
     let al = alias_map(ts.clone());
     let gtys = sig_binds(ts.clone(), case_binds(ts.clone(), al.clone()), al.clone());
@@ -22948,8 +22989,8 @@ fn fold_after_parse(ts: Vec<Token>, pg: Prog, fold: String) -> String {
     if (fold == "") {
         return String::from("");
     }
-    let ev = extern_decl_refusal(ts.clone(), pg.clone());
-    if (ev.v.revl_slice(0i64, 3i64) == "G8|") {
+    let ev = extern_parse_refusal(ts.clone(), pg.clone());
+    if (ev.v != "") {
         return ev.v;
     }
     return fold;

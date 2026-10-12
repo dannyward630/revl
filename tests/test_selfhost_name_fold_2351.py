@@ -164,6 +164,25 @@ def test_a_parser_refusal_still_comes_before_a_fold(native):
     assert verdict.startswith("G8|"), verdict
 
 
+# An earlier extern whose `undo` names no fn draws a LOWERING refusal (G4); a
+# later extern with no classification word draws a PARSER refusal (G8), which
+# the reference raises first.
+G4_THEN_G8 = (
+    "extern acquire fn open_ledger(path: Str) -> LedgerHandle undo ghost_fn(1)\n"
+    "  = @py { return abs(hash(path)) % 100000 }\n"
+    'extern fn f() -> Str = @py { return "x" }\n')
+
+
+@pytest.mark.parametrize("fold", [True, False], ids=["with_fold", "no_fold"])
+def test_a_later_unclassified_extern_outranks_an_earlier_undo_refusal(
+        native, fold):
+    source = (SERVICE_PAIR if fold else "") + G4_THEN_G8
+    error = _refusal(source)
+    assert "unclassified extern" in error.message, error.message
+    verdict = native["admit"](source)
+    assert verdict.startswith("G8|"), verdict
+
+
 def test_withdrawn_redeclared_and_apart_names_raise_no_fold(native):
     """The positive controls: a swap that withdraws the running component, a
     service redeclared under its exact running name, and names that stay apart

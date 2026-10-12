@@ -12958,6 +12958,44 @@ fn ext_decl_verdict(ts: List[Token], i: Int, declared: List[Str],
 // Top-level only — the scan counts braces, so an `extern` in a nested block is
 // not scanned (the reference's grammar has no such position).
 fn extern_decl_refusal(ts: List[Token], pg: Prog) -> Verd {
+  // the PARSE-stage half first: the reference's parser refuses every extern's
+  // classification word before `_lower_externs` judges any declaration's
+  // slots, so a later unclassified extern outranks an earlier one's G4.
+  let pv = extern_parse_refusal(ts, pg)
+  if (pv.v != "") { return pv }
+  return extern_lower_refusal(ts, pg)
+}
+
+// The first G8 any top-level extern declaration draws, in source order: the
+// refusals the reference raises while PARSING the declaration (the missing
+// classification word, and the ui-family capability rule), which no lowering
+// refusal of an earlier declaration can precede.
+fn extern_parse_refusal(ts: List[Token], pg: Prog) -> Verd {
+  let declared = ext_declared_names(ts, pg)
+  let al = alias_map(ts)
+  let gtys = sig_binds(ts, case_binds(ts, al), al)
+  var seen: List[Str] = []
+  var d = 0
+  var i = 0
+  while (i < ts.length()) {
+    if (atk(ts, i, "{")) {
+      d += 1
+    } else if (atk(ts, i, "}")) {
+      d -= 1
+    } else if (d == 0 && atw(ts, i, "extern")) {
+      let nm = ext_decl_name(ts, i)
+      if (nm == "" || !contains(seen, nm)) {
+        let v = ext_decl_verdict(ts, i, declared, gtys, al)
+        if (v.v.slice(0, 3) == "G8|") { return v }
+      }
+      if (nm != "") { seen = seen.push(nm) }
+    }
+    i += 1
+  }
+  return no_verd()
+}
+
+fn extern_lower_refusal(ts: List[Token], pg: Prog) -> Verd {
   let declared = ext_declared_names(ts, pg)
   let al = alias_map(ts)
   let gtys = sig_binds(ts, case_binds(ts, al), al)
@@ -18714,8 +18752,8 @@ fn fold_running(kind: Str, ds: List[NmLn], held: List[Str]) -> Str {
 // is a fold, so a program without one is byte-identical.
 fn fold_after_parse(ts: List[Token], pg: Prog, fold: Str) -> Str {
   if (fold == "") { return "" }
-  let ev = extern_decl_refusal(ts, pg)
-  if (ev.v.slice(0, 3) == "G8|") { return ev.v }
+  let ev = extern_parse_refusal(ts, pg)
+  if (ev.v != "") { return ev.v }
   return fold
 }
 
