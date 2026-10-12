@@ -17,11 +17,17 @@ on its own rather than the whole file erroring at import.
 
 from __future__ import annotations
 
+import ast
+import asyncio
+import collections.abc
+import contextvars
 import copy
 import importlib.util
+import itertools
 import os
 import sys
 import threading
+import weakref
 from pathlib import Path
 
 import pytest
@@ -100,8 +106,8 @@ component CounterSvc provides counter: Counter {
 """
 
 #: Every check a sealed boundary carries.
-CHECKS = {"residue", "hostResources", "escrow", "registers", "threads", "env",
-          "modules"}
+CHECKS = {"residue", "hostResources", "escrow", "registers", "threads", "tasks",
+          "env", "modules"}
 
 
 def _ir(source: str, name: str = "boundary.rvl") -> dict:
@@ -182,7 +188,7 @@ def test_swap_without_host_trace_refuses_unverified(session):
     session.load(_ir(PLAIN))
     del session._driver.host_events     # a driver that captured no host trace
     refusal = _refused(session, _successor(PLAIN))
-    assert refusal.code == "UNVERIFIED", refusal
+    assert refusal.code == "BOUNDARY_UNVERIFIED", refusal
     assert refusal.boundary["unverified"] == ["hostResources"]
     assert "hostResources" not in refusal.boundary["checks"]
     assert refusal.boundary["noResidue"] is False
@@ -241,6 +247,49 @@ def test_boundary_refuses_thread_left(session):
             if thread.name == "left-by-gen-n":
                 thread.join()
         del sys.modules["_revl_test_2277_stop"]
+
+
+def test_boundary_refuses_task_left(session):
+    """The session's event loop outlives a swap, so a task generation N left
+    pending on it keeps running under the successor's calls."""
+    gate = asyncio.Event()
+    sys.modules["_revl_test_2277_gate"] = gate   # how the host body reaches it
+    session.load(_ir(_host(
+        "import sys, asyncio\n"
+        "gate = sys.modules['_revl_test_2277_gate']\n"
+        "async def left_by_gen_n():\n"
+        "    await gate.wait()\n"
+        "asyncio.get_running_loop().create_task(left_by_gen_n())")))
+    try:
+        session.call("probe", "poke")
+        refusal = _refused(session, _successor(_host("pass")))
+        assert refusal.code == "TASK_LEFT", refusal
+        tasks = refusal.boundary["detail"]["tasks"]
+        assert len(tasks) == 1 and tasks[0].endswith("left_by_gen_n"), tasks
+        assert _next(session) == 7
+    finally:
+        gate.set()
+        session._loop.run_until_complete(asyncio.sleep(0))
+        del sys.modules["_revl_test_2277_gate"]
+
+
+def test_boundary_refuses_a_replaced_module(session):
+    """A name the baseline held that now maps to another module object is
+    what every later `import` gets, the successor's included. A standard
+    library name is no excuse: it is tolerated only when it is NEW."""
+    import colorsys
+
+    session.load(_ir(_host(
+        "import sys, types\n"
+        "sys.modules['colorsys'] = types.ModuleType('colorsys')")))
+    try:
+        session.call("probe", "poke")
+        refusal = _refused(session, _successor(_host("pass")))
+        assert refusal.code == "MODULE_LEFT", refusal
+        assert refusal.boundary["detail"]["modulesReplaced"] == ["colorsys"]
+        assert _next(session) == 7
+    finally:
+        sys.modules["colorsys"] = colorsys
 
 
 def test_boundary_refuses_env_drift(session, monkeypatch):
@@ -440,3 +489,55 @@ def test_swap_without_the_option_is_unchanged(session, monkeypatch):
     assert "boundary" not in state
     assert _next(session) == 8
     monkeypatch.undo()
+
+
+def _mutable_globals(module) -> set:
+    """Every global of `module` that can hold state across a generation: a
+    mutable container, a ContextVar or a counter bound at module level, and
+    every name a function rebinds with `global`."""
+    kinds = (collections.abc.Mapping, collections.abc.MutableSequence,
+             collections.abc.MutableSet, weakref.WeakSet,
+             contextvars.ContextVar, itertools.count)
+    found = {name for name, value in vars(module).items()
+             if not name.startswith("__") and isinstance(value, kinds)}
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    found.update(name for node in ast.walk(tree)
+                 if isinstance(node, ast.Global) for name in node.names)
+    return found
+
+
+def test_every_runtime_global_is_compared_or_left_out_by_name():
+    """`REGISTERS` is the list the seal compares; every other mutable global
+    of the runtime is in `NOT_COMPARED` with its reason. A global added to the
+    runtime later fails here until it is placed in one of the two."""
+    import runtime
+    from revl.mcp import swap_boundary
+
+    compared = set(swap_boundary.REGISTERS)
+    left_out = set(swap_boundary.NOT_COMPARED)
+    assert not compared & left_out
+    assert all(swap_boundary.NOT_COMPARED.values())
+    assert _mutable_globals(runtime) == compared | left_out
+
+
+def test_a_register_is_fingerprinted_by_content_one_level_down():
+    """A mapping of any type is compared by what it holds (the frame-by-context
+    table is a WeakKeyDictionary), and a handle appended to a bucket the
+    baseline already held is new."""
+    from revl.mcp import swap_boundary
+
+    class Ctx:
+        pass
+
+    ctx, frame = Ctx(), object()
+    table = weakref.WeakKeyDictionary()
+    before = swap_boundary._fingerprint(table)
+    table[ctx] = frame
+    assert swap_boundary._drifted(before, swap_boundary._fingerprint(table))
+
+    buckets = {"Svc": [object()]}
+    before = swap_boundary._fingerprint(buckets)
+    buckets["Svc"].append(object())
+    assert swap_boundary._drifted(before, swap_boundary._fingerprint(buckets))
+    buckets["Svc"].pop()
+    assert not swap_boundary._drifted(before, swap_boundary._fingerprint(buckets))

@@ -284,7 +284,7 @@ OTHER_CODES = {
         "fix": "give each acquisition an `undo` that releases it and make the "
                "release succeed, then swap again",
     },
-    "UNVERIFIED": {
+    "BOUNDARY_UNVERIFIED": {
         "category": "session",
         "guarantee": "a check that did not run is never a pass",
         "meaning": "the driver captured no host trace, so the boundary could "
@@ -314,6 +314,17 @@ OTHER_CODES = {
         "meaning": "a thread is alive that was not alive before the session's "
                    "first generation (the proof names it)",
         "fix": "stop and join the thread in the component's teardown",
+    },
+    "TASK_LEFT": {
+        "category": "session",
+        "guarantee": "a proven swap leaves no asyncio task the predecessor "
+                     "started pending on the session's event loop",
+        "meaning": "a task is pending on the session loop that was not before "
+                   "the session's first generation; the loop outlives the "
+                   "swap, so it would keep running under the successor (the "
+                   "proof names its coroutine)",
+        "fix": "keep the task's handle and cancel and await it in the "
+               "component's teardown",
     },
     "ENV_DRIFT": {
         "category": "session",

@@ -1293,7 +1293,7 @@ class Session:
             self._ensure_wal_open()
         # issue #2277: the process as it was before this session's first
         # generation, which a swap asked to prove its boundary compares against.
-        self._boundary_baseline = _swap_boundary.take(runtime_mod)
+        self._boundary_baseline = _swap_boundary.take(runtime_mod, self._loop)
         # item 245: register the session commit-state owner before the
         # composition loads, so every activation frame joins its live-frame
         # registry (the commit verb's gate target). Installed through the shared
@@ -1775,9 +1775,9 @@ class Session:
         generations: after the predecessor is disposed and before the successor
         loads, the process is compared against the baseline taken before this
         session's first generation (`swap_boundary.seal`). Anything off
-        baseline refuses with `BoundaryRefused` (`RESIDUE_LEFT`, `UNVERIFIED`,
-        `ESCROW_OPEN`, `REGISTER_DRIFT`, `THREAD_LEFT`, `ENV_DRIFT`,
-        `MODULE_LEFT`) after the predecessor is rebooted, so it keeps serving.
+        baseline refuses with `BoundaryRefused` (`RESIDUE_LEFT`,
+        `BOUNDARY_UNVERIFIED`, `ESCROW_OPEN`, `REGISTER_DRIFT`, `THREAD_LEFT`,
+        `TASK_LEFT`, `ENV_DRIFT`, `MODULE_LEFT`) after the predecessor is rebooted, so it keeps serving.
         A clean seal adds the proof to the answer as `boundary`. `backend` is
         the tier the caller expects the proof on; a Session swaps in process on
         the py tier only, so any other tier refuses `TIER_UNSUPPORTED` before
@@ -4573,7 +4573,7 @@ class Session:
             detail["compensationResidue"] = len(owed)
         residue = {"checks": checks, "detail": detail, "unverified": unverified}
         return _swap_boundary.seal(self._boundary_baseline, driver.runtime,
-                                   residue, self._owner, withdrawn)
+                                   residue, self._owner, withdrawn, self._loop)
 
     @staticmethod
     def _check_host_resources(driver, checks: dict, detail: dict) -> list:

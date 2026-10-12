@@ -15,24 +15,31 @@ What is compared, and the refusal each one raises:
   `new`/`open` paired with its `drop`/`close` over the driver's whole host
   trace). `RESIDUE_LEFT`. With no
   host trace the pairing cannot run, so it is reported unverified and the swap
-  refuses `UNVERIFIED`; a check that did not run is never a pass.
+  refuses `BOUNDARY_UNVERIFIED`; a check that did not run is never a pass.
 * `escrow`: a witnessed mutation or a deferred emission still pending on the
   session owner. `ESCROW_OPEN`, the gate crate's rule for replacing the extern
   surface under an open escrow.
 * `registers`: the process-global runtime registers in `REGISTERS`.
-  `REGISTER_DRIFT`. Only the enumerated set is compared; a register added to the
-  runtime later is a hole until it is listed here. The two registers the
+  `REGISTER_DRIFT`. Every other mutable global of the runtime is named in
+  `NOT_COMPARED` with its reason, and a test holds the two lists to the
+  runtime's globals, so a register added later fails that test until it is
+  placed in one of them. The two registers the
   runtime fills per generation and never empties (`DISCHARGED`: resolved config
   and decoding grammars) are emptied of the predecessor's own entries first
   (`discharge`), because that residue is the toolchain's to pay, not the
   author's. A refused seal puts them back (`restore`).
 * `threads`: a thread alive at the seal that was not alive at the baseline.
   `THREAD_LEFT`.
+* `tasks`: an asyncio task pending on the session's event loop that was not
+  pending at the baseline. The loop outlives a swap, so such a task keeps
+  running under the successor's calls. `TASK_LEFT`.
 * `env`: an `os.environ` key added, removed or changed. `ENV_DRIFT`. The proof
   names keys, never values, because the environment carries secrets.
 * `modules`: a `sys.modules` entry that appeared since the baseline and is not
-  in the generation namespace, the standard library or revl's own toolchain.
-  `MODULE_LEFT`.
+  in the generation namespace, the standard library or revl's own toolchain,
+  or an entry the baseline held that now names a different module object.
+  `MODULE_LEFT`. An attribute patched on an already-imported module (say
+  `json.dumps`) is not seen.
 
 The proof is py-tier only. Every other tier boots each generation as a child
 process, so a same-process swap does not exist there; a caller asking for the
@@ -42,6 +49,8 @@ version of this list.
 
 from __future__ import annotations
 
+import asyncio
+import collections.abc
 import dataclasses
 import gc
 import os
@@ -52,49 +61,79 @@ from pathlib import Path
 
 TIER_UNSUPPORTED = "TIER_UNSUPPORTED"
 RESIDUE_LEFT = "RESIDUE_LEFT"
-UNVERIFIED = "UNVERIFIED"
+BOUNDARY_UNVERIFIED = "BOUNDARY_UNVERIFIED"
 ESCROW_OPEN = "ESCROW_OPEN"
 REGISTER_DRIFT = "REGISTER_DRIFT"
 THREAD_LEFT = "THREAD_LEFT"
+TASK_LEFT = "TASK_LEFT"
 ENV_DRIFT = "ENV_DRIFT"
 MODULE_LEFT = "MODULE_LEFT"
 
 #: Every refusal, in the order a refused proof lists them (the first is the
-#: refusal's `code`), with the check whose failure raises it. `UNVERIFIED` is
+#: refusal's `code`), with the check whose failure raises it.
+#: `BOUNDARY_UNVERIFIED` is
 #: raised by a check that did not run, and `TIER_UNSUPPORTED` before any check,
 #: so neither has one. `diagnostics.OTHER_CODES` explains each code.
 REFUSALS = (
     {"code": TIER_UNSUPPORTED, "check": None},
     {"code": RESIDUE_LEFT, "check": "residue"},
     {"code": RESIDUE_LEFT, "check": "hostResources"},
-    {"code": UNVERIFIED, "check": None},
+    {"code": BOUNDARY_UNVERIFIED, "check": None},
     {"code": ESCROW_OPEN, "check": "escrow"},
     {"code": REGISTER_DRIFT, "check": "registers"},
     {"code": THREAD_LEFT, "check": "threads"},
+    {"code": TASK_LEFT, "check": "tasks"},
     {"code": ENV_DRIFT, "check": "env"},
     {"code": MODULE_LEFT, "check": "modules"},
 )
 
 #: The process-global mutable registers of `backends/python/runtime.py` the
-#: seal compares. Three are left out on purpose, so they are not mistaken for
-#: forgotten ones:
-#:
-#: * `_REALM_LABELS`: an intern table. A label is a stateless `(realm, key)`
-#:   identity object that equal realm strings share across the whole process
-#:   by design, so a successor reusing its predecessor's label is the intended
-#:   behaviour, and the label carries nothing it could pass along.
-#: * `_CLOCK_ANCHOR`: the session clock is a ratchet and its anchor outlives a
-#:   generation by design (`_SURVIVES_A_FAILED_LOAD` in session.py). A successor
-#:   observes a later clock than a fresh process would; the proof does not claim
-#:   otherwise.
-#: * `_trace`: the primary trace callback is the session's own plumbing. Each
-#:   session reinstalls its driver's callback before every step.
+#: seal compares. Every other mutable global of the runtime is in
+#: `NOT_COMPARED`, with the reason it is left out.
 REGISTERS = (
     "_revl_grammars", "_ACTIVATING", "_LIVE_INSTANCES",
     "_observers", "_fault_probe", "_SESSION_OWNER", "_ESTOP", "_ESTOP_LATCH",
     "_INFLIGHT", "_LIVE_FRAMES", "RESOLVED_CONFIG", "_pending_config",
-    "_STREAM_PARKED", "_STREAM_SWEEPER",
+    "_STREAM_PARKED", "_STREAM_SWEEPER", "_FRAME_BY_CTX",
 )
+
+_PER_CONTEXT = (
+    "a ContextVar: its value is per context. Generation code runs in tasks "
+    "the session loop creates, each with a copy of the caller's context that "
+    "dies with the task, so a value it sets never reaches the context the "
+    "seal reads; that context is the caller's, not the generation's")
+
+#: The runtime's mutable globals the seal does NOT compare, each with why. A
+#: test (tests/test_swap_boundary_2277.py) holds `REGISTERS` plus these keys
+#: equal to the runtime's mutable globals, so a new one is placed on purpose.
+NOT_COMPARED = {
+    "_REALM_LABELS": (
+        "an intern table: a label is a stateless (realm, key) identity that "
+        "equal realm strings share across the process by design, so a "
+        "successor reusing its predecessor's label is the intended behaviour"),
+    "_CLOCK_ANCHOR": (
+        "the session clock is a ratchet and its anchor outlives a generation "
+        "by design (`_SURVIVES_A_FAILED_LOAD` in session.py); a successor "
+        "reads a later clock than a fresh process would"),
+    "_trace": (
+        "the primary trace callback is the session's own plumbing; each "
+        "session reinstalls its driver's callback before every step"),
+    "_ENTRY_STAMP": (
+        "a monotonic counter ordering trace entries; like the clock it only "
+        "moves forward and carries nothing a successor could read back"),
+    "_TYPES": "a constant lookup from type name to Python type, never written",
+    "_revl_digest_nonce": (
+        "the per-run key for the salted prompt digest, minted once per process "
+        "and never written again; one run sharing it across generations is "
+        "its documented within-run equality"),
+    **{name: _PER_CONTEXT for name in (
+        "_CALL_SCOPE", "_JOURNAL", "_SITE_COMPENSATION", "_revl_grammar_claim",
+        "_revl_in_shadow", "_revl_last_emission_index", "_revl_model_calls",
+        "_revl_model_decision_sink", "_revl_model_evidence_draft",
+        "_revl_model_evidence_sealer", "_revl_pending_produced_by",
+        "_revl_record_sinks", "_revl_recorded_crossing", "_revl_shadow",
+        "_revl_shadow_faults", "_revl_validated_completions")},
+}
 
 #: Registers the runtime fills for each generation and never empties: the
 #: config each component resolved (secret fields included), keyed by component
@@ -120,47 +159,85 @@ class Snapshot:
 
     registers: dict
     threads: frozenset
+    tasks: frozenset
     env: dict
-    modules: frozenset
+    modules: dict
     discharged: dict
 
 
-def take(runtime) -> Snapshot:
+def take(runtime, loop=None) -> Snapshot:
     """Snapshot the process for a later `seal`. Cheap: a fingerprint per
-    register, the live thread idents, a copy of the environment and the
-    `sys.modules` keys. Threads are held as the objects themselves, so a
-    thread ident the OS reuses cannot pass a new thread off as a baseline one.
+    register, the live threads, the tasks pending on `loop` (the session's
+    event loop, None before it has one), a copy of the environment and the
+    `sys.modules` table. Threads, tasks and modules are held as the objects
+    themselves, so an identity the OS or the allocator reuses cannot pass a
+    new one off as a baseline one.
     """
     return Snapshot(
         registers={name: _fingerprint(getattr(runtime, name, None))
                    for name in REGISTERS},
         threads=frozenset(threading.enumerate()),
+        tasks=_pending_tasks(loop),
         env=dict(os.environ),
-        modules=frozenset(sys.modules),
+        modules=dict(sys.modules),
         discharged={name: {key: id(value) for key, value
                            in (getattr(runtime, name, None) or {}).items()}
                     for name in DISCHARGED},
     )
 
 
+def _pending_tasks(loop) -> frozenset:
+    if loop is None or loop.is_closed():
+        return frozenset()
+    return frozenset(task for task in asyncio.all_tasks(loop) if not task.done())
+
+
 def _fingerprint(value):
     """Identity of a register's contents: which objects it holds, not their
-    state. A container is the frozenset of what it holds (a dict by key and
-    value identity), so `_drifted` can ask what is NEW; anything else is the
-    value itself, or its identity.
+    state. A container is the frozenset of what it holds (a mapping by key and
+    value identity, whatever its type), so `_drifted` can ask what is NEW;
+    anything else is the value itself, or its identity. A mapping's values that
+    are containers themselves are read one level deeper, so a handle appended
+    to a bucket the baseline already held is new too.
 
     Identity is `id()`, which CPython reuses once an object is collected. A new
     object that lands at a collected baseline object's address, under the same
     key, would read as the baseline one. Holding the baseline objects to rule
     that out would keep weakly held frames alive, so the limit is stated
     instead (docs/swap.md)."""
-    if isinstance(value, dict):
-        return frozenset((repr(key), id(item)) for key, item in value.items())
-    if isinstance(value, (weakref.WeakSet, list, tuple, set)):
-        return frozenset(id(item) for item in list(value))
+    if isinstance(value, collections.abc.Mapping):
+        out = set()
+        for key, item in list(value.items()):
+            key = _key(key)
+            out.add((key, id(item)))
+            if _is_container(item):
+                out.update((key, "in", inner) for inner in _members(item))
+        return frozenset(out)
+    if _is_container(value):
+        return frozenset(_members(value))
     if value is None or isinstance(value, (str, int, float, bool)):
         return ("value", value)
     return ("object", id(value))
+
+
+def _key(key):
+    """A mapping key as the fingerprint holds it: a plain value by value, any
+    other object (a context, a frame) by identity."""
+    if isinstance(key, (str, int, float, bool, type(None))):
+        return ("value", repr(key))
+    return ("object", id(key))
+
+
+def _is_container(value) -> bool:
+    return isinstance(value, (collections.abc.Mapping, weakref.WeakSet, list,
+                              tuple, set, frozenset))
+
+
+def _members(value) -> list:
+    """The identities a container holds: a mapping's values, else its items."""
+    if isinstance(value, collections.abc.Mapping):
+        return [id(item) for item in list(value.values())]
+    return [id(item) for item in list(value)]
 
 
 def _drifted(before, after) -> bool:
@@ -174,7 +251,7 @@ def _drifted(before, after) -> bool:
 
 
 def seal(baseline: Snapshot, runtime, residue: dict, owner,
-         withdrawn: dict | None = None) -> dict:
+         withdrawn: dict | None = None, loop=None) -> dict:
     """The boundary proof: compare the process now against `baseline`.
 
     `residue` is the session's R4 report for the disposed generation
@@ -182,6 +259,7 @@ def seal(baseline: Snapshot, runtime, residue: dict, owner,
     them). `owner` is the disposed generation's session owner, or None.
     `withdrawn` is what `discharge` took out of the `DISCHARGED` tables; the
     proof names its keys, never its values (a config value can be a secret).
+    `loop` is the session's event loop, whose pending tasks are compared.
 
     Returns `{noResidue, checks, detail}`, with `unverified` when a check could
     not run and `refusals` when anything is off baseline. `noResidue` is true
@@ -191,7 +269,7 @@ def seal(baseline: Snapshot, runtime, residue: dict, owner,
     # a disposed generation's frames can sit in reference cycles until the
     # collector runs; unreachable, they reach nothing, so collect them first
     gc.collect()
-    now = take(runtime)
+    now = take(runtime, loop)
     r4 = residue["checks"]
     checks = {"residue": all(ok for name, ok in r4.items()
                              if name != "hostResources")}
@@ -202,15 +280,18 @@ def seal(baseline: Snapshot, runtime, residue: dict, owner,
                      if _drifted(baseline.registers.get(name),
                                  now.registers[name]))
     threads = _threads_left(baseline)
+    tasks = _tasks_left(baseline, now)
     env = sorted(key for key in set(baseline.env) | set(now.env)
                  if baseline.env.get(key) != now.env.get(key))
     modules = _modules_left(baseline, now)
+    replaced = _modules_replaced(baseline, now)
     checks.update({
         "escrow": not (escrowed or queued),
         "registers": not drifted,
         "threads": not threads,
+        "tasks": not tasks,
         "env": not env,
-        "modules": not modules,
+        "modules": not (modules or replaced),
     })
     detail = {
         "residue": residue["detail"],
@@ -219,8 +300,10 @@ def seal(baseline: Snapshot, runtime, residue: dict, owner,
         "queued": queued,
         "registers": drifted,
         "threads": threads,
+        "tasks": tasks,
         "env": env,
         "modules": modules,
+        "modulesReplaced": replaced,
     }
     unverified = list(residue.get("unverified") or ())
     proof = {"noResidue": all(checks.values()) and not unverified,
@@ -239,7 +322,8 @@ def refusals(proof: dict) -> list:
     named: list = []
     for row in REFUSALS:
         raised = (row["check"] in failed if row["check"] is not None
-                  else row["code"] == UNVERIFIED and bool(proof.get("unverified")))
+                  else row["code"] == BOUNDARY_UNVERIFIED
+                  and bool(proof.get("unverified")))
         if raised and row["code"] not in named:
             named.append(row["code"])
     return named
@@ -312,11 +396,31 @@ def _threads_left(baseline: Snapshot) -> list:
                   if t not in baseline.threads and t.is_alive())
 
 
+def _tasks_left(baseline: Snapshot, now: Snapshot) -> list:
+    """Tasks pending on the session loop now that were not at the baseline,
+    by the coroutine each runs."""
+    return sorted(_task_name(task) for task in now.tasks - baseline.tasks)
+
+
+def _task_name(task) -> str:
+    coro = task.get_coro()
+    return getattr(coro, "__qualname__", None) or task.get_name()
+
+
+def _modules_replaced(baseline: Snapshot, now: Snapshot) -> list:
+    """`sys.modules` names the baseline held that now name another object: a
+    module swapped out under its name, which every later import would get."""
+    return sorted(name for name, module in now.modules.items()
+                  if name in baseline.modules
+                  and baseline.modules[name] is not module
+                  and not name.startswith(_GENERATION_PREFIX))
+
+
 def _modules_left(baseline: Snapshot, now: Snapshot) -> list:
     """`sys.modules` entries that appeared since the baseline and are not the
     generation namespace, the standard library or revl's toolchain."""
     roots = _toolchain_roots()
-    return sorted(name for name in now.modules - baseline.modules
+    return sorted(name for name in now.modules.keys() - baseline.modules.keys()
                   if not _tolerated_module(name, roots))
 
 

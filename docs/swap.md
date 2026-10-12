@@ -251,7 +251,8 @@ proof to the answer as `boundary`:
 ```json
 {"noResidue": true,
  "checks": {"residue": true, "hostResources": true, "escrow": true,
-            "registers": true, "threads": true, "env": true, "modules": true},
+            "registers": true, "threads": true, "tasks": true, "env": true,
+            "modules": true},
  "detail": {...}}
 ```
 
@@ -262,12 +263,13 @@ refused:
 | Refusal | What was off baseline |
 |---|---|
 | `RESIDUE_LEFT` | An R4 teardown check failed: the cordis registry, provisions, effect stack or listeners, an unresolved compensation, or a host `new`/`open` with no `drop`/`close` in the host trace. These are the same checks `unload` reports. |
-| `UNVERIFIED` | The driver captured no host trace, so the host-resource pairing could not run. A check that did not run is never a pass. |
+| `BOUNDARY_UNVERIFIED` | The driver captured no host trace, so the host-resource pairing could not run. A check that did not run is never a pass. |
 | `ESCROW_OPEN` | A witnessed mutation is still escrowed, or a deferred emission is still queued, on the session owner. It stays the session's to commit or abort. |
 | `REGISTER_DRIFT` | A runtime register in `swap_boundary.REGISTERS` holds something it did not hold at the baseline, for example a trace observer that was never unsubscribed. |
 | `THREAD_LEFT` | A thread is alive that was not alive at the baseline. |
+| `TASK_LEFT` | An asyncio task is pending on the session's event loop that was not pending at the baseline. The loop outlives the swap, so the task would keep running under the successor's calls. |
 | `ENV_DRIFT` | An `os.environ` key was added, removed or changed. The proof names keys, never values. |
-| `MODULE_LEFT` | A `sys.modules` entry appeared that is not the generation namespace (`revl_run_gen*`), the standard library or revl's toolchain. A `@py ref` module counts, because the successor could import N's copy. |
+| `MODULE_LEFT` | A `sys.modules` entry appeared that is not the generation namespace (`revl_run_gen*`), the standard library or revl's toolchain, or a name the baseline held now maps to a different module object (listed in `detail.modulesReplaced`). A `@py ref` module counts, because the successor could import N's copy. |
 | `TIER_UNSUPPORTED` | The proof was asked for on a tier other than py. Other tiers boot each generation as a child process, so there is no shared boundary. This refuses before anything is torn down. |
 
 Two runtime registers fill up for every generation and are never emptied by
@@ -296,8 +298,18 @@ is:
 - **The filesystem.** A committed witnessed write is meant to outlive its
   generation. A write from a `@py` body that goes around a witnessed extern
   is not seen.
-- **Registers added later.** Only the enumerated registers are compared. A
-  runtime register added later is a gap until it is added to `REGISTERS`.
+- **Attributes of already-imported modules.** Modules are compared by name
+  and object. A host body that patches an attribute of a module the process
+  had already imported (say `json.dumps`) leaves the same module object
+  behind, and the patch outlives the generation unseen.
+- **Runtime globals left out on purpose.** `swap_boundary.NOT_COMPARED` names
+  every mutable global of the runtime the seal does not compare, each with its
+  reason: the realm-label intern table, the clock anchor, the trace callback,
+  the trace-entry counter, the type lookup, the digest nonce, and the
+  ContextVars, whose values are per context and so never reach the context the
+  seal reads. A test holds `REGISTERS` and `NOT_COMPARED` equal to the
+  runtime's mutable globals, so a register added later fails it until it is
+  placed in one of them.
 - **Reused identities.** A register's entries are compared by object identity
   (`id()`), which CPython reuses after an object is collected. A new object at
   a collected baseline object's address, under the same key, reads as the
