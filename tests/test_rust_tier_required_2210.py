@@ -59,8 +59,8 @@ def _run(args: list[str], require: str | None, path: str | None = None,
 def test_a_hand_probed_rust_test_fails_when_rust_is_required_and_cargo_is_absent(node):
     no_cargo = _path_without_cargo()
     unrequired = _run([node], "py", no_cargo)
-    assert re.search(r"\bskipped\b", unrequired) and "failed" not in unrequired \
-        and "error" not in unrequired, unrequired
+    assert re.search(r"\bskipped\b", unrequired), unrequired
+    assert not re.search(r"\b\d+ (failed|error)", unrequired), unrequired
 
     required = _run([node], "py,rust", no_cargo)
     # a skip raised in setup (a `skipif` marker) reports as an error, one raised
@@ -84,6 +84,10 @@ def test_a_cordis_rs_resolution_skip_fails_when_rust_is_required_and_cargo_is_pr
 
         def test_other_skip_is_left_alone():
             pytest.skip("node not installed")
+
+        def test_a_by_design_cordis_rs_skip_is_left_alone():
+            assert shutil.which("cargo") is not None
+            pytest.skip("cordis-rs: the crate did not build offline (cold ~/.cargo?)")
     '''), encoding="utf-8")
     path = os.environ.get("PATH", "")
     fake = tmp_path / "bin"
@@ -94,9 +98,9 @@ def test_a_cordis_rs_resolution_skip_fails_when_rust_is_required_and_cargo_is_pr
     args = ["-p", "conftest", "--rootdir", str(tmp_path), str(probe)]
 
     unrequired = _run(args, "py", path, cwd=tmp_path)
-    assert "2 skipped" in unrequired, unrequired
+    assert "3 skipped" in unrequired, unrequired
 
     required = _run(args, "py,rust", path, cwd=tmp_path)
-    assert "1 failed, 1 skipped" in required, required
+    assert "1 failed, 2 skipped" in required, required
     assert "the rust tier is REQUIRED here" in required, required
     assert "does not resolve" in required and "cargo is on PATH" in required, required

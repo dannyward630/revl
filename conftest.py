@@ -51,10 +51,15 @@ _PROBES: dict[str, tuple[str, re.Pattern[str]]] = {
 
 #: tier -> what a skip reason says when the toolchain is on PATH but unusable.
 #: cargo can be present while cordis-rs does not resolve (crates.io down, a
-#: cold registry): `rust_runtime_reason` then skips with the reason below, and
-#: that is the same broken provisioning as a missing cargo, so it fails too.
+#: cold registry): `rust_runtime_reason` (src/revl/run_rust.py) then answers
+#: with the phrases below, and the tests quote it in their skip. That is the same
+#: broken provisioning as a missing cargo, so it fails too. Only those phrases:
+#: a by-design skip that merely names cordis-rs (an offline build of a crate that
+#: needs a warm ~/.cargo, say) stays a skip.
 _UNUSABLE: dict[str, re.Pattern[str]] = {
-    "rust": re.compile(r"cordis-rs"),
+    "rust": re.compile(r"cargo could not resolve cordis-rs"
+                       r"|cordis-rs is not in the local cargo registry"
+                       r"|cargo not on PATH"),
 }
 
 #: tier -> was its toolchain absent when the session started. Measured once,
