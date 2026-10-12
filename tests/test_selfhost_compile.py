@@ -2410,6 +2410,10 @@ _STMT_GRAMMAR_REFUSED = {
         "component C requires kv: K provides s: K {\n"
         "  provide s {\n    fn put(k: Str) -> Int {\n"
         "      match k { _ => 1 }\n      return 1\n    }\n  }\n}\n"),
+    "semicolon_only_if_guard": _SVC + (
+        "component C requires kv: K {\n  if (true) { ; }\n}\n"),
+    "empty_else_guard": _SVC + (
+        "component C requires kv: K {\n  if (true) { fail \"no\" } else { }\n}\n"),
 }
 
 
@@ -2455,6 +2459,7 @@ def test_the_statement_grammar_refuses_nothing_the_reference_reads(compile_rvl, 
     parse_text(text, "x.rvl")
     scan = compile_rvl["stmt_parse_scan"](compile_rvl["lex_src"](text))
     assert scan["v"] == ""
+    assert compile_rvl["rl_lex_refusal"](text) == ""
 
 
 def test_a_host_body_the_self_host_lexer_closes_elsewhere_is_refused(compile_rvl):

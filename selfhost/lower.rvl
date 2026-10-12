@@ -19273,14 +19273,17 @@ fn sg_header(ts: List[Token], i: Int) -> SgR {
 }
 
 // A `{ stmt* }` block or a single statement, in the grammar `in_method` names.
-fn sg_arm(ts: List[Token], i: Int, in_method: Bool, in_async: Bool, loops: Int) -> SgR {
+// `guard` names the component guard arm ("if" or "else") and `gl` is the line
+// of its `if`, as `component_if` reports an empty one; a method arm passes "".
+fn sg_arm(ts: List[Token], i: Int, in_method: Bool, in_async: Bool, loops: Int, guard: Str, gl: Int) -> SgR {
   if (!atk(ts, i, "{")) { return sg_stmt(ts, i, in_method, in_async, loops) }
   var j = i + 1
+  var n = 0
   while (true) {
     while (atk(ts, j, ";")) { j += 1 }
     if (atk(ts, j, "}")) {
-      if (!in_method && (j == i + 1)) {
-        return sg_err("component `if` guard cannot be empty", tkc(ts, i).line)
+      if (!in_method && (guard != "") && (n == 0)) {
+        return sg_err("component `".concat(guard).concat("` guard cannot be empty"), gl)
       }
       return sg_ok(j + 1)
     }
@@ -19288,6 +19291,7 @@ fn sg_arm(ts: List[Token], i: Int, in_method: Bool, in_async: Bool, loops: Int) 
     let s = sg_stmt(ts, j, in_method, in_async, loops)
     if (s.i < 0) { return s }
     j = s.i
+    n += 1
   }
   return sg_unk()
 }
@@ -19306,14 +19310,15 @@ fn sg_cond(ts: List[Token], i: Int) -> SgR {
 fn sg_if(ts: List[Token], i: Int, in_method: Bool, in_async: Bool, loops: Int) -> SgR {
   let c = sg_cond(ts, i + 1)
   if (c.i < 0) { return c }
-  let th = sg_arm(ts, c.i, in_method, in_async, loops)
+  let gl = tkc(ts, i).line
+  let th = sg_arm(ts, c.i, in_method, in_async, loops, "if", gl)
   if (th.i < 0) { return th }
   if (in_method && at_word(ts, th.i, "elif")) {
     return sg_err("revl has no `elif`", tkc(ts, th.i).line)
   }
   if (!atw(ts, th.i, "else")) { return th }
   if (atw(ts, th.i + 1, "if")) { return sg_if(ts, th.i + 1, in_method, in_async, loops) }
-  return sg_arm(ts, th.i + 1, in_method, in_async, loops)
+  return sg_arm(ts, th.i + 1, in_method, in_async, loops, "else", gl)
 }
 
 // `while (c) arm` and `for (x of xs) arm` in a provide method.
@@ -19321,7 +19326,7 @@ fn sg_loop(ts: List[Token], i: Int, in_async: Bool, loops: Int) -> SgR {
   if (atw(ts, i, "while")) {
     let c = sg_cond(ts, i + 1)
     if (c.i < 0) { return c }
-    return sg_arm(ts, c.i, true, in_async, loops + 1)
+    return sg_arm(ts, c.i, true, in_async, loops + 1, "", 0)
   }
   if (!atk(ts, i + 1, "(")) { return sg_expected(ts, i + 1, "(") }
   let ln = tkc(ts, i + 1).line
@@ -19339,7 +19344,7 @@ fn sg_loop(ts: List[Token], i: Int, in_async: Bool, loops: Int) -> SgR {
   let it = sg_expr(ts, i + 4)
   if (it.i < 0) { return it }
   if (!atk(ts, it.i, ")")) { return sg_expected(ts, it.i, ")") }
-  return sg_arm(ts, it.i + 1, true, in_async, loops + 1)
+  return sg_arm(ts, it.i + 1, true, in_async, loops + 1, "", 0)
 }
 
 // The trailing `acting { … }` clause at `j`, if any (`_at_acting_clause`).
@@ -19541,8 +19546,11 @@ fn sg_stmt(ts: List[Token], i: Int, in_method: Bool, in_async: Bool, loops: Int)
   }
   if (at_word(ts, i, "on") && atk(ts, i + 1, "ident")) { return sg_unk() }
   if (atw(ts, i, "every") || atw(ts, i, "after")) {
+    if (in_method && atw(ts, i, "every") && atk(ts, i + 1, "ident") && atw(ts, i + 2, "in")) {
+      return sg_err("`every … in` stream iteration is only allowed in a component activation body", ln)
+    }
     if (in_method) {
-      return sg_err("`".concat(t.text).concat("` is only allowed in a component activation body"), ln)
+      return sg_err("`".concat(t.text).concat("` timers are only allowed in a component activation body"), ln)
     }
     return sg_unk()
   }
@@ -19575,7 +19583,8 @@ fn sg_stmt(ts: List[Token], i: Int, in_method: Bool, in_async: Bool, loops: Int)
   }
   if (atw(ts, i, "break") || atw(ts, i, "continue")) {
     if (in_method && (loops > 0)) { return sg_ok(i + 1) }
-    return sg_err("`".concat(t.text).concat("` is not valid here: activation and provide-method bodies have no loops"), ln)
+    return sg_err("`".concat(t.text).concat("` is not valid here: activation and provide-method bodies have no loops")
+      .concat(in_method ? " outside a `while`/`for`" : ""), ln)
   }
   let found = t.kind == "eof" ? "end of file" : "'".concat(t.text).concat("'")
   return sg_err("expected a statement (`let`, `effect`, `emit`, `fail`, `if`"

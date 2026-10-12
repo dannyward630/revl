@@ -23593,18 +23593,19 @@ fn sg_header(ts: &[Token], i: i64) -> SgR {
     return sg_unk();
 }
 
-fn sg_arm(ts: Vec<Token>, i: i64, in_method: bool, in_async: bool, loops: i64) -> SgR {
+fn sg_arm(ts: Vec<Token>, i: i64, in_method: bool, in_async: bool, loops: i64, guard: &str, gl: i64) -> SgR {
     if (!atk(&ts, i, "{")) {
         return sg_stmt(ts.clone(), i, in_method, in_async, loops);
     }
     let mut j = (i).checked_add(1i64).expect("revl: Int overflow");
+    let mut n = 0i64;
     while true {
         while atk(&ts, j.clone(), ";") {
             j = (j).checked_add(1i64).expect("revl: Int overflow");
         }
         if atk(&ts, j.clone(), "}") {
-            if ((!in_method) && (j == (i).checked_add(1i64).expect("revl: Int overflow"))) {
-                return sg_err(String::from("component `if` guard cannot be empty"), tkc(&ts, i).line);
+            if (((!in_method) && (guard != "")) && (n == 0i64)) {
+                return sg_err((String::from("component `").revl_concat(&guard)).revl_concat("` guard cannot be empty"), gl);
             }
             return sg_ok((j).checked_add(1i64).expect("revl: Int overflow"));
         }
@@ -23616,6 +23617,7 @@ fn sg_arm(ts: Vec<Token>, i: i64, in_method: bool, in_async: bool, loops: i64) -
             return s;
         }
         j = s.i;
+        n = (n).checked_add(1i64).expect("revl: Int overflow");
     }
     return sg_unk();
 }
@@ -23639,7 +23641,8 @@ fn sg_if(ts: Vec<Token>, i: i64, in_method: bool, in_async: bool, loops: i64) ->
     if (c.i < 0i64) {
         return c;
     }
-    let th = sg_arm(ts.clone(), c.i, in_method, in_async, loops);
+    let gl = tkc(&ts, i).line;
+    let th = sg_arm(ts.clone(), c.i, in_method, in_async, loops, "if", gl);
     if (th.i < 0i64) {
         return th;
     }
@@ -23652,7 +23655,7 @@ fn sg_if(ts: Vec<Token>, i: i64, in_method: bool, in_async: bool, loops: i64) ->
     if atw(&ts, (th.i).checked_add(1i64).expect("revl: Int overflow"), "if") {
         return sg_if(ts.clone(), (th.i).checked_add(1i64).expect("revl: Int overflow"), in_method, in_async, loops);
     }
-    return sg_arm(ts.clone(), (th.i).checked_add(1i64).expect("revl: Int overflow"), in_method, in_async, loops);
+    return sg_arm(ts.clone(), (th.i).checked_add(1i64).expect("revl: Int overflow"), in_method, in_async, loops, "else", gl);
 }
 
 fn sg_loop(ts: Vec<Token>, i: i64, in_async: bool, loops: i64) -> SgR {
@@ -23661,7 +23664,7 @@ fn sg_loop(ts: Vec<Token>, i: i64, in_async: bool, loops: i64) -> SgR {
         if (c.i < 0i64) {
             return c;
         }
-        return sg_arm(ts.clone(), c.i, true, in_async, (loops).checked_add(1i64).expect("revl: Int overflow"));
+        return sg_arm(ts.clone(), c.i, true, in_async, (loops).checked_add(1i64).expect("revl: Int overflow"), "", 0i64);
     }
     if (!atk(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "(")) {
         return sg_expected(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "(");
@@ -23689,7 +23692,7 @@ fn sg_loop(ts: Vec<Token>, i: i64, in_async: bool, loops: i64) -> SgR {
     if (!atk(&ts, it.i, ")")) {
         return sg_expected(&ts, it.i, ")");
     }
-    return sg_arm(ts.clone(), (it.i).checked_add(1i64).expect("revl: Int overflow"), true, in_async, (loops).checked_add(1i64).expect("revl: Int overflow"));
+    return sg_arm(ts.clone(), (it.i).checked_add(1i64).expect("revl: Int overflow"), true, in_async, (loops).checked_add(1i64).expect("revl: Int overflow"), "", 0i64);
 }
 
 fn sg_acting(ts: &[Token], j: i64) -> SgR {
@@ -23971,8 +23974,11 @@ fn sg_stmt(ts: Vec<Token>, i: i64, in_method: bool, in_async: bool, loops: i64) 
         return sg_unk();
     }
     if (atw(&ts, i, "every") || atw(&ts, i, "after")) {
+        if (((in_method && atw(&ts, i, "every")) && atk(&ts, (i).checked_add(1i64).expect("revl: Int overflow"), "ident")) && atw(&ts, (i).checked_add(2i64).expect("revl: Int overflow"), "in")) {
+            return sg_err(String::from("`every … in` stream iteration is only allowed in a component activation body"), ln);
+        }
         if in_method {
-            return sg_err((String::from("`").revl_concat(&t.text)).revl_concat("` is only allowed in a component activation body"), ln);
+            return sg_err((String::from("`").revl_concat(&t.text)).revl_concat("` timers are only allowed in a component activation body"), ln);
         }
         return sg_unk();
     }
@@ -24026,7 +24032,7 @@ fn sg_stmt(ts: Vec<Token>, i: i64, in_method: bool, in_async: bool, loops: i64) 
         if (in_method && (loops > 0i64)) {
             return sg_ok((i).checked_add(1i64).expect("revl: Int overflow"));
         }
-        return sg_err((String::from("`").revl_concat(&t.text)).revl_concat("` is not valid here: activation and provide-method bodies have no loops"), ln);
+        return sg_err(((String::from("`").revl_concat(&t.text)).revl_concat("` is not valid here: activation and provide-method bodies have no loops")).revl_concat(&if in_method { String::from(" outside a `while`/`for`") } else { String::from("") }), ln);
     }
     let found = if (t.kind == "eof") { String::from("end of file") } else { (String::from("'").revl_concat(&t.text)).revl_concat("'") };
     return sg_err(((String::from("expected a statement (`let`, `effect`, `emit`, `fail`, `if`").revl_concat(&if in_method { String::from(", `return`") } else { String::from(", `provide`") })).revl_concat("), found ")).revl_concat(&found), ln);
