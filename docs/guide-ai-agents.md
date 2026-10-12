@@ -379,12 +379,11 @@ so on) are carried into the block with their paths made absolute; flags that
 open a listener (`--http`, `--tls-*`) are refused by name, since a stdio config
 cannot carry them. It exits 1 and names the fix when no interpreter qualifies,
 and `revl doctor` reports the same answer on its `mcp client config` row. Paste
-the output into the client's MCP server list, which lives in its settings
-file: a project-level `.mcp.json` or `.cursor/mcp.json`, `.vscode/mcp.json`
-(its top-level key is `servers`, not `mcpServers`), or the user-level
-`claude_desktop_config.json` of a desktop client; check your client's own
-documentation for the exact location and key; the manual recipes below are for the
-cases it does not cover (a console script).
+the output into your MCP client's server list, usually a project-level
+`.mcp.json` or the client's own settings file. Some clients use a different
+top-level key (for example `servers` instead of `mcpServers`); check your
+client's documentation for the exact file and key. The manual recipes below are
+for the cases it does not cover (a console script).
 
 If revl is installed in a virtualenv (a wheel, or `sh backends/python/setup.sh`
 in a checkout, which installs revl and the pinned cordis-py editable), the
