@@ -146,6 +146,71 @@ path, which is what the resolution needs:
   keyword inside brackets refuses the link, since the reference rejects all of
   them. A `pub verified type` or `pub endorse[...] type` is read as public (the
   native producer lowers neither, so that link refuses too).
+- Once the link succeeds, the driver types the document's calls to the
+  services it imports (issue #2329). `admit_src` reads only the document, so a
+  `store.put("x")` against a `put(id: Int)` declared in the imported module used
+  to be admitted and emitted, where the reference checker refuses it.
+  `tc_admit_imports` admits the document again with the declaration text of
+  every imported service appended (from `service` to its closing brace, found
+  by the same reference-lexer scan; a leading `pub` or `commutative` is left
+  off), and returns that verdict as `REFUSED|<TAG>|<message>`, the reference's
+  own message where the gate types the call the way the reference does. The
+  module's type declarations are not appended. The gate types a built-in
+  parameter type, and a carried record or variant by name, without them. A
+  transparent alias never reaches this pass: the type link above refuses a
+  module that declares one, which is what refuses the issue's reproducer (a
+  private `type Id = Int` parameter). It refuses with `REFUSED|LINK|` where
+  the appended text would type the calls differently: a service the native IR
+  has a row for whose text the scan cannot read, and a declaration that names
+  a type the document also declares (any identifier of the declaration text
+  counts, so a parameter or comment word of that spelling refuses too). The
+  types the service carries (its record and variant types, issue #2362) are
+  appended too, rendered from the module's native `types` table, so the gate
+  can hold a record literal to a carried record parameter field-wise. A
+  generic carried type is left out.
+- The gate's own call-site rules, in a single document and through an import
+  (issue #2362):
+  - A requirement call with the wrong number of arguments is refused with the
+    reference's ``store.put` takes 1 argument(s), 2 given``.
+  - A record literal passed for a nominal record parameter is held to the
+    record's fields (the same field set, each compatible) through the `field
+    <Type>.<name>` rows. A record named inside a field type, whole or as a type
+    argument (`In`, `Opt[In]`, `List[In]`), is expanded the same way, four
+    levels deep. So is a record named in a container parameter (`put(r:
+    Opt[Row])`, `put(r: List[Row])`), so `store.put([{ id: "x" }])` gets the
+    reference's argument message.
+  - A record literal passed for a variant parameter is refused with the
+    reference's argument message.
+  - A requirement call is typed at its operation's declared return wherever
+    it appears (`reqret <root>.<op>` rows), so `= store.put(1) + 1` is held to
+    the method's result like any other value.
+  - A `fn m() = <expr>` provide method is typed as the `return <expr>` the
+    reference makes of it, and a returned value's requirement calls are decided
+    before the return's own check, in the reference's order.
+  - Through an import, a T1 from the document read alone yields to the import
+    admission's verdict when that refuses too, so the call's message wins as
+    it does in the reference.
+
+  Still refused differently from the reference (all refusals, none emits):
+  - In a single document, a record literal for a generic record parameter
+    (`Cell[Int]`) is refused by name (`TYPE|... is not typed by the native
+    gate`), not typed.
+  - A record literal nested past the shape expansion (more than five levels
+    for a record parameter, four inside a container one) is refused by name
+    (`TYPE|... nested deeper than 5 levels`), valid or not.
+  - Through an import, an operator whose operand type only the imported
+    declaration gives (`store.put(1) + 1` with `put -> Int`) is refused by
+    name (`LINK|an operator on an imported service call's result ...`): the
+    document is lowered without the declaration, so its IR would lack the
+    `operands` the reference writes (the py tier's overflow guard). The
+    check lowers the import admission text too and compares the typed
+    operators. It refuses valid programs of that shape too (`= store.put(1) +
+    1`, `+ n`, `let x = store.put(1)` then `x + 1`), because their native
+    bytes would differ; typing the imported call in the IR would admit them.
+  - A wrong argument count to an unmarked `emission` operation refuses with
+    the wiring's G4 where the reference reports the count first.
+  - Through an import, a record literal for a carried generic record
+    (`Cell[T]`) gets a T1 where the reference admits (issue #2374).
 
 This is the honest multi-file native compile: the whole chain still runs in revl,
 and the only host crossing is the read the reference loader also performs. It

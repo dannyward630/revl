@@ -4558,35 +4558,40 @@ def _emit_memo_wrapper(name: str, params: list, is_async: bool) -> "_Lines":
 def _emit_functions(functions: list) -> "_Lines":
     global _PY_IN_ASYNC, _PY_AWAIT_LOCALS, _PY_IN_ARROW
     out = _Lines()
-    for fn in functions:
-        name = _ident(fn["name"], "function name")
-        params = ", ".join(_ident(p["name"], "parameter name") for p in fn["params"])
-        # item 92: a phase-2 async-colored fn emits `async def`; its body renders
-        # in an async context with its async-typed parameters as the await-locals
-        # (a call through one yields a coroutine to settle). item 264: an
-        # async-typed param is an async local of a SYNC fn too — the enclosing
-        # `def` never awaits it (that is gated on `_PY_IN_ASYNC`), but an arrow
-        # re-passing it must still render it as a coroutine tail call.
-        is_async = bool(fn.get("async"))
-        _PY_IN_ASYNC = is_async
+    # issue #2204: reset on every exit, not only the normal one. An `EmitError`
+    # from a body used to leave the last function's colour in these module
+    # globals, which the next `emit` on the same (now shared) module inherited.
+    try:
+        for fn in functions:
+            name = _ident(fn["name"], "function name")
+            params = ", ".join(_ident(p["name"], "parameter name") for p in fn["params"])
+            # item 92: a phase-2 async-colored fn emits `async def`; its body renders
+            # in an async context with its async-typed parameters as the await-locals
+            # (a call through one yields a coroutine to settle). item 264: an
+            # async-typed param is an async local of a SYNC fn too — the enclosing
+            # `def` never awaits it (that is gated on `_PY_IN_ASYNC`), but an arrow
+            # re-passing it must still render it as a coroutine tail call.
+            is_async = bool(fn.get("async"))
+            _PY_IN_ASYNC = is_async
+            _PY_IN_ARROW = False
+            _PY_AWAIT_LOCALS = {p["name"] for p in fn["params"]
+                                if _is_async_fn_type(p.get("type"))}
+            # item 310: a `cache pure` fn renders its real body under a private name
+            # and gains a memo wrapper under the public one (below), so every caller
+            # — including a first-class value reference — goes through the table.
+            memoized = _is_cache_pure(fn)
+            if memoized:
+                name = f"_revl_uncached_{name}"
+            out.add(0, f"{'async def' if is_async else 'def'} {name}({params}):")
+            _fn_block(fn.get("body"), out, 1)
+            out.add(0)
+            if memoized:
+                out.extend(_emit_memo_wrapper(
+                    _ident(fn["name"], "function name"), fn["params"], is_async))
+    finally:
+        _PY_IN_ASYNC = False
         _PY_IN_ARROW = False
-        _PY_AWAIT_LOCALS = {p["name"] for p in fn["params"]
-                            if _is_async_fn_type(p.get("type"))}
-        # item 310: a `cache pure` fn renders its real body under a private name
-        # and gains a memo wrapper under the public one (below), so every caller
-        # — including a first-class value reference — goes through the table.
-        memoized = _is_cache_pure(fn)
-        if memoized:
-            name = f"_revl_uncached_{name}"
-        out.add(0, f"{'async def' if is_async else 'def'} {name}({params}):")
-        _fn_block(fn.get("body"), out, 1)
-        out.add(0)
-        if memoized:
-            out.extend(_emit_memo_wrapper(
-                _ident(fn["name"], "function name"), fn["params"], is_async))
-    _PY_IN_ASYNC = False
-    _PY_IN_ARROW = False
-    _PY_AWAIT_LOCALS = set()
+        _PY_AWAIT_LOCALS = set()
     return out
 
 

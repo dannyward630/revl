@@ -3,6 +3,32 @@
 import type { Context } from 'cordis'
 import { host } from '../runtime.ts'
 
+function revlEq(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) {
+    return false
+  }
+  const arrA = Array.isArray(a), arrB = Array.isArray(b)
+  if (arrA !== arrB) return false
+  if (arrA && arrB) {
+    const xs = a as unknown[], ys = b as unknown[]
+    return xs.length === ys.length && xs.every((x, i) => revlEq(x, ys[i]))
+  }
+  if (a instanceof Map && b instanceof Map) {
+    // revl equality is structural and order-independent (syntax-2.0 §3.4);
+    // for maps that means same key set, equal value under every key.
+    if (a.size !== b.size) return false
+    for (const [k, v] of a.entries()) {
+      if (!b.has(k) || !revlEq(v, b.get(k))) return false
+    }
+    return true
+  }
+  const ka = Object.keys(a as object), kb = Object.keys(b as object)
+  if (ka.length !== kb.length) return false
+  return ka.every((k) => Object.prototype.hasOwnProperty.call(b, k)
+    && revlEq((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]))
+}
+
 const REVL_I64_MIN = -(2n ** 63n)
 const REVL_I64_MAX = 2n ** 63n - 1n
 function revlI64(v: bigint): bigint {
@@ -62,21 +88,24 @@ function revlCheckedMod(a: bigint, b: bigint): { kind: "Ok"; value: bigint } | {
   return { kind: "Ok", value: ((a % m) + m) % m }
 }
 
-let revlCpsK0: string | undefined
-let revlCpsV0: string[] = []
-let revlCpsK1: string | undefined
-let revlCpsV1: string[] = []
-function revlCps(s: string): string[] {
-  if (s === revlCpsK0) return revlCpsV0
-  if (s === revlCpsK1) {
-    const k = revlCpsK1, v = revlCpsV1
-    revlCpsK1 = revlCpsK0; revlCpsV1 = revlCpsV0
-    revlCpsK0 = k; revlCpsV0 = v
-    return v
+const revlCpsN = 8
+const revlCpsK: (string | undefined)[] = new Array<string | undefined>(revlCpsN).fill(undefined)
+const revlCpsV: (string | string[])[] = new Array<string | string[]>(revlCpsN).fill("")
+function revlCpsDecode(s: string): string | string[] {
+  for (let i = 0; i < s.length; i++) {
+    const u = s.charCodeAt(i)
+    if (u >= 0xD800 && u <= 0xDFFF) return Array.from(s)
   }
-  const v = Array.from(s)
-  revlCpsK1 = revlCpsK0; revlCpsV1 = revlCpsV0
-  revlCpsK0 = s; revlCpsV0 = v
+  return s
+}
+function revlCps(s: string): string | string[] {
+  if (s.length < 64) return revlCpsDecode(s)
+  let k = 0
+  while (k < revlCpsN && revlCpsK[k] !== s) k++
+  const v = k < revlCpsN ? revlCpsV[k] : revlCpsDecode(s)
+  if (k === revlCpsN) k--
+  for (; k > 0; k--) { revlCpsK[k] = revlCpsK[k - 1]; revlCpsV[k] = revlCpsV[k - 1] }
+  revlCpsK[0] = s; revlCpsV[0] = v
   return v
 }
 function revlLen(x: string | ArrayLike<unknown>): bigint {
@@ -88,24 +117,27 @@ function revlSlice<T>(x: T[], a: bigint, b: bigint): T[]
 function revlSlice(x: unknown, a: bigint, b: bigint): string | Uint8Array | unknown[]
 function revlSlice(x: unknown, a: bigint, b: bigint): string | Uint8Array | unknown[] {
   const i = Number(a), j = Number(b)
-  return typeof x === "string"
-    ? revlCps(x).slice(i, j).join("")
-    : (x as string | Uint8Array | unknown[]).slice(i, j)
+  if (typeof x !== "string") return (x as Uint8Array | unknown[]).slice(i, j)
+  const v = revlCps(x)
+  return typeof v === "string" ? v.slice(i, j) : v.slice(i, j).join("")
 }
 function revlCharAt(s: string, i: bigint): string {
   const c = revlCps(s)[Number(i)]
-  return c === undefined ? "" : c
+  if (c === undefined) { throw new RangeError("revl: Str index out of range") }
+  return c
 }
 function revlCharCodeAt(s: string, i: bigint): bigint {
   const c = revlCps(s)[Number(i)]
-  return BigInt(c === undefined ? NaN : (c.codePointAt(0) as number))
+  if (c === undefined) { throw new RangeError("revl: Str index out of range") }
+  return BigInt(c.codePointAt(0) as number)
 }
 function revlIndexOf(x: string | unknown[], v: unknown): bigint {
   if (typeof x === "string") {
     const at = x.indexOf(v as string)
     return BigInt(at < 0 ? -1 : Array.from(x.slice(0, at)).length)
   }
-  return BigInt(x.indexOf(v))
+  for (let i = 0; i < x.length; i++) { if (revlEq(x[i], v)) return BigInt(i) }
+  return -1n
 }
 
 export function count_digits(s: string): bigint {

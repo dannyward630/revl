@@ -3632,26 +3632,30 @@ fn revl_int_arith_helper() -> Str {
 
 fn revl_str_helper() -> Str {
   var o = []
-  // The code-point decode is memoised in two slots (item 435(c)): every helper
-  // here measures or indexes `Array.from(s)`, so decoding per call made an
-  // index scan quadratic. Mirrors `_REVL_STR_HELPER` in
+  // The code-point view is memoised (item 435(c), issue #2313): a string with
+  // no surrogate unit is its own view, others decode through `Array.from`;
+  // strings of 64 units or more sit in an 8-slot least-recently-used cache, so
+  // an index scan stays linear whatever else the loop reads. Mirrors `_REVL_STR_HELPER` in
   // backends/typescript/emit.py byte for byte; `revlIndexOf` deliberately
   // keeps its own `Array.from` over a per-call substring.
-  o = o.push("let revlCpsK0: string | undefined")
-  o = o.push("let revlCpsV0: string[] = []")
-  o = o.push("let revlCpsK1: string | undefined")
-  o = o.push("let revlCpsV1: string[] = []")
-  o = o.push("function revlCps(s: string): string[] {")
-  o = o.push("  if (s === revlCpsK0) return revlCpsV0")
-  o = o.push("  if (s === revlCpsK1) {")
-  o = o.push("    const k = revlCpsK1, v = revlCpsV1")
-  o = o.push("    revlCpsK1 = revlCpsK0; revlCpsV1 = revlCpsV0")
-  o = o.push("    revlCpsK0 = k; revlCpsV0 = v")
-  o = o.push("    return v")
+  o = o.push("const revlCpsN = 8")
+  o = o.push("const revlCpsK: (string | undefined)[] = new Array<string | undefined>(revlCpsN).fill(undefined)")
+  o = o.push(`const revlCpsV: (string | string[])[] = new Array<string | string[]>(revlCpsN).fill("")`)
+  o = o.push("function revlCpsDecode(s: string): string | string[] {")
+  o = o.push("  for (let i = 0; i < s.length; i++) {")
+  o = o.push("    const u = s.charCodeAt(i)")
+  o = o.push("    if (u >= 0xD800 && u <= 0xDFFF) return Array.from(s)")
   o = o.push("  }")
-  o = o.push("  const v = Array.from(s)")
-  o = o.push("  revlCpsK1 = revlCpsK0; revlCpsV1 = revlCpsV0")
-  o = o.push("  revlCpsK0 = s; revlCpsV0 = v")
+  o = o.push("  return s")
+  o = o.push("}")
+  o = o.push("function revlCps(s: string): string | string[] {")
+  o = o.push("  if (s.length < 64) return revlCpsDecode(s)")
+  o = o.push("  let k = 0")
+  o = o.push("  while (k < revlCpsN && revlCpsK[k] !== s) k++")
+  o = o.push("  const v = k < revlCpsN ? revlCpsV[k] : revlCpsDecode(s)")
+  o = o.push("  if (k === revlCpsN) k--")
+  o = o.push("  for (; k > 0; k--) { revlCpsK[k] = revlCpsK[k - 1]; revlCpsV[k] = revlCpsV[k - 1] }")
+  o = o.push("  revlCpsK[0] = s; revlCpsV[0] = v")
   o = o.push("  return v")
   o = o.push("}")
   o = o.push(`function revlLen(x: string | ArrayLike<unknown>): bigint {`)
@@ -3663,9 +3667,9 @@ fn revl_str_helper() -> Str {
   o = o.push(`function revlSlice(x: unknown, a: bigint, b: bigint): string | Uint8Array | unknown[]`)
   o = o.push(`function revlSlice(x: unknown, a: bigint, b: bigint): string | Uint8Array | unknown[] {`)
   o = o.push("  const i = Number(a), j = Number(b)")
-  o = o.push(`  return typeof x === "string"`)
-  o = o.push(`    ? revlCps(x).slice(i, j).join("")`)
-  o = o.push(`    : (x as string | Uint8Array | unknown[]).slice(i, j)`)
+  o = o.push(`  if (typeof x !== "string") return (x as Uint8Array | unknown[]).slice(i, j)`)
+  o = o.push("  const v = revlCps(x)")
+  o = o.push(`  return typeof v === "string" ? v.slice(i, j) : v.slice(i, j).join("")`)
   o = o.push("}")
   o = o.push("function revlCharAt(s: string, i: bigint): string {")
   o = o.push("  const c = revlCps(s)[Number(i)]")

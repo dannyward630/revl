@@ -332,6 +332,10 @@ _LOAD_MARKERS = (
     re.compile(r"^\s*import emit\b", re.M),          # backends/python on sys.path
     re.compile(r'import_module\(\s*f?"backends\.'),  # backends.<tier>.emit
     re.compile(r"\bpython_backend_emitter\("),        # revl._paths' shared loader
+    # `placement.backend_emit_module`, the one cached loader (issue #2204): a
+    # module that went onto it no longer spells `"emit.py"`, but still loads an
+    # emitter and still has to say what it does about a refusal.
+    re.compile(r"\bbackend_emit_module\("),
 )
 
 #: Modules that load an emitter only to hand it to a caller, and answer no

@@ -23,7 +23,20 @@ WAL write, flush and fsync failures stop the crossing before its host body.
 `--allow-unsynced-wal` explicitly permits fsync failures for an unsuitable
 target; it prints a warning and records the durability opt-out in the WAL.
 Write and flush failures still propagate. This option forfeits the durability
-guarantee and applies only to the single-process Python backend.
+guarantee. The flag applies only to the single-process Python backend; the
+other tiers use the environment variable below.
+
+The go, rust and java recording sinks (emitted with `--record`, writing to
+`$REVL_WAL`) and the wasm host drain fail the same way: a WAL that cannot be
+opened, written or fsynced stops the process instead of running on. The go
+sink writes its header from the package `init` and the java sink when the
+`Components` class loads, so a failed header fsync stops the run before any
+component body. The rust sink opens on its first record, which follows the
+first witnessed mutation, so there the run stops after that one mutation.
+`REVL_WAL_ALLOW_UNSYNCED=1` is their explicit opt-out for a target that cannot
+fsync: it prints a warning, adds `"durability": "unsynced-opt-out"` to the
+header and writes a `durability-opt-out` record, the same marks
+`--allow-unsynced-wal` leaves.
 
 `revl run app.rvl --wal run.wal --require-settled-wal` refuses before activation
 when the existing WAL has an emission without completion, an approved deferred

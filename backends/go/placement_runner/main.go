@@ -193,19 +193,30 @@ func fatalBoot(name, message string, fibers []labeledFiber,
 	fatalLine(name, message)
 	bootCtx, bootCancel := stdctx.WithTimeout(stdctx.Background(), 5*time.Second)
 	for i := len(fibers) - 1; i >= 0; i-- {
-		fibers[i].fiber.Dispose()
-		if err := fibers[i].fiber.Gone(bootCtx); err != nil {
-			log("swap", fibers[i].label, "dispose NOT confirmed: "+err.Error())
-			continue
-		}
-		if state := fibers[i].fiber.State(); state != stc.StateGone {
-			log("swap", fibers[i].label, "dispose -> ended "+state.String())
-			continue
-		}
-		log("swap", fibers[i].label, "dispose -> inverses replay (LIFO)")
+		disposeAwaited(bootCtx, fibers[i], log)
 	}
 	bootCancel()
 	os.Exit(1)
+}
+
+// disposeAwaited disposes one fiber and waits (bounded by ctx) for the
+// teardown to settle, then logs what was confirmed: the inverses replayed, the
+// state the fiber ended in (`Gone` also returns for a fiber that had already
+// FAILED, which replays nothing), or that it did not settle in time. Shared by
+// the boot-failure path and the normal teardown so the two cannot drift
+// (issue #2336).
+func disposeAwaited(ctx stdctx.Context, lf labeledFiber,
+	log func(channel, subject, detail string)) {
+	lf.fiber.Dispose()
+	if err := lf.fiber.Gone(ctx); err != nil {
+		log("swap", lf.label, "dispose NOT confirmed: "+err.Error())
+		return
+	}
+	if state := lf.fiber.State(); state != stc.StateGone {
+		log("swap", lf.label, "dispose -> ended "+state.String())
+		return
+	}
+	log("swap", lf.label, "dispose -> inverses replay (LIFO)")
 }
 
 // guard returns the deferred function that funnels a failure of the goroutine
@@ -512,19 +523,14 @@ func main() {
 		}
 	}
 
-	// 6. teardown, consumers first (reverse load order). In once mode each
-	//    dispose is awaited out of the fiber registry, so the residue proof
-	//    below reads a settled runtime, not an in-flight one.
+	// 6. teardown, consumers first (reverse load order). Each dispose is
+	//    awaited (bounded) in both modes: the inverses of a held composition
+	//    must replay before `DOWN`, and in once mode the residue proof below
+	//    reads a settled runtime, not an in-flight one.
 	goneCtx, cancel := stdctx.WithTimeout(stdctx.Background(), 5*time.Second)
 	defer cancel()
 	for i := len(fibers) - 1; i >= 0; i-- {
-		fibers[i].fiber.Dispose()
-		if s.Once {
-			log("swap", fibers[i].label, "dispose -> inverses replay (LIFO)")
-			_ = fibers[i].fiber.Gone(goneCtx)
-		} else {
-			log("swap", fibers[i].label, "dispose")
-		}
+		disposeAwaited(goneCtx, fibers[i], log)
 	}
 	if listener != nil {
 		listener.Close()

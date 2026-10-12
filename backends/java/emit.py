@@ -7532,14 +7532,17 @@ private static java.nio.channels.FileChannel revlWalChannel;
 private static int revlWalSeq = 0;
 private static final java.util.List<Integer> revlWalSeqs = new java.util.ArrayList<>();
 private static final Object revlWalLock = new Object();
+private static boolean revlWalUnsynced = false;
 
 static {
     revlWalOpen();
 }
 
 // Wire the sink to REVL_WAL (unset -> no-op recording) and stamp the header.
-// Runs once at class load. A failed open leaves the sink null (recording is
-// silently off) rather than crashing a composition that only wanted to run.
+// Runs once at class load. A set REVL_WAL that cannot be opened, or a header
+// that cannot be made durable, fails class initialisation (issue #2345), so no
+// component body runs without its log. REVL_WAL_ALLOW_UNSYNCED=1 is the
+// explicit opt-out for a target that cannot fsync; it is stamped into the log.
 private static void revlWalOpen() {
     String path = System.getenv("REVL_WAL");
     if (path == null || path.isEmpty()) {
@@ -7549,17 +7552,28 @@ private static void revlWalOpen() {
         revlWalOut = new java.io.FileOutputStream(path, true);
         revlWalChannel = revlWalOut.getChannel();
     } catch (java.io.IOException open) {
-        revlWalOut = null;
-        revlWalChannel = null;
-        return;
+        throw new java.io.UncheckedIOException(
+                "revl: cannot open the write-ahead log REVL_WAL", open);
+    }
+    revlWalUnsynced = "1".equals(System.getenv("REVL_WAL_ALLOW_UNSYNCED"));
+    String durability = "";
+    if (revlWalUnsynced) {
+        System.err.println("warning: REVL_WAL_ALLOW_UNSYNCED=1 disables the WAL fsync guarantee");
+        durability = ",\"durability\":\"unsynced-opt-out\"";
     }
     revlWalWrite("{\"record\":\"header\",\"walVersion\":1,\"generation\":1,\"guarantee\":"
-            + revlWalStr(REVL_WAL_GUARANTEE) + "}");
+            + revlWalStr(REVL_WAL_GUARANTEE) + durability + "}");
+    if (revlWalUnsynced) {
+        revlWalWrite("{\"record\":\"durability-opt-out\",\"fromSeq\":0}");
+    }
 }
 
 // One durable JSON line: write, flush, and fsync (FileChannel.force(true))
 // before returning — the write-ahead discipline the py tier uses, so a record a
 // caller saw acknowledged is on disk before the effect it describes may matter.
+// A failed write or fsync throws: a record that never became durable must stop
+// the run, never pass silently. Only the REVL_WAL_ALLOW_UNSYNCED opt-out lets a
+// failed fsync through.
 private static void revlWalWrite(String json) {
     if (revlWalOut == null) {
         return;
@@ -7568,8 +7582,15 @@ private static void revlWalWrite(String json) {
         try {
             revlWalOut.write((json + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
             revlWalOut.flush();
+        } catch (java.io.IOException write) {
+            throw new java.io.UncheckedIOException("revl: write-ahead log write failed", write);
+        }
+        try {
             revlWalChannel.force(true);
-        } catch (java.io.IOException ignored) {
+        } catch (java.io.IOException sync) {
+            if (!revlWalUnsynced) {
+                throw new java.io.UncheckedIOException("revl: write-ahead log fsync failed", sync);
+            }
         }
     }
 }
