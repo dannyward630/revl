@@ -2064,6 +2064,11 @@ def _component_needs_teardown(component: dict, witnessed: dict,
 # backends/go/emit.py's `_RECORD_MODE`.
 _RECORD_MODE = False
 
+# issue #2345: whether this emission carries the WAL sink (`_revl_record_preamble`).
+# Set by `_emit_components` before any component factory is emitted, so each
+# factory can open the sink eagerly. Reset per emit.
+_RECORD_SINK = False
+
 # issue #1369 (item 522 slice 3): the document's computer-use externs, by name,
 # and its provide methods that run in a UI scope, keyed by
 # `(component, key, method)`. Set per `emit()` from `_ui_transaction_facts`
@@ -5532,6 +5537,11 @@ def _emit_component_new(component: dict, services: dict, ir: dict | None = None)
     plugin_fn = "cordis::plugin_async::<{0}, _, _>" if uses_await else "cordis::plugin_sync::<{0}, _>"
     closure = "        |ctx, config| async move {" if uses_await else "        |ctx, config| {"
     out.append(f"pub fn {_snake_fn(name)}() -> cordis::PluginHandle {{")
+    if _RECORD_SINK:
+        # issue #2345: open the WAL (and make its header durable) when the
+        # component is built, before activation, so a log that cannot be
+        # written stops the run before the first host call, not after it.
+        out.append("    revl_wal_sink();")
     out.append(f"    {plugin_fn.format(config_ty)}(")
     out.append(f"        {_string(name)},")
     out.append(f"        cordis::{inject},")
@@ -5877,6 +5887,11 @@ def _emit_component(component: dict, services: dict, ir: dict | None = None) -> 
     plugin_fn = "cordis::plugin_async::<{0}, _, _>" if uses_await else "cordis::plugin_sync::<{0}, _>"
     closure = "        |ctx, config| async move {" if uses_await else "        |ctx, config| {"
     out.append(f"pub fn {_snake_fn(name)}() -> cordis::PluginHandle {{")
+    if _RECORD_SINK:
+        # issue #2345: open the WAL (and make its header durable) when the
+        # component is built, before activation, so a log that cannot be
+        # written stops the run before the first host call, not after it.
+        out.append("    revl_wal_sink();")
     out.append(f"    {plugin_fn.format(config_ty)}(")
     out.append(f"        {_string(name)},")
     out.append(f"        cordis::{inject},")
@@ -9144,7 +9159,30 @@ def _rust_extern_config_bind(ext: dict) -> str:
             f"{_string(name)}, {req_lit}, {def_lit});")
 
 
-def _emit_v3_externs(externs: list, types: dict) -> list[str]:
+def _journalled_emission(name: str, params: str, forward: str,
+                         returns: str) -> tuple[list[str], str]:
+    """Issue #2345: in record mode an `extern emission fn` is journalled before
+    its body runs, as the py tier journals a host-extern emission
+    (backends/python/replay.py, `Timeline.record_emission`). The declared name
+    becomes a wrapper that writes the durable start record
+    (`revl_record_emission_start`, which panics when the record cannot be made
+    durable), calls the body under an inner name, then settles the record.
+    Returns the wrapper lines and the inner name the body is emitted under."""
+    inner = f"_revl_emission_{name}"
+    return [
+        f"fn {name}({params}) -> {returns} {{",
+        f"    let _revl_em = revl_record_emission_start({_string(name)});",
+        f"    let _revl_out = {inner}({forward});",
+        '    revl_record_emission_outcome(_revl_em, "emission-complete");',
+        "    _revl_out",
+        "}",
+        "",
+    ], inner
+
+
+def _emit_v3_externs(externs: list, types: dict, journal: bool = False) -> list[str]:
+    """`journal` (record mode with components, issue #2345) wraps each
+    `extern emission fn` so its durable start record is written first."""
     out: list[str] = []
     # item 378 Stage 5: emit the config seam once, before the externs, when any
     # extern carries a config schema (byte-identical when none do).
@@ -9170,6 +9208,13 @@ def _emit_v3_externs(externs: list, types: dict) -> list[str]:
         # the declared name's signature under a private name and the public one
         # registers what it returns, so no call site changes.
         secret_return = bool(_SECRET_MODE and ext.get("secret_return"))
+        if journal and ext.get("class") == "emission":
+            wrapper, name = _journalled_emission(
+                name, params,
+                ", ".join(_ident(p.get("name"), "extern parameter name")
+                          for p in ext.get("params") or []),
+                returns)
+            out.extend(wrapper)
         if secret_return:
             impl = f"_revl_secret_{name}"
             forward = ", ".join(_ident(p.get("name"), "extern parameter name")
@@ -10408,6 +10453,39 @@ def _revl_record_preamble() -> list[str]:
         "    }",
         "}",
         "",
+        "/// Journal one host-extern emission BEFORE its body runs (issue #2345), the",
+        "/// record the py tier writes for the same crossing: an `effect` of kind",
+        "/// `emission`, one-way, no inverse. Fsync'd before it returns, and a failed",
+        "/// fsync panics, so the host body never runs unless its start record is on",
+        "/// disk. Returns the record's seq, or `None` when `REVL_WAL` is unset.",
+        "pub fn revl_record_emission_start(name: &str) -> Option<u64> {",
+        "    let sink = revl_wal_sink()?;",
+        "    let mut wal = sink.lock().unwrap();",
+        "    let seq = wal.seq;",
+        "    wal.seq += 1;",
+        "    wal.write(&serde_json::json!({",
+        '        "record": "effect", "seq": seq, "component": serde_json::Value::Null,',
+        '        "stepIndex": serde_json::Value::Null, "kind": "emission", "label": name,',
+        '        "site": serde_json::Value::Null, "source": serde_json::Value::Null,',
+        '        "origin": { "phase": "activation" },',
+        '        "boundary": { "class": "emission", "referent": "process-crossing",',
+        '            "compensated": false, "detail": { "key": name, "method": name,',
+        '            "service": serde_json::Value::Null, "args": [] } },',
+        '        "inverse": { "reconstructible": false,',
+        '            "reason": "an emission is a one-way crossing; it has no inverse" },',
+        "    }));",
+        "    Some(seq)",
+        "}",
+        "",
+        "/// Settle a journalled emission once its body returned. A body that panics",
+        "/// leaves the start record unsettled, which recover reports.",
+        "pub fn revl_record_emission_outcome(seq: Option<u64>, outcome: &str) {",
+        "    if let (Some(seq), Some(sink)) = (seq, revl_wal_sink()) {",
+        "        let mut wal = sink.lock().unwrap();",
+        '        wal.write(&serde_json::json!({ "record": outcome, "seq": seq }));',
+        "    }",
+        "}",
+        "",
         "/// The commit-path proof that every recorded transactional seq COMMITTED,",
         "/// so recover SKIPS it — a committed transaction is never rolled back.",
         "/// Called on a clean unload, never on a crash.",
@@ -10898,6 +10976,12 @@ def _emit_bridge(ir: dict) -> list[str]:
     return out
 
 
+def _has_emission_externs(externs: list) -> bool:
+    """Issue #2345: does the document declare an `extern emission fn`, which
+    record mode journals before its body runs?"""
+    return any(ext.get("class") == "emission" for ext in externs)
+
+
 def _uses_teardown(components: list, externs: list) -> bool:
     """item 243 Slice 2b: does any component need `RevlTeardown` (a
     `witnessed` extern call, or `emit ... compensate`, activation- or
@@ -10909,6 +10993,7 @@ def _uses_teardown(components: list, externs: list) -> bool:
 
 
 def _emit_components(ir: dict, components: list) -> list[str]:
+    global _RECORD_SINK
     out: list[str] = []
     out.extend(_emit_service_traits(ir.get("services") or {}, ir.get("types") or {}))
     out.extend(_emit_host_stubs(ir))
@@ -10933,11 +11018,15 @@ def _emit_components(ir: dict, components: list) -> list[str]:
         out.extend(_revl_teardown_preamble())
         if _UI_SCOPES:
             out.extend(_REVL_UI_TRANSACTION.splitlines() + [""])
-        if _RECORD_MODE:
-            # item 322 Slice 2: the durable WAL sink rides alongside the teardown
-            # accumulator (a witnessed transactional step needs both). Gated so a
-            # non-record emission — every existing golden — is byte-identical.
-            out.extend(_revl_record_preamble())
+    _RECORD_SINK = _RECORD_MODE and bool(components) and (
+        _uses_teardown(components, ir.get("externs") or [])
+        or _has_emission_externs(ir.get("externs") or []))
+    if _RECORD_SINK:
+        # item 322 Slice 2: the durable WAL sink rides alongside the teardown
+        # accumulator (a witnessed transactional step needs both). Issue #2345:
+        # also for a journalled `extern emission fn`. Gated so a non-record
+        # emission (every existing golden) is byte-identical.
+        out.extend(_revl_record_preamble())
     for component in components:
         out.extend(_emit_component_auto(component, ir.get("services") or {}, ir))
     out.extend(_emit_bridge(ir))
@@ -10979,7 +11068,8 @@ def _emit_v3(ir: dict) -> str:
     if types:
         out.extend(_emit_v3_types(types))
     if externs:
-        out.extend(_emit_v3_externs(externs, types))
+        out.extend(_emit_v3_externs(externs, types,
+                                    journal=_RECORD_MODE and bool(components)))
     if functions:
         out.extend(_emit_v3_functions(functions, types, externs, analyses))
     if tests:
@@ -11180,8 +11270,9 @@ def emit(ir: dict, record: bool = False) -> str:
     recording preamble and the per-descriptor `revl_record_transactional` calls.
     Mirrors backends/go/emit.py's `emit(..., record=...)`.
     """
-    global _RECORD_MODE, _SECRET_MODE, _JOURNAL_MODE
+    global _RECORD_MODE, _SECRET_MODE, _JOURNAL_MODE, _RECORD_SINK
     _RECORD_MODE = record
+    _RECORD_SINK = False
     if not isinstance(ir, dict):
         raise EmitError("IR document must be a dict")
     ir = _dedup_colour_erased_poly_externs(ir)  # item 388, stage 6

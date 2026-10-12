@@ -142,6 +142,7 @@ def write_wal_record(handle, record: dict, *,
     out (``allow_unsynced``, defaulting to ``REVL_WAL_ALLOW_UNSYNCED=1``)."""
     if allow_unsynced is None:
         allow_unsynced = wal_allows_unsynced()
+    start = _wal_end_offset(handle)
     try:
         handle.write(json.dumps(record) + "\n")
         handle.flush()
@@ -152,8 +153,34 @@ def write_wal_record(handle, record: dict, *,
         os.fsync(handle.fileno())
     except (OSError, ValueError) as error:
         if not allow_unsynced:
+            # the record is not durable, so it is not left in the file: the
+            # same cut the py writer makes (backends/python/replay.py,
+            # `WriteAheadLog._write` and `_drop_unsynced_tail`)
+            _drop_unsynced_tail(handle, start)
             raise WALDurabilityError(
                 f"write-ahead log fsync failed: {error}") from error
+
+
+def _wal_end_offset(handle) -> int | None:
+    """The byte length of the open WAL ``handle`` before a record is appended,
+    or None when it has no file descriptor to measure."""
+    try:
+        return os.fstat(handle.fileno()).st_size
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _drop_unsynced_tail(handle, start: int | None) -> None:
+    """Truncate a just-appended record whose fsync failed (issue #2345). Best
+    effort: the caller is already raising, so a failed truncate leaves the
+    record and the run still stops."""
+    if start is None:
+        return
+    try:
+        os.ftruncate(handle.fileno(), start)
+        handle.seek(0, os.SEEK_END)
+    except (OSError, ValueError):
+        pass
 
 
 def drain_wal_frame(handle, line: str,

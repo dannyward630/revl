@@ -56,7 +56,9 @@ def producer_binary():
     )
     if build.returncode != 0:
         pytest.fail(f"building the rust crash producer failed:\n{build.stderr}")
-    binary = SCENARIO / "target" / "debug" / "crash_producer"
+    # cargo honours CARGO_TARGET_DIR, so the binary is wherever it points
+    target = Path(os.environ.get("CARGO_TARGET_DIR") or (SCENARIO / "target"))
+    binary = target / "debug" / "crash_producer"
     assert binary.exists(), f"expected {binary} after cargo build"
     return binary
 

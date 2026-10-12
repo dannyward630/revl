@@ -348,8 +348,8 @@ def test_wasm_run_stops_the_harness_on_a_failed_descriptor_fsync(
     assert rc == 1
     assert len(harnesses) == 1 and harnesses[0].killed
     assert FSYNC_FAILED in capsys.readouterr().err
-    assert "discharge" not in _records(wal)
-    assert "activation-complete" not in _records(wal)
+    # the descriptor whose fsync failed is cut back out of the file
+    assert _records(wal) == ["header"]
 
 
 def test_wasm_run_fails_when_the_commit_markers_are_not_durable(
@@ -362,8 +362,9 @@ def test_wasm_run_fails_when_the_commit_markers_are_not_durable(
     assert len(harnesses) == 1 and not harnesses[0].killed
     err = capsys.readouterr().err
     assert FSYNC_FAILED in err and "commit markers are not durable" in err
-    # the discharge marker's fsync is the one that failed; nothing follows it
-    assert _records(wal) == ["header", "discharge-descriptor", "discharge"]
+    # the discharge marker's fsync is the one that failed: it is cut back out
+    # of the file (issue #2345), as the py writer does, and nothing follows it
+    assert _records(wal) == ["header", "discharge-descriptor"]
 
 
 def test_wasm_drain_write_failure_is_a_durability_error():

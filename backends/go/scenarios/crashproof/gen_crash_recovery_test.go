@@ -817,6 +817,50 @@ func revlRecordTransactional(receiver, method string, args []string) {
 	})
 }
 
+// revlRecordEmissionStart journals one host-extern emission BEFORE its body
+// runs (issue #2345), the record the py tier writes for the same crossing
+// (backends/python/replay.py, Timeline.record_emission): an `effect` of kind
+// `emission`, one-way, no inverse. It is fsync'd before it returns and a failed
+// fsync panics, so the host body never runs unless its start record is on disk.
+// Returns the record's seq, or -1 when REVL_WAL is unset.
+func revlRecordEmissionStart(name string) int {
+	if revlWALSink == nil {
+		return -1
+	}
+	w := revlWALSink
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	seq := w.seq
+	w.seq++
+	w.write(map[string]any{
+		"record": "effect", "seq": seq, "component": nil, "stepIndex": nil,
+		"kind": "emission", "label": name, "site": nil, "source": nil,
+		"origin": map[string]any{"phase": "activation"},
+		"boundary": map[string]any{
+			"class": "emission", "referent": "process-crossing", "compensated": false,
+			"detail": map[string]any{"key": name, "method": name, "service": nil, "args": []any{}},
+		},
+		"inverse": map[string]any{
+			"reconstructible": false,
+			"reason":          "an emission is a one-way crossing; it has no inverse",
+		},
+	})
+	return seq
+}
+
+// revlRecordEmissionOutcome settles a journalled emission once its body
+// returned (`emission-complete`), the record the py tier writes after the call.
+// A body that panics leaves the start record unsettled, which recover reports.
+func revlRecordEmissionOutcome(seq int, outcome string) {
+	if revlWALSink == nil || seq < 0 {
+		return
+	}
+	w := revlWALSink
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.write(map[string]any{"record": outcome, "seq": seq})
+}
+
 // revlRecordDischarge writes the commit-path proof that every recorded
 // transactional seq COMMITTED, so recover SKIPS it — a committed transaction is
 // never rolled back. Called on a clean unload, never on a crash.

@@ -8363,7 +8363,33 @@ def _go_extern_config_bind(ext: dict) -> str:
             f"{_go_string(name)}, {req_lit}, {_go_literal(defaults)})")
 
 
-def _emit_v3_go_externs(externs: list, ctx: _V3GoCtx) -> list[str]:
+def _emit_v3_go_journalled_emission(name: str, params: str, arg_list: str,
+                                     sig_ret: str) -> tuple[list[str], str]:
+    """Issue #2345: in record mode an `extern emission fn` is journalled before
+    its body runs. The declared name becomes a wrapper that writes the durable
+    start record (`revlRecordEmissionStart`, which panics when the record cannot
+    be made durable), calls the body under an inner name, then settles the
+    record. Every call site, statement or value position, goes through it.
+    Returns the wrapper lines and the inner name the body is emitted under."""
+    inner = f"revlEmission_{name}"
+    lines = [f"func {name}({params}){sig_ret} {{",
+             f"\t_revlEm := revlRecordEmissionStart({_go_string(name)})"]
+    if sig_ret:
+        lines.append(f"\t_revlOut := {inner}({arg_list})")
+    else:
+        lines.append(f"\t{inner}({arg_list})")
+    lines.append('\trevlRecordEmissionOutcome(_revlEm, "emission-complete")')
+    if sig_ret:
+        lines.append("\treturn _revlOut")
+    lines.extend(["}", ""])
+    return lines, inner
+
+
+def _emit_v3_go_externs(externs: list, ctx: _V3GoCtx,
+                        journal: bool = False) -> list[str]:
+    """`journal` (record mode on the component tier, issue #2345) wraps each
+    `extern emission fn` so its durable start record is written first."""
+    global _COMP_NEEDS_TEARDOWN
     out: list[str] = []
     # item 378 Stage 5: emit the config seam once, before the externs, when any
     # extern carries a config schema (byte-identical when none do).
@@ -8400,6 +8426,12 @@ def _emit_v3_go_externs(externs: list, ctx: _V3GoCtx) -> list[str]:
         arg_list = ", ".join(
             _v3_ident(p.get("name"), "extern parameter")
             for p in ext.get("params") or [])
+        if journal and ext.get("class") == "emission":
+            # the WAL sink rides with the teardown preamble; ask for it
+            _COMP_NEEDS_TEARDOWN = True
+            wrapper, name = _emit_v3_go_journalled_emission(
+                name, params, arg_list, sig_ret)
+            out.extend(wrapper)
         if ext.get("secret_return") and ret:
             out.append(f"func {name}({params}){sig_ret} {{")
             out.append(f"\treturn revlSecretResult(revlSecret_{name}({arg_list}))")
@@ -9001,6 +9033,50 @@ func revlRecordTransactional(receiver, method string, args []string) {
 		"record": "discharge-descriptor", "seq": seq, "entry": "transactional",
 		"call": call, "origin": call, "witness": nil, "idempotency": nil,
 	})
+}
+
+// revlRecordEmissionStart journals one host-extern emission BEFORE its body
+// runs (issue #2345), the record the py tier writes for the same crossing
+// (backends/python/replay.py, Timeline.record_emission): an `effect` of kind
+// `emission`, one-way, no inverse. It is fsync'd before it returns and a failed
+// fsync panics, so the host body never runs unless its start record is on disk.
+// Returns the record's seq, or -1 when REVL_WAL is unset.
+func revlRecordEmissionStart(name string) int {
+	if revlWALSink == nil {
+		return -1
+	}
+	w := revlWALSink
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	seq := w.seq
+	w.seq++
+	w.write(map[string]any{
+		"record": "effect", "seq": seq, "component": nil, "stepIndex": nil,
+		"kind": "emission", "label": name, "site": nil, "source": nil,
+		"origin": map[string]any{"phase": "activation"},
+		"boundary": map[string]any{
+			"class": "emission", "referent": "process-crossing", "compensated": false,
+			"detail": map[string]any{"key": name, "method": name, "service": nil, "args": []any{}},
+		},
+		"inverse": map[string]any{
+			"reconstructible": false,
+			"reason":          "an emission is a one-way crossing; it has no inverse",
+		},
+	})
+	return seq
+}
+
+// revlRecordEmissionOutcome settles a journalled emission once its body
+// returned (`emission-complete`), the record the py tier writes after the call.
+// A body that panics leaves the start record unsettled, which recover reports.
+func revlRecordEmissionOutcome(seq int, outcome string) {
+	if revlWALSink == nil || seq < 0 {
+		return
+	}
+	w := revlWALSink
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.write(map[string]any{"record": outcome, "seq": seq})
 }
 
 // revlRecordDischarge writes the commit-path proof that every recorded
@@ -11557,7 +11633,7 @@ def _emit(ir: dict, package: str = "emitted", package_name: str | None = None,
     externs = ir.get("externs") or []
     extern_ctx = _V3GoCtx(_V3_TYPES, ir.get("functions") or [], externs)
     if externs:
-        body.extend(_emit_v3_go_externs(externs, extern_ctx))
+        body.extend(_emit_v3_go_externs(externs, extern_ctx, journal=_RECORD_MODE))
     body.extend(_emit_services(ir.get("services", {})))
     _emit_keys(ir, body)
     _emit_realm_helper(ir, body)
@@ -12335,7 +12411,7 @@ def _emit_v3_combined(ir: dict, package: str, placement: bool = True) -> str:
     if types:
         body.extend(_emit_v3_go_types(types))
     if externs:
-        body.extend(_emit_v3_go_externs(externs, ctx))
+        body.extend(_emit_v3_go_externs(externs, ctx, journal=_RECORD_MODE))
     if functions:
         body.extend(_emit_v3_go_functions(functions, ctx))
     pure_tests = [t for t in tests if not t.get("lifecycle")]

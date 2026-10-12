@@ -392,6 +392,39 @@ pub fn revl_record_transactional(receiver: &str, method: &str, args: Vec<String>
     }
 }
 
+/// Journal one host-extern emission BEFORE its body runs (issue #2345), the
+/// record the py tier writes for the same crossing: an `effect` of kind
+/// `emission`, one-way, no inverse. Fsync'd before it returns, and a failed
+/// fsync panics, so the host body never runs unless its start record is on
+/// disk. Returns the record's seq, or `None` when `REVL_WAL` is unset.
+pub fn revl_record_emission_start(name: &str) -> Option<u64> {
+    let sink = revl_wal_sink()?;
+    let mut wal = sink.lock().unwrap();
+    let seq = wal.seq;
+    wal.seq += 1;
+    wal.write(&serde_json::json!({
+        "record": "effect", "seq": seq, "component": serde_json::Value::Null,
+        "stepIndex": serde_json::Value::Null, "kind": "emission", "label": name,
+        "site": serde_json::Value::Null, "source": serde_json::Value::Null,
+        "origin": { "phase": "activation" },
+        "boundary": { "class": "emission", "referent": "process-crossing",
+            "compensated": false, "detail": { "key": name, "method": name,
+            "service": serde_json::Value::Null, "args": [] } },
+        "inverse": { "reconstructible": false,
+            "reason": "an emission is a one-way crossing; it has no inverse" },
+    }));
+    Some(seq)
+}
+
+/// Settle a journalled emission once its body returned. A body that panics
+/// leaves the start record unsettled, which recover reports.
+pub fn revl_record_emission_outcome(seq: Option<u64>, outcome: &str) {
+    if let (Some(seq), Some(sink)) = (seq, revl_wal_sink()) {
+        let mut wal = sink.lock().unwrap();
+        wal.write(&serde_json::json!({ "record": outcome, "seq": seq }));
+    }
+}
+
 /// The commit-path proof that every recorded transactional seq COMMITTED,
 /// so recover SKIPS it — a committed transaction is never rolled back.
 /// Called on a clean unload, never on a crash.
@@ -415,6 +448,7 @@ pub fn revl_record_activation_complete() {
 }
 
 pub fn crasher() -> cordis::PluginHandle {
+    revl_wal_sink();
     cordis::plugin_sync::<(), _>(
         "Crasher",
         cordis::Inject::none(),

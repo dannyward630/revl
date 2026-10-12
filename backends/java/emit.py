@@ -3819,7 +3819,38 @@ def _java_extern_config_bind(ext: dict) -> str:
             f"_REVL_CFG_DEFAULTS_{suffix});")
 
 
-def _emit_v3_externs(externs: list) -> list[str]:
+def _journalled_emission(name: str, params: str, forward: str,
+                         ret: str) -> tuple[list[str], str]:
+    """Issue #2345: in record mode an `extern emission fn` is journalled before
+    its body runs, as the py tier journals a host-extern emission
+    (backends/python/replay.py, `Timeline.record_emission`). The declared name
+    becomes a wrapper that writes the durable start record
+    (`revlRecordEmissionStart`, which throws when the record cannot be made
+    durable), calls the body under an inner name, then settles the record.
+    Returns the wrapper lines and the inner name the body is emitted under."""
+    inner = f"_revl_emission_{name}"
+    lines = [f"public static {ret} {name}({params}) {{",
+             f"    int _revlEm = revlRecordEmissionStart({_string(name)});"]
+    if ret == "void":
+        lines.append(f"    {inner}({forward});")
+    else:
+        lines.append(f"    {ret} _revlOut = {inner}({forward});")
+    lines.append('    revlRecordEmissionOutcome(_revlEm, "emission-complete");')
+    if ret != "void":
+        lines.append("    return _revlOut;")
+    lines.extend(["}", ""])
+    return lines, inner
+
+
+def _has_emission_externs(externs: list) -> bool:
+    """Issue #2345: does the document declare an `extern emission fn`, which
+    record mode journals before its body runs?"""
+    return any(ext.get("class") == "emission" for ext in externs)
+
+
+def _emit_v3_externs(externs: list, journal: bool = False) -> list[str]:
+    """`journal` (record mode with components, issue #2345) wraps each
+    `extern emission fn` so its durable start record is written first."""
     lines: list[str] = []
     # item 378 Stage 5: emit the config seam once, before the externs, when any
     # extern carries a config schema (byte-identical when none do).
@@ -3845,6 +3876,13 @@ def _emit_v3_externs(externs: list) -> list[str]:
         # keeps the declared name's signature under a private name and the
         # public one registers what it returns, so no call site changes.
         secret_return = bool(_SECRET_MODE and ext.get("secret_return"))
+        if journal and ext.get("class") == "emission":
+            wrapper, name = _journalled_emission(
+                name, params,
+                ", ".join(_ident(p.get("name"), "extern parameter name")
+                          for p in ext.get("params") or []),
+                ret)
+            lines.extend(wrapper)
         if secret_return:
             impl = f"_revl_secret_{name}"
             forward = ", ".join(_ident(p.get("name"), "extern parameter name")
@@ -7604,6 +7642,41 @@ public static void revlRecordTransactional(String receiver, String method, Strin
     }
 }
 
+// revlRecordEmissionStart journals one host-extern emission BEFORE its body
+// runs (issue #2345), the record the py tier writes for the same crossing
+// (backends/python/replay.py, Timeline.record_emission): an `effect` of kind
+// `emission`, one-way, no inverse. Fsync'd before it returns, and a failed fsync
+// throws, so the host body never runs unless its start record is on disk.
+// Returns the record's seq, or -1 when REVL_WAL is unset.
+public static int revlRecordEmissionStart(String name) {
+    if (revlWalOut == null) {
+        return -1;
+    }
+    synchronized (revlWalLock) {
+        int seq = revlWalSeq++;
+        String quoted = revlWalStr(name);
+        revlWalWrite("{\"record\":\"effect\",\"seq\":" + seq
+                + ",\"component\":null,\"stepIndex\":null,\"kind\":\"emission\",\"label\":" + quoted
+                + ",\"site\":null,\"source\":null,\"origin\":{\"phase\":\"activation\"}"
+                + ",\"boundary\":{\"class\":\"emission\",\"referent\":\"process-crossing\""
+                + ",\"compensated\":false,\"detail\":{\"key\":" + quoted + ",\"method\":" + quoted
+                + ",\"service\":null,\"args\":[]}}"
+                + ",\"inverse\":{\"reconstructible\":false,"
+                + "\"reason\":\"an emission is a one-way crossing; it has no inverse\"}}");
+        return seq;
+    }
+}
+
+// revlRecordEmissionOutcome settles a journalled emission once its body
+// returned. A body that throws leaves the start record unsettled, which recover
+// reports.
+public static void revlRecordEmissionOutcome(int seq, String outcome) {
+    if (revlWalOut == null || seq < 0) {
+        return;
+    }
+    revlWalWrite("{\"record\":" + revlWalStr(outcome) + ",\"seq\":" + seq + "}");
+}
+
 // revlRecordDischarge writes the commit-path proof that every recorded
 // transactional seq COMMITTED, so recover SKIPS it — a committed transaction is
 // never rolled back. Called on a clean unload, never on a crash.
@@ -9140,7 +9213,7 @@ def _emit_v1(ir: dict, package_name: str) -> str:
     if _uses_revl_frame(ir):
         out.extend(["    " + line if line else line for line in _emit_revl_frame_runtime(_declared_crossings_used(ir))])
         # item 322 Slice 2: the durable WAL sink rides alongside the
-        # teardown frame, but ONLY under `--record` — off, this whole block
+        # teardown frame, but ONLY under `--record`; off, this whole block
         # is absent and the output is byte-identical. Mirrors `_emit_v3`'s
         # splice: a witnessed step's `revlRecordTransactional` calls are
         # emitted from the SHARED `_emit_witnessed_step`, so every ir_version
@@ -9197,7 +9270,7 @@ def _emit_v2(ir: dict, package_name: str) -> str:
     if _uses_revl_frame(ir):
         out.extend(["    " + line if line else line for line in _emit_revl_frame_runtime(_declared_crossings_used(ir))])
         # item 322 Slice 2: the durable WAL sink rides alongside the
-        # teardown frame, but ONLY under `--record` — off, this whole block
+        # teardown frame, but ONLY under `--record`; off, this whole block
         # is absent and the output is byte-identical. Mirrors `_emit_v3`'s
         # splice: a witnessed step's `revlRecordTransactional` calls are
         # emitted from the SHARED `_emit_witnessed_step`, so every ir_version
@@ -9414,7 +9487,8 @@ def _emit_v3(ir: dict, package_name: str) -> str:
     if _uses_map_index(ir):
         out.extend(["    " + line if line else line for line in _emit_map_index_helper()])
     if externs:
-        out.extend(["    " + line if line else line for line in _emit_v3_externs(externs)])
+        out.extend(["    " + line if line else line for line in _emit_v3_externs(
+            externs, journal=_RECORD_MODE and bool(components))])
     if functions:
         out.extend(["    " + line if line else line for line in _emit_v3_functions(functions, types, externs)])
     if tests:
@@ -9436,11 +9510,13 @@ def _emit_v3(ir: dict, package_name: str) -> str:
                     for line in _emit_spawn_handle(with_get=_uses_instance_get(ir))])
     if _uses_revl_frame(ir):
         out.extend(["    " + line if line else line for line in _emit_revl_frame_runtime(_declared_crossings_used(ir))])
-        # item 322 Slice 2: the durable WAL sink rides alongside the teardown
-        # frame, but ONLY under `--record` — off, this whole block is absent and
-        # the output is byte-identical (the golden oracle + selfhost gate).
-        if _RECORD_MODE:
-            out.extend(["    " + line if line else line for line in _emit_record_sink()])
+    # item 322 Slice 2: the durable WAL sink rides alongside the teardown
+    # frame, but ONLY under `--record`; off, this whole block is absent and
+    # the output is byte-identical (the golden oracle + selfhost gate). Issue
+    # #2345: also for a journalled `extern emission fn`.
+    if _RECORD_MODE and components and (
+            _uses_revl_frame(ir) or _has_emission_externs(externs)):
+        out.extend(["    " + line if line else line for line in _emit_record_sink()])
     for component in components:
         out.extend(["    " + line if line else line for line in _emit_component(
             component, services, types, functions, externs, components,

@@ -340,6 +340,41 @@ public final class Components {
         }
     }
 
+    // revlRecordEmissionStart journals one host-extern emission BEFORE its body
+    // runs (issue #2345), the record the py tier writes for the same crossing
+    // (backends/python/replay.py, Timeline.record_emission): an `effect` of kind
+    // `emission`, one-way, no inverse. Fsync'd before it returns, and a failed fsync
+    // throws, so the host body never runs unless its start record is on disk.
+    // Returns the record's seq, or -1 when REVL_WAL is unset.
+    public static int revlRecordEmissionStart(String name) {
+        if (revlWalOut == null) {
+            return -1;
+        }
+        synchronized (revlWalLock) {
+            int seq = revlWalSeq++;
+            String quoted = revlWalStr(name);
+            revlWalWrite("{\"record\":\"effect\",\"seq\":" + seq
+                    + ",\"component\":null,\"stepIndex\":null,\"kind\":\"emission\",\"label\":" + quoted
+                    + ",\"site\":null,\"source\":null,\"origin\":{\"phase\":\"activation\"}"
+                    + ",\"boundary\":{\"class\":\"emission\",\"referent\":\"process-crossing\""
+                    + ",\"compensated\":false,\"detail\":{\"key\":" + quoted + ",\"method\":" + quoted
+                    + ",\"service\":null,\"args\":[]}}"
+                    + ",\"inverse\":{\"reconstructible\":false,"
+                    + "\"reason\":\"an emission is a one-way crossing; it has no inverse\"}}");
+            return seq;
+        }
+    }
+
+    // revlRecordEmissionOutcome settles a journalled emission once its body
+    // returned. A body that throws leaves the start record unsettled, which recover
+    // reports.
+    public static void revlRecordEmissionOutcome(int seq, String outcome) {
+        if (revlWalOut == null || seq < 0) {
+            return;
+        }
+        revlWalWrite("{\"record\":" + revlWalStr(outcome) + ",\"seq\":" + seq + "}");
+    }
+
     // revlRecordDischarge writes the commit-path proof that every recorded
     // transactional seq COMMITTED, so recover SKIPS it — a committed transaction is
     // never rolled back. Called on a clean unload, never on a crash.
