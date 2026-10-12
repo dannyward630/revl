@@ -24,7 +24,7 @@ release also folds in the full agent story and the standing correctness debt.
   accept-but-won't-compile holes each verified against `javac` and `cargo`
   and closed. This is not a claim that none remain; the open ones are listed
   under Known issues.
-- **Declared resource dimensions (#1938).** A composition can now declare its
+- **Declared resource dimensions (issue #1938, fixed by #2149).** A composition can now declare its
   own capability's resource parameters:
   `capability mail.send(account: discrete, folder: path)`. The parameter is
   bound from the call arguments and then appears in the approval ticket's
@@ -111,13 +111,13 @@ release also folds in the full agent story and the standing correctness debt.
   #2053, #2122).
 - Java: an annotated empty list is declared as its element type, not as a raw
   `java.util.List`, so a loop over one (as in `dedent` in `stdlib/str.rvl`)
-  compiles under javac (#2302, closes #2296).
+  compiles under javac (issue #2296, fixed by #2302).
 - The self-host native driver links a used module's externs. It now builds the
   same extern closure as `compile_files`, so a module that uses `stdlib/json.rvl`
-  keeps its json extern bodies on py and ts (#2305, closes #2181).
+  keeps its json extern bodies on py and ts (issue #2181, fixed by #2305).
 - Go: an `Int32` `+`, `-` or `*` in a component method body traps on overflow,
-  and so does unary minus, as a top-level `fn` already did (#2312, closes
-  #2262).
+  and so does unary minus, as a top-level `fn` already did (issue #2262, fixed
+  by #2312).
 - Service names that differ only in case, and hot-swap names that fold onto a
   running component, are refused on every tier (#2309, closes #2275, #2276).
 - A call in a fn body whose callee is a local binding takes its arity and types
@@ -519,7 +519,7 @@ then rejects, or that it handles differently from the reference.
 
 ### Internal
 
-Regeneration, CI, test-harness and roadmap-currency work (the light PR runs and
+Regeneration, CI, test tooling and roadmap-currency work (the light PR runs and
 merge-queue CI of #1679, the root-suite sharding, the affected-tests selector,
 the census and ledger records, the site and playground wheel refreshes, and the
 main-health fixes between them) is not itemised; it changes no behaviour of the
