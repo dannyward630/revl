@@ -39,9 +39,10 @@
 //! whole missing LAYER. `admit_src` decides the composition and guarantee layer
 //! (`G1`..`G4`, `A1`, `PRELUDE`, and parse failures as `BAD`), plus ONE slice
 //! of the reference's type layer — the fn-body statement layer. It does **not**
-//! run the rest of it. Measured, not assumed: the reference refuses
-//! `fn f() -> Int { return undefined_name }` and `fn f() -> { }`; the self-host
-//! gate raises no objection to either.
+//! run the rest of it. Measured, not assumed: the reference refuses a record
+//! literal that misses a declared field (`type P = { x: Int }` with
+//! `fn f() -> P { return { y: 1 } }`); the self-host gate raises no objection
+//! to it.
 //!
 //! So [`Verdict`] has no admitting arm and no `is_admitted()`. Its non-refusing
 //! outcome is [`Verdict::NoObjection`], which means exactly *"this gate found
@@ -1294,6 +1295,7 @@ component CacheMiss requires store: Store provides cache: Cache {\n\
         for source in [
             "fn f() -> Int { return undefined_name }",
             "fn f() -> { }",
+            "type P = { x: Int }\nfn f() -> P { return { y: 1 } }",
         ] {
             let issued = issue_admission(source);
             assert!(!issued.is_admitted(), "must not admit {:?}", source);

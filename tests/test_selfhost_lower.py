@@ -3884,6 +3884,26 @@ def test_rejected_programs_agree(admit, case):
     _agree(admit, src)
 
 
+# Parse refusals the gate spells in the reference's words. They cannot be
+# `REJECTED_PROGRAMS` rows: `_classify` files a parse error as "OUT:<message>"
+# and the gate tags it BAD, so only the message is compared here.
+# `fn f() -> { }` sat in test_gate_crate_admit.py's TYPE_LAYER_GAP until the
+# statement grammar ported the reference's `type_` rule (issue #2396).
+PARSE_REFUSED_PROGRAMS = [
+    ("issue 2396: a return arrow with no type", "fn f() -> { }"),
+]
+
+
+@pytest.mark.parametrize("case", PARSE_REFUSED_PROGRAMS,
+                         ids=[n for n, _ in PARSE_REFUSED_PROGRAMS])
+def test_parse_refused_programs_agree(admit, case):
+    name, src = case
+    ref_tag, ref_msg = _ref(src)
+    assert ref_tag == "OUT:" + ref_msg, \
+        f"corpus bug: the reference does not refuse {name} at parse time"
+    assert admit(src) == "BAD|" + ref_msg
+
+
 @pytest.mark.parametrize("binding", ["let", "var"])
 @pytest.mark.parametrize("annotation", ["", ": Str"])
 def test_method_local_binding_captured_by_undo(admit, binding, annotation):

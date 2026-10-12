@@ -924,7 +924,9 @@ fn p_blk_arm(ts: List[Token], i: Int, d: Int) -> BlkR {
       }
     } else { go = false }
   }
-  if (!ok || at(ts, j, "}") || at(ts, j, "eof")) {
+  // An `if` heading the tail is an `if` STATEMENT to the reference, which
+  // refuses a block arm that ends in one (issue #2396): it is no tail here.
+  if (!ok || at(ts, j, "}") || at(ts, j, "eof") || at_kw(ts, j, "if")) {
     return { i: 0 - 1, blk: [], tail: NullLit, ok: false }
   }
   let t = p_expr_d(ts, j, d)

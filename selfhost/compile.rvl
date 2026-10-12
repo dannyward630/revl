@@ -87,9 +87,8 @@
 // in a stage.
 
 // One line: the self-host program grammar reads a `use` by its first line.
-use "./lower.rvl" { admit_src, admit_ambient, lower_to_ir, lower_to_ir_refs, parse_prog, foreign_scan }
+use "./lower.rvl" { admit_src, admit_ambient, lower_to_ir, lower_to_ir_refs, parse_prog, parse_refusal }
 use "./lexer.rvl" { Token, lex_src }
-use "./parser.rvl" { type_at, is_record_key }
 use "./emit_py.rvl" { emit_py_src }
 use "./emit_rust.rvl" { emit_rust_src }
 use "./emit_ts.rvl" { emit_ts_src }
@@ -1333,6 +1332,38 @@ fn rl_opaque_end(s: Str, i: Int) -> Int {
   return i
 }
 
+// Issue #2359: why `s` does not lex as the reference lexer reads it, or "".
+// The self-host lexer balances a host body on `"` strings alone, so a body
+// whose `'` string or block comment holds an unmatched brace (`@ts { … /'/g …
+// }`) closes where the reference's `_match_brace` does not, and the reference
+// reports an unterminated body. Each comment, string, template and host body
+// is stepped over as `lex` steps over it, and the first that does not close,
+// or a host body the self-host lexer closes elsewhere, is refused on its line.
+fn rl_lex_refusal(s: Str) -> Str {
+  let n = s.length()
+  var i = 0
+  var line = 1
+  while (i < n) {
+    let past = rl_opaque_end(s, i)
+    if (past < 0) {
+      return "line ".concat(line.to_str())
+        .concat(": an unterminated string, template or host body (the reference lexer reads it to the end of the text)")
+    }
+    // a host body the self-host lexer would close at another brace than the
+    // reference does carries other host text, so it is refused, not emitted
+    if ((past > i + 1) && (s.slice(i, i + 1) == "@") && (ul_host_body_end(s, i) != past)) {
+      return "line ".concat(line.to_str())
+        .concat(": a host body whose braces sit in host strings or comments the self-host lexer does not skip")
+    }
+    let stop = past > i ? past : i + 1
+    while (i < stop) {
+      if (s.slice(i, i + 1).charCodeAt(0) == 10) { line += 1 }
+      i += 1
+    }
+  }
+  return ""
+}
+
 // The next token at or after `i`: whitespace and `//` comments skipped.
 fn rl_skip_trivia(s: Str, i: Int) -> Int {
   var j = ul_skip_ws(s, i)
@@ -1582,6 +1613,280 @@ fn ul_link_types(ir: Str, source: Str, path: Str) -> UlLinked {
   return { ir: ul_bump_v3(ul_append_types(ir, items)), refusal: "" }
 }
 
+// Issue #2329. The native gate reads only the document, so a call to an
+// operation of an imported service went untyped: `store.put("x")` against a
+// `put(id: Int)` declared in the imported module was admitted, and emitted,
+// where the reference refuses it at check time. The driver now admits the
+// document a second time with the declaration text of every service it imports
+// appended, so the gate types those calls the way the reference checker does.
+// The module's own type declarations are NOT appended: the gate types a call
+// against a built-in parameter type, and a carried record or variant by name,
+// without them. A transparent alias never reaches this pass, since the type
+// link above refuses a module that declares one (the producer keeps no `types`
+// entry for it).
+
+// The index of the `}` closing the brace body opening at `open_at`, scanned the
+// way `ul_type_scan` scans (comments, strings, templates and host bodies are
+// opaque), or -1 when there is no `{` there or the body does not close.
+fn tc_body_close(s: Str, open_at: Int) -> Int {
+  if (s.slice(open_at, open_at + 1) != "{") { return 0 - 1 }
+  var depth = 0
+  var i = open_at
+  let n = s.length()
+  while (i < n) {
+    let past = rl_opaque_end(s, i)
+    if (past < 0) { return 0 - 1 }
+    if (past > i) { i = past }
+    else {
+      let ch = s.slice(i, i + 1)
+      if ((ch == "{") || (ch == "[") || (ch == "(")) { depth += 1 }
+      if ((ch == "}") || (ch == "]") || (ch == ")")) {
+        depth -= 1
+        if (depth == 0) { return i }
+        if (depth < 0) { return 0 - 1 }
+      }
+      i += 1
+    }
+  }
+  return 0 - 1
+}
+
+// The declaration text of the service `name` in the module text `source`, from
+// the `service` keyword to the `}` closing its body, found at bracket depth 0 by
+// the reference-lexer scan, or "" when the module declares no such service or
+// the text cannot be read that way. A leading `pub` adds nothing, and a
+// `commutative` constrains only a provider's body, which the native gate does
+// not parse in that position, so neither is part of the text.
+fn tc_service_text(source: Str, name: Str) -> Str {
+  var depth = 0
+  var i = 0
+  let n = source.length()
+  while (i < n) {
+    let past = rl_opaque_end(source, i)
+    if (past < 0) { return "" }
+    if (past > i) { i = past }
+    else {
+      let ch = source.slice(i, i + 1)
+      if (ul_is_word_start(ch)) {
+        let w = ul_word_at(source, i)
+        if ((depth == 0) && (w == "service")) {
+          let k = rl_skip_trivia(source, i + 7)
+          if (ul_word_at(source, k) == name) {
+            let close = tc_body_close(source, rl_skip_trivia(source, k + name.length()))
+            if (close < 0) { return "" }
+            return source.slice(i, close + 1)
+          }
+        }
+        i += w.length()
+      }
+      else {
+        if ((ch == "{") || (ch == "[") || (ch == "(")) { depth += 1 }
+        if ((ch == "}") || (ch == "]") || (ch == ")")) {
+          depth -= 1
+          if (depth < 0) { return "" }
+        }
+        i += 1
+      }
+    }
+  }
+  return ""
+}
+
+// The first identifier of `text` that is also in `names`, or "".
+fn tc_first_shared(text: Str, names: List[Str]) -> Str {
+  let words = ul_type_idents(text)
+  var i = 0
+  while (i < words.length()) {
+    if (ul_has(names, words[i])) { return words[i] }
+    i += 1
+  }
+  return ""
+}
+
+// The admission text, or the refusal ("" for none) that stopped building it.
+type TcText = { text: Str, refusal: Str }
+
+// Issue #2362. The string value of the top-level key `key` of the JSON object
+// `obj`, or "" when it is absent or not a string (a `null` payload).
+fn tc_str_value(obj: Str, key: Str) -> Str {
+  let at = ul_top_key(obj, key)
+  if ((at < 0) || (obj.slice(at, at + 1) != "\"")) { return "" }
+  let end = ul_string_end(obj, at)
+  if (end < 0) { return "" }
+  return obj.slice(at + 1, end)
+}
+
+// `type <name> = { f: T, ... }` for a record entry of the native `types`
+// table, `type <name> = A | B(T)` for a variant one, or "" for a generic type
+// or any other kind, which is left out (the gate then reads the name as one
+// it cannot resolve, as before).
+fn tc_type_text(name: Str, decl: Str) -> Str {
+  if (ul_trim(ul_key_value(decl, "params")) != "[]") { return "" }
+  let kind = tc_str_value(decl, "kind")
+  let head = "type ".concat(name).concat(" = ")
+  if (kind == "record") {
+    let fields = ul_key_value(decl, "fields")
+    let keys = ul_top_keys(fields)
+    var body = ""
+    var k = 0
+    while (k < keys.length()) {
+      if (k > 0) { body = body.concat(", ") }
+      body = body.concat(keys[k]).concat(": ").concat(tc_str_value(fields, keys[k]))
+      k += 1
+    }
+    return head.concat("{ ").concat(body).concat(" }")
+  }
+  if (kind != "variant") { return "" }
+  let cases = ul_key_value(decl, "cases")
+  var out = ""
+  var i = 0
+  while (i < cases.length()) {
+    if (cases.slice(i, i + 1) == "{") {
+      let close = ul_match_close(cases, i)
+      if (close < 0) { return "" }
+      let c = cases.slice(i, close + 1)
+      if (out != "") { out = out.concat(" | ") }
+      out = out.concat(tc_str_value(c, "name"))
+      let payload = tc_str_value(c, "payload")
+      if (payload != "") { out = out.concat("(").concat(payload).concat(")") }
+      i = close + 1
+    }
+    else { i += 1 }
+  }
+  return out == "" ? "" : head.concat(out)
+}
+
+// The types the imported service carries, as declarations to append, and the
+// names appended so far.
+type TcCarried = { text: Str, names: List[Str] }
+
+// Issue #2362. The declaration text of every type the service `name` of the
+// module at `dep` carries (`ul_carried_types`, the reference's `carried`
+// list) that `seen` does not hold yet, so the gate can resolve a record
+// parameter field-wise against a record literal, as the reference does.
+fn tc_carried_text(dep: Str, module_src: Str, name: Str, seen: List[Str]) -> TcCarried {
+  let module_ir = ul_module_ir(dep)
+  let entry = ul_service_entry(module_ir, name)
+  if (entry == "") { return { text: "", names: seen } }
+  let carry = ul_carried_types(dep, module_ir, module_src, entry)
+  let table = ul_key_value(module_ir, "types")
+  var names = seen
+  var text = ""
+  var i = 0
+  while (i < carry.names.length()) {
+    let t = carry.names[i]
+    if (!ul_has(names, t)) {
+      let decl = tc_type_text(t, ul_key_value(table, t))
+      if (decl != "") {
+        names = names.push(t)
+        text = text.concat(decl).concat(str_newline())
+      }
+    }
+    i += 1
+  }
+  return { text: text, names: names }
+}
+
+// The document `source` (at `path`, lowered to `own`) with the declaration text
+// of every service a top-level `use` names appended, once each, unless the
+// document declares that service itself or the module declares none of that
+// name (the link then appends no row either). Refused with `LINK|` where the
+// appended text would not type the calls as the reference does: a service the
+// native IR has a row for but whose text the scan cannot read, and a
+// declaration that names a type the document also declares, which the appended
+// text would resolve to the document's type where the reference resolves the
+// module's.
+fn tc_admission_text(source: Str, path: Str, own: Str) -> TcText {
+  let pairs = ul_use_pairs(source)
+  let doc_types = ul_type_scan(source)
+  var done: List[Str] = []
+  var typed: List[Str] = []
+  var text = source
+  var i = 0
+  while (i + 1 < pairs.length()) {
+    let dep = module_path(path, pairs[i])
+    let name = pairs[i + 1]
+    i += 2
+    if ((dep != "") && !ul_has(done, name) && (ul_service_entry(own, name) == "")) {
+      let module_src = read_module_text(dep)
+      let decl = tc_service_text(module_src, name)
+      if (decl == "") {
+        if (ul_service_entry(lower_to_ir(module_src), name) != "") {
+          return { text: source, refusal: "LINK|the declaration of service `".concat(name)
+            .concat("` in `").concat(dep).concat("` could not be read to type the document's calls to it") }
+        }
+      }
+      else {
+        if (!doc_types.ok) {
+          return { text: source, refusal: "LINK|the document's type declarations could not be read to type its calls to the imported service `"
+            .concat(name).concat("`") }
+        }
+        let shared = tc_first_shared(decl, doc_types.all)
+        if (shared != "") {
+          return { text: source, refusal: "LINK|the imported service `".concat(name).concat("` names `")
+            .concat(shared).concat("`, which the document also declares as a type, and the native gate would resolve it to the document's") }
+        }
+        done = done.push(name)
+        text = text.concat(str_newline()).concat(str_newline()).concat(decl).concat(str_newline())
+        let carried = tc_carried_text(dep, module_src, name, typed)
+        typed = carried.names
+        text = text.concat(carried.text)
+      }
+    }
+  }
+  return { text: text, refusal: "" }
+}
+
+// The native gate's verdict on the document's calls to the services it
+// imports: "" when it imports none or the gate admits them, else the refusal.
+// Issue #2362: a type refusal of the document read alone can be the wrong
+// one when it calls an imported service: the reference holds the call to its
+// declaration first, while it lowers the value. So a T1 from the document
+// alone yields to the import admission's verdict when that refuses too.
+fn tc_import_first(source: Str, path: Str, verdict: Str) -> Str {
+  if (path == "" || verdict.slice(0, 3) != "T1|" || source.indexOf("use \"") == 0 - 1) {
+    return verdict
+  }
+  let own = lower_to_ir_refs(source, rf_ref_rows(source, path))
+  let calls = tc_admit_imports(source, path, own)
+  return calls == "" ? verdict : calls
+}
+
+fn tc_admit_imports(source: Str, path: Str, own: Str) -> Str {
+  if (path == "") { return "" }
+  let built = tc_admission_text(source, path, own)
+  if (built.refusal != "") { return built.refusal }
+  if (built.text == source) { return "" }
+  let v = admit_src(built.text)
+  if (v != "") { return v }
+  return tc_operand_types(own, built.text, path)
+}
+
+// Issue #2362: an operator whose operand type only the imported declaration
+// gives (`store.put(1) + 1` with `put -> Int`) is lowered here without it, so
+// the IR lacks the `operands` the reference writes (the py tier's overflow
+// guard). The admission text has the declaration in scope; when it lowers to
+// more typed operators than the document alone, the native link would differ,
+// so it refuses by name.
+fn tc_operand_types(own: Str, text: Str, path: Str) -> Str {
+  let full = lower_to_ir_refs(text, rf_ref_rows(text, path))
+  if (tc_count(full, "\"operands\":") == tc_count(own, "\"operands\":")) { return "" }
+  return "LINK|an operator on an imported service call's result is typed only with "
+    .concat("the service in scope; the native link does not retype it (issue #2362)")
+}
+
+fn tc_count(s: Str, sub: Str) -> Int {
+  var n = 0
+  var rest = s
+  var at = rest.indexOf(sub)
+  while (at != 0 - 1) {
+    n += 1
+    rest = rest.slice(at + sub.length(), rest.length())
+    at = rest.indexOf(sub)
+  }
+  return n
+}
+
 // The identifier starting at `at`, up to the first delimiter. The scans below
 // read a name out of a source LINE, where a name is followed by a space, `(`,
 // `,`, `:`, `{`, `}`, `"`, `[` or the end of the line.
@@ -1673,14 +1978,13 @@ fn rf_ref_rows(source: Str, path: Str) -> List[Str] {
 // read refuses the document with `REFUSED|BAD|<module>: <message>`.
 //
 // What admission reads, all native:
-//   * the lexer's error tokens and the top-level program grammar
-//     (`lower.rvl::parse_prog`): a top-level token that heads no declaration,
-//     a malformed fn, extern, service or component;
-//   * the foreign-construct redirects (`lower.rvl::foreign_scan`);
-//   * every top-level `type` declaration against the reference grammar
-//     (`parser.py::type_decl`), which `parse_prog` steps over unread: a record
-//     body, a function type, an alias or `|`-separated cases, each followed by
-//     a top-level declaration or the end of the text.
+//   * the lexer's error tokens and every `use` declaration, an import list
+//     written over several lines included;
+//   * the whole parse stage of the native gate (`lower.rvl::parse_refusal`,
+//     issue #2359): the foreign-construct redirects, the nesting limit, the
+//     top-level program grammar, every top-level `type` declaration against
+//     `parser.py::type_decl`, and the statement-level rules the reference
+//     parser raises (`lower.rvl::stmt_parse_scan`).
 
 // The token at `i` of `ts`, or an `eof` token past either end.
 fn ad_tok(ts: List[Token], i: Int) -> Token {
@@ -1694,120 +1998,6 @@ fn ad_kind(ts: List[Token], i: Int, k: Str) -> Bool { return ad_tok(ts, i).kind 
 fn ad_kw(ts: List[Token], i: Int, w: Str) -> Bool {
   let t = ad_tok(ts, i)
   return (t.kind == "kw") && (t.text == w)
-}
-
-// Whether `ts[i]` is the identifier `w` (a contextual word).
-fn ad_word(ts: List[Token], i: Int, w: Str) -> Bool {
-  let t = ad_tok(ts, i)
-  return (t.kind == "ident") && (t.text == w)
-}
-
-// Whether a top-level declaration, or the end of the text, starts at `i`: the
-// heads the reference's program loop dispatches on, with the contextual ones
-// (`boot component`, `event`, a qualified test, `model role`/`model council`,
-// `secret NAME for`) read as `lower.rvl::at_top_decl` reads them.
-fn ad_decl_head(ts: List[Token], i: Int) -> Bool {
-  let t = ad_tok(ts, i)
-  if (t.kind == "eof") { return true }
-  if (t.kind == "kw") {
-    let w = t.text
-    if ((w == "type") || (w == "fn") || (w == "extern") || (w == "service")) { return true }
-    return (w == "component") || (w == "use") || (w == "test") || (w == "pub")
-  }
-  if (t.kind != "ident") { return false }
-  if (t.text == "boot") { return ad_kw(ts, i + 1, "component") }
-  if (t.text == "event") { return ad_kind(ts, i + 1, "ident") }
-  if ((t.text == "prop") || (t.text == "lifecycle") || (t.text == "fault")) {
-    return ad_kw(ts, i + 1, "test")
-  }
-  if (t.text == "model") { return ad_word(ts, i + 1, "role") || ad_word(ts, i + 1, "council") }
-  if (t.text == "secret") { return ad_kind(ts, i + 1, "ident") && ad_word(ts, i + 2, "for") }
-  return false
-}
-
-// The index just past the type spelling at `i`, or -1 when none parses there.
-fn ad_type_end(ts: List[Token], i: Int) -> Int {
-  let r = type_at(ts, i)
-  if (!r.ok || (r.i <= i)) { return 0 - 1 }
-  return r.i
-}
-
-// The index just past the record body whose `{` is at `i`, or -1: `key: Type`
-// rows, each optionally followed by `,`, up to `}` (`type_decl`'s record arm).
-fn ad_record_end(ts: List[Token], i: Int) -> Int {
-  var j = i + 1
-  while (!ad_kind(ts, j, "}")) {
-    if (!is_record_key(ad_tok(ts, j))) { return 0 - 1 }
-    if (!ad_kind(ts, j + 1, ":")) { return 0 - 1 }
-    j = ad_type_end(ts, j + 2)
-    if (j < 0) { return 0 - 1 }
-    if (ad_kind(ts, j, ",")) { j += 1 }
-  }
-  return j + 1
-}
-
-// The index just past the right-hand side of a `type` declaration at `i`, or
-// -1: a record body, a function type, an alias (`List[Row]`, `Row?`, not
-// followed by `|`), or one or more `Case` / `Case(Type)` joined by `|`.
-fn ad_type_rhs_end(ts: List[Token], i: Int) -> Int {
-  if (ad_kind(ts, i, "{")) { return ad_record_end(ts, i) }
-  if (ad_kind(ts, i, "(")) { return ad_type_end(ts, i) }
-  var j = i
-  var first = true
-  while (true) {
-    if (!ad_kind(ts, j, "ident")) { return 0 - 1 }
-    if (first && (ad_kind(ts, j + 1, "[") || ad_kind(ts, j + 1, "?"))) {
-      let e = ad_type_end(ts, j)
-      if ((e < 0) || ad_kind(ts, e, "|")) { return 0 - 1 }
-      return e
-    }
-    first = false
-    j += 1
-    if (ad_kind(ts, j, "(")) {
-      j = ad_type_end(ts, j + 1)
-      if ((j < 0) || !ad_kind(ts, j, ")")) { return 0 - 1 }
-      j += 1
-    }
-    if (!ad_kind(ts, j, "|")) { return j }
-    j += 1
-  }
-  return 0 - 1
-}
-
-// Why the `type` declaration whose keyword is at `i` does not read as the
-// reference reads it, or "".
-fn ad_type_refusal(ts: List[Token], i: Int) -> Str {
-  let name = ad_tok(ts, i + 1)
-  let at_line = "line ".concat(ad_tok(ts, i).line.to_str()).concat(": ")
-  if (name.kind != "ident") { return at_line.concat("a `type` declaration has no name") }
-  var j = i + 2
-  if (ad_kind(ts, j, "[")) {
-    j += 1
-    while (!ad_kind(ts, j, "]")) {
-      if (!ad_kind(ts, j, "ident")) {
-        return at_line.concat("the type parameters of `").concat(name.text).concat("` do not parse")
-      }
-      j += 1
-      if (ad_kind(ts, j, ",")) { j += 1 }
-    }
-    j += 1
-  }
-  if (!ad_kind(ts, j, "=")) {
-    return at_line.concat("expected `=` in the declaration of type `").concat(name.text).concat("`")
-  }
-  var end = ad_type_rhs_end(ts, j + 1)
-  if (end < 0) {
-    return at_line.concat("the declaration of type `").concat(name.text).concat("` does not parse")
-  }
-  // a run of `;` between top-level declarations is no declaration of its own
-  // (`_skip_semis` in the program loop, item 157)
-  while (ad_kind(ts, end, ";")) { end += 1 }
-  if (!ad_decl_head(ts, end)) {
-    let t = ad_tok(ts, end)
-    return "line ".concat(t.line.to_str()).concat(": expected a top-level declaration, found `")
-      .concat(t.text).concat("` after type `").concat(name.text).concat("`")
-  }
-  return ""
 }
 
 // The first lexer error token of `ts`, as a refusal message, or "".
@@ -1865,8 +2055,8 @@ fn ad_module_refusal(source: Str) -> Str {
   let ts = lex_src(source)
   let lexed = ad_lex_refusal(ts)
   if (lexed != "") { return lexed }
-  let fgn = foreign_scan(source)
-  if (fgn != "") { return fgn }
+  let unread = rl_lex_refusal(source)
+  if (unread != "") { return unread }
   var program = source
   var depth = 0
   var i = 0
@@ -1874,10 +2064,6 @@ fn ad_module_refusal(source: Str) -> Str {
     let k = ts[i].kind
     if ((k == "{") || (k == "[") || (k == "(")) { depth += 1 }
     if ((k == "}") || (k == "]") || (k == ")")) { depth -= 1 }
-    if ((depth == 0) && (k == "kw") && (ts[i].text == "type")) {
-      let why = ad_type_refusal(ts, i)
-      if (why != "") { return why }
-    }
     if ((depth == 0) && (k == "kw") && (ts[i].text == "use")) {
       let end = ad_use_end(ts, i)
       if (end < 0) {
@@ -1892,41 +2078,63 @@ fn ad_module_refusal(source: Str) -> Str {
     }
     i += 1
   }
+  // the whole parse stage `admit_src` runs, as its message (issue #2359)
+  let why = parse_refusal(program)
+  if (why == "") { return "" }
+  let bar = why.indexOf("|")
+  let msg = bar < 0 ? why : why.slice(bar + 1, why.length())
   let bad = parse_prog(program).bad
-  if (bad == "") { return "" }
-  let lambda = ad_expr_fn_line(ts)
-  if ((bad == "expected { after fn signature") && (lambda > 0)) {
-    return "line ".concat(lambda.to_str())
-      .concat(": an expression-bodied fn (`fn f(...) = expr`) is not supported by the self-host compiler")
+  if ((bad == "") || (msg != bad)) { return msg }
+  if (bad == "expected { after fn signature") {
+    // the fn `parse_prog` refuses is the first top-level one whose header
+    // reaches no `{`; only when its body is `= expr` is the program valid
+    let f = ad_bodiless_fn(ts)
+    if (f >= 0) {
+      let at = "line ".concat(ts[f].line.to_str()).concat(": ")
+      if (ad_kind(ts, ad_fn_header_end(ts, f), "=")) {
+        return at.concat("an expression-bodied fn (`fn f(...) = expr`) is not supported by the self-host compiler")
+      }
+      return at.concat(bad)
+    }
   }
   let line = ad_bad_line(ts, program, bad)
   if (line <= 0) { return bad }
   return "line ".concat(line.to_str()).concat(": ").concat(bad)
 }
 
-// The line of the first top-level `fn` whose body is `= expr` rather than a
-// block (valid revl the self-host program grammar does not read), or 0.
-fn ad_expr_fn_line(ts: List[Token]) -> Int {
+// The index of the token that ends the header of the `fn` at `i`: the first
+// `{` or `=` outside its brackets, or the next declaration keyword.
+fn ad_fn_header_end(ts: List[Token], i: Int) -> Int {
+  let heads = ["fn", "pub", "component", "service", "type", "extern", "use", "test"]
+  var d = 0
+  var j = i + 1
+  while (j < ts.length()) {
+    let kj = ts[j].kind
+    if ((d == 0) && ((kj == "{") || (kj == "=") || (kj == "eof"))) { return j }
+    if ((d == 0) && (kj == "kw") && ul_has(heads, ts[j].text)) { return j }
+    if ((kj == "(") || (kj == "[")) { d += 1 }
+    if ((kj == ")") || (kj == "]")) { d -= 1 }
+    j += 1
+  }
+  return j
+}
+
+// The first top-level `fn`, extern fns aside, whose header reaches no `{`
+// (`ad_fn_header_end`), or -1.
+fn ad_bodiless_fn(ts: List[Token]) -> Int {
   var depth = 0
   var i = 0
   while (i < ts.length()) {
     let k = ts[i].kind
     if ((k == "{") || (k == "[") || (k == "(")) { depth += 1 }
     if ((k == "}") || (k == "]") || (k == ")")) { depth -= 1 }
-    if ((depth == 0) && ad_kw(ts, i, "fn") && !ad_extern_head(ts, i)) {
-      var d = 0
-      var j = i + 1
-      while ((j < ts.length()) && !((d == 0) && (ad_kind(ts, j, "{") || ad_kind(ts, j, "=")))) {
-        let kj = ts[j].kind
-        if ((kj == "(") || (kj == "[")) { d += 1 }
-        if ((kj == ")") || (kj == "]")) { d -= 1 }
-        j += 1
-      }
-      if (ad_kind(ts, j, "=")) { return ts[i].line }
+    if ((depth == 0) && ad_kw(ts, i, "fn") && !ad_extern_head(ts, i)
+        && !ad_kind(ts, ad_fn_header_end(ts, i), "{")) {
+      return i
     }
     i += 1
   }
-  return 0
+  return 0 - 1
 }
 
 // Whether the `fn` at `i` belongs to an `extern` declaration, whose `= @backend`
@@ -2193,7 +2401,9 @@ fn ad_module_key(path: Str) -> Str {
 pub fn compile_to_at(source: Str, tier: Str, path: Str) -> Str {
   if (!supported_tier(tier)) { return "UNKNOWN_TIER|".concat(tier) }
   let verdict = admit_src(source)
-  if (verdict != "") { return "REFUSED|".concat(verdict) }
+  if (verdict != "") { return "REFUSED|".concat(tc_import_first(source, path, verdict)) }
+  let unlexed = rl_lex_refusal(source)
+  if (unlexed != "") { return "REFUSED|BAD|".concat(unlexed) }
   // Issue #2332: every used module reads whole, or nothing is linked.
   let unread = ad_used_modules_refusal(source, path)
   if (unread != "") { return unread }
@@ -2210,6 +2420,11 @@ pub fn compile_to_at(source: Str, tier: Str, path: Str) -> Str {
   // Issue #2308: then the types every imported service carries.
   let typed = ul_link_types(linked.ir, source, path)
   if (typed.refusal != "") { return "REFUSED|".concat(typed.refusal) }
+  // Issue #2329: last, the document's calls to an imported service's
+  // operations are typed against its declaration. A link refusal above wins,
+  // so a type the native link cannot carry is reported as that.
+  let calls = tc_admit_imports(source, path, own)
+  if (calls != "") { return "REFUSED|".concat(calls) }
   return emit_ir(json_parse(typed.ir), tier)
 }
 

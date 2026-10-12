@@ -61,14 +61,15 @@ The self-host compiler is behind the reference implementation (roadmap item
 LAYER. `admit_src` decides the composition and guarantee layer (`G1`..`G4`,
 `A1`, `PRELUDE`, and parse failures as `BAD`). It does **not** run the
 reference's type layer, of which it runs one slice — the fn-body statement
-layer — and not the rest. Measured, not assumed: the reference refuses both of
+layer, and not the rest. Measured, not assumed: the reference refuses
 
-    fn f() -> Int { return undefined_name }
-    fn f() -> { }
+    type P = { x: Int }
+    fn f() -> P { return { y: 1 } }
 
-and the self-host gate raises no objection to either. A return-type mismatch,
-`fn f() -> Int { return "s" }`, used to head that list; it is refused here now,
-in the reference's own words.
+and the self-host gate raises no objection to it. A return-type mismatch,
+`fn f() -> Int { return "s" }`, used to head that list, followed by
+`fn f() -> Int { return undefined_name }` and `fn f() -> { }`; each is refused
+here now, in the reference's own words.
 
 So `Verdict` has no admitting arm and no `is_admitted()`. Its non-refusing arm
 is `Verdict::NoObjection`, meaning *"this gate found nothing it is able to
