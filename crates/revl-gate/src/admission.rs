@@ -1301,7 +1301,7 @@ fn manifest_shape(manifest: &str) -> Option<Running<'_>> {
             continue;
         }
         if is_wire_name(row) {
-            // `C` — the PRESENCE row (issue #2289): a running component that
+            // `C` is the PRESENCE row (issue #2289): a running component that
             // renders no other row. It is a name and nothing more.
             present.push(row);
             continue;
