@@ -23283,7 +23283,7 @@ fn stmt_parse_scan(ts: Vec<Token>) -> Verd {
             let n = tkc(&ts, (i).checked_add(1i64).expect("revl: Int overflow"));
             let mut word = String::from("");
             if (((k == "ident") && (((t.text == "load") || (t.text == "unload")) || (t.text == "call"))) && (n.kind == "ident")) {
-                word = t.text;
+                word = tkc(&ts, i).text;
             }
             if (((k == "ident") && (t.text == "advance")) && ((n.kind == "ident") || (n.kind == "int"))) {
                 word = String::from("advance");

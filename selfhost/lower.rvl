@@ -18948,7 +18948,7 @@ fn stmt_parse_scan(ts: List[Token]) -> Verd {
       let n = tkc(ts, i + 1)
       var word = ""
       if ((k == "ident") && ((t.text == "load") || (t.text == "unload") || (t.text == "call"))
-          && (n.kind == "ident")) { word = t.text }
+          && (n.kind == "ident")) { word = tkc(ts, i).text }
       if ((k == "ident") && (t.text == "advance") && ((n.kind == "ident") || (n.kind == "int"))) {
         word = "advance"
       }
