@@ -54,7 +54,7 @@
 //     services `req`/`Inject::new` gate/`ctx.require`, and method-body
 //     `effect`/`undo`/`emit` through `self.ctx.effect`, plus the component-dialect
 //     `req`/`config`/`fn` expression kinds and the `target`/`method` call form).
-//     Still DEFERRED and REPORTED (each fires a `<<DEFER-*>>` marker): timers /
+//     Still DEFERRED and REPORTED (each fires a `<<UNSUPPORTED-*>>` marker): timers /
 //     routers (`routes`), `await`/`spawn`, `isolate`/`intercept`/realms, host
 //     `let-effect` binds (`Pool`/`Map`/`Job`), body-level
 //     `effect`/`timer`/`fail`/`if` steps, the `host`/
@@ -614,7 +614,7 @@ fn build_type_tables(types: Any) -> TypeTables {
 // keeps the emitter total (no in-corpus literal is ambiguous or unknown).
 fn record_type_for_fields(ctx: Ctx, names: List[Str]) -> Str {
   let name = map_get(ctx.rbf, sorted_key(names))
-  if (!resolved(name)) { return `<<DEFER-record>>` }
+  if (!resolved(name)) { return `<<UNSUPPORTED-record>>` }
   return mangle(name)
 }
 
@@ -681,7 +681,7 @@ fn is_list_type(t: Str) -> Bool {
 fn rust_type_t(tv: Any, tnames: Map[Str, Str]) -> Str {
   let name = value_str(tv)
   if (name == "") { return "Value" }
-  if (is_fn_type(name)) { return "<<DEFER-fn-type>>" }
+  if (is_fn_type(name)) { return "<<UNSUPPORTED-fn-type>>" }
   let tm = type_map(name)
   if (tm != "") { return tm }
   if (tnames.has(name)) { return mangle(name) }
@@ -714,7 +714,7 @@ fn rust_type(tv: Any) -> Str { return rust_type_t(tv, Map.empty()) }
 // mirrors the reference's position-aware `_rust_type`/`_rust_fn_type`: only those
 // positions are monomorphisable, so ESCAPING function types (a struct field, an
 // `ADT`/`List`/`Opt`/`Map` element, a service-method signature) still have no
-// constructible lowering and stay the out-of-subset `<<DEFER-fn-type>>` marker
+// constructible lowering and stay the out-of-subset `<<UNSUPPORTED-fn-type>>` marker
 // `rust_type_t` returns. `.map`/`.filter`/`.reduce` reach this through their
 // `list_map`/`list_filter`/`list_reduce` free-function parameters.
 //
@@ -1534,7 +1534,7 @@ fn constructor(ctx: Ctx, name: Str, args: List[Str]) -> Str {
   if (name == "Some" || name == "Ok" || name == "Err") {
     return `${name}(${args[0]})`
   }
-  return `<<DEFER-ctor:${name}>>`
+  return `<<UNSUPPORTED-ctor:${name}>>`
 }
 
 // `_V3Ctx.match_pattern`: a match arm's pattern. `_` is the wildcard; a user
@@ -1549,7 +1549,7 @@ fn match_pattern(ctx: Ctx, arm: Any) -> Str {
   if (resolved(adt)) { prefix = `${adt}::${pattern}` }
   else {
     if (is_builtin_ctor(pattern)) { prefix = pattern }
-    else { return `<<DEFER-match:${pattern}>>` }
+    else { return `<<UNSUPPORTED-match:${pattern}>>` }
   }
   if (bind != "") { return `${prefix}(${mangle(bind)})` }
   return prefix
@@ -1706,7 +1706,7 @@ fn render_call(node: Any, ctx: Ctx) -> Str {
   var arg_exprs = []
   for (a of arg_nodes) { arg_exprs = arg_exprs.push(render_expr(a, ctx)) }
   let ckind = node_kind(callee_node)
-  if (ckind == "field") { return "<<DEFER-method-call>>" }
+  if (ckind == "field") { return "<<UNSUPPORTED-method-call>>" }
   var callee_name = ""
   if (ckind == "var") { callee_name = value_str(value_field(callee_node, "name")) }
   if (callee_name != "" && (is_builtin_ctor(callee_name) || ctx.ca.has(callee_name))) {
@@ -2038,7 +2038,7 @@ fn render_builtin(node: Any, ctx: Ctx) -> Str {
 // answered the same document with a 29,022-byte crate carrying no marker at
 // all, which is the exact silence issue #81's exit forbids.
 fn render_host(node: Any, ctx: Ctx) -> Str {
-  if (!value_is_null(value_field(node, "replay"))) { return "<<DEFER-host-replay>>" }
+  if (!value_is_null(value_field(node, "replay"))) { return "<<UNSUPPORTED-host-replay>>" }
   let fname = value_str(value_field(node, "fn"))
   // `partition(".")`: the root is everything before the FIRST dot, the method
   // everything after it.
@@ -2150,7 +2150,7 @@ fn json_dumps(v: Any) -> Str {
   }
   // a Float would need python `repr(float)`, which `num_str` supplies but which
   // no derived schema carries; REPORT rather than emit an unverified numeral.
-  return `<<DEFER-json-kind:${k}>>`
+  return `<<UNSUPPORTED-json-kind:${k}>>`
 }
 
 // `_stream_head`: the stream a `subscribe` acquires — a plain source, or a
@@ -2180,7 +2180,7 @@ fn stream_stage_arrow(stage: Any, ctx: Ctx) -> Str {
   let fnode = value_field(stage, "fn")
   let params = value_list(value_field(fnode, "params"))
   if (node_kind(fnode) != "arrow" || params.length() != 1) {
-    return `<<DEFER-stream-stage-arrow:${value_str(value_field(stage, "stage"))}>>`
+    return `<<UNSUPPORTED-stream-stage-arrow:${value_str(value_field(stage, "stage"))}>>`
   }
   let raw = value_str(params[0])
   let pname = mangle(raw)
@@ -2205,7 +2205,7 @@ fn stream_chain(head: Any, stages: List[Any], ctx: Ctx) -> Str {
       if (kind == "map" || kind == "filter") {
         out = `Stream::${kind}(&${out}, ${stream_stage_arrow(stage, ctx)})`
       } else {
-        out = `<<DEFER-stream-combinator:${kind}>>`
+        out = `<<UNSUPPORTED-stream-combinator:${kind}>>`
       }
     }
   }
@@ -2228,8 +2228,8 @@ fn stream_chain(head: Any, stages: List[Any], ctx: Ctx) -> Str {
 // `value_bool` this line used to carry was false for every document and the
 // marker never fired.
 fn render_subscribe(node: Any, ctx: Ctx) -> Str {
-  if (!value_is_null(value_field(node, "replay"))) { return "<<DEFER-stream-replay>>" }
-  if (!value_is_null(value_field(node, "drain"))) { return "<<DEFER-stream-drain>>" }
+  if (!value_is_null(value_field(node, "replay"))) { return "<<UNSUPPORTED-stream-replay>>" }
+  if (!value_is_null(value_field(node, "drain"))) { return "<<UNSUPPORTED-stream-drain>>" }
   var policy = value_str(value_field(node, "policy"))
   if (policy == "") { policy = "error" }
   let capacity = value_int(value_opt(node, "buffer") ?? 0)
@@ -2504,13 +2504,13 @@ fn emit_v3_externs(externs: List[Any], tnames: Map[Str, Str]) -> List[Str] {
     if (value_is_null(rs_body)) {
       // The reference RAISES here (`extern ... has no @rs body`). This slice has
       // no refusal channel, so the marker stands in — loud, never silent.
-      out = out.push(`<<EXTERN-NO-RS-BODY:${name}>>`)
+      out = out.push(`<<UNSUPPORTED-EXTERN-NO-RS-BODY:${name}>>`)
       out = out.push("")
     } else {
       let body = trim(value_str(rs_body))
       let defer = extern_body_defer(ext, body)
       if (defer != "") {
-        out = out.push(`<<DEFER-EXTERN-${defer}:${name}>>`)
+        out = out.push(`<<UNSUPPORTED-EXTERN-${defer}:${name}>>`)
         out = out.push("")
       } else {
         out = out.push(`fn ${name}(${ps.join(", ")}) -> ${returns} {`)
@@ -2534,7 +2534,7 @@ fn emit_v3_externs(externs: List[Any], tnames: Map[Str, Str]) -> List[Str] {
 // moment `ir["services"]`/`ir["components"]` is non-empty — a lone service alone
 // forces the whole bridge — so traits + provider + bridge port as ONE unit.
 //
-// DEFERRED here (each REPORTED, and each fires a `<<DEFER-*>>` marker that keeps
+// DEFERRED here (each REPORTED, and each fires a `<<UNSUPPORTED-*>>` marker that keeps
 // a byte diff loud rather than silently wrong): the host-object stubs
 // (`Map`/`Pool`/`Job`) and every preamble helper (timer/stdlib/float/realm/
 // spawn) — none appear in the covered subset, so `_emit_host_stubs` and the
@@ -2591,7 +2591,7 @@ fn emit_service_traits(services: Any, tnames: Map[Str, Str]) -> List[Str] {
 // declares none" — true only because no corpus document declared a host
 // object, so the byte oracle agreed VACUOUSLY on the whole surface. The stream
 // host runtime is the one block still DEFERRED, and it is REPORTED: a document
-// that reaches it fires a `<<DEFER-stream-host>>` marker rather than silently
+// that reaches it fires a `<<UNSUPPORTED-stream-host>>` marker rather than silently
 // emitting a crate with no stream runtime in it.
 //
 // Each block below is a verbatim transcription of the reference's literal line
@@ -4419,7 +4419,7 @@ fn pure_stmt(step: Any, kind: Str, c: Ctx, params: List[Str]) -> Str {
   }
   if (kind == "break") { return "break;" }
   if (kind == "continue") { return "continue;" }
-  return `<<DEFER-method-step:${kind}>>`
+  return `<<UNSUPPORTED-method-step:${kind}>>`
 }
 
 // ------------------------------------------------------------ config (item 218)
@@ -4882,7 +4882,7 @@ fn svc_ident(name: Str) -> Str {
 }
 
 fn require_ty(svc: Str) -> Str {
-  if (svc.startsWith("Stream[")) { return `<<DEFER-required-stream:${svc}>>` }
+  if (svc.startsWith("Stream[")) { return `<<UNSUPPORTED-required-stream:${svc}>>` }
   return svc_ident(svc)
 }
 
@@ -5192,7 +5192,7 @@ fn method_body_lines(comp: Any, method: Any, services: Any, ctx: Ctx, indent: In
             // steps; its arms are pure, so the shared pure renderer writes it.
             for (ln of pure_stmts([step], c, method_param_names(method))) { out = out.push(`${pad}${ln}`) }
           } else {
-            out = out.push(`${pad}<<DEFER-method-step:${kind}>>`)
+            out = out.push(`${pad}<<UNSUPPORTED-method-step:${kind}>>`)
           }
         }
       }
@@ -5384,7 +5384,7 @@ fn witnessed_acquire(ir: Any, acq: Any) -> Bool {
 //
 // Two of the reference's arms are not mirrored. A witnessed acquisition is not
 // ported, so neither is the accumulator it would open: in the activation body
-// the step is a `DEFER-*-witnessed` marker, and a provide method still lowers
+// the step is a `UNSUPPORTED-*-witnessed` marker, and a provide method still lowers
 // one as a plain bracket (the reference's `_emit_method_witnessed_step`), a
 // divergence no corpus document reaches because none declares a witnessed
 // extern. And the reference walks a component `if` for a
@@ -5426,7 +5426,7 @@ fn uses_teardown(ir: Any) -> Bool {
 fn declared_compensate_marker(ir: Any) -> List[Str] {
   for (ext of value_list(value_field(ir, "externs"))) {
     if (value_str(value_field(ext, "class")) == "emission"
-        && !value_is_null(value_field(ext, "compensate"))) { return ["<<DEFER-declared-compensate>>"] }
+        && !value_is_null(value_field(ext, "compensate"))) { return ["<<UNSUPPORTED-declared-compensate>>"] }
   }
   return []
 }
@@ -5505,14 +5505,14 @@ fn emit_let_effect_step(comp: Any, step: Any, ir: Any, ctx: Ctx,
   let bind = mangle(raw_bind)
   let acq_node = value_field(step, "acquire")
   if (value_list(value_field(step, "setup")).length() > 0) {
-    out = out.push(`${pad}<<DEFER-let-effect-setup:${raw_bind}>>`)
+    out = out.push(`${pad}<<UNSUPPORTED-let-effect-setup:${raw_bind}>>`)
   }
   if (witnessed_acquire(ir, acq_node)) {
-    out = out.push(`${pad}<<DEFER-let-effect-witnessed:${raw_bind}>>`)
+    out = out.push(`${pad}<<UNSUPPORTED-let-effect-witnessed:${raw_bind}>>`)
     return out
   }
   if (is_map_cas(acq_node)) {
-    out = out.push(`${pad}<<DEFER-let-effect-cas:${raw_bind}>>`)
+    out = out.push(`${pad}<<UNSUPPORTED-let-effect-cas:${raw_bind}>>`)
     return out
   }
   var acq_src = render_expr(acq_node, ctx)
@@ -5599,10 +5599,10 @@ fn emit_comp_step(comp: Any, step: Any, ir: Any, ctx: Ctx,
   if (kind == "let-effect") { return emit_let_effect_step(comp, step, ir, ctx, map_values, indent) }
   if (kind == "effect") {
     if (value_list(value_field(step, "setup")).length() > 0) {
-      out = out.push(`${pad}<<DEFER-effect-setup:${name}>>`)
+      out = out.push(`${pad}<<UNSUPPORTED-effect-setup:${name}>>`)
     }
     if (witnessed_acquire(ir, value_field(step, "acquire"))) {
-      out = out.push(`${pad}<<DEFER-effect-witnessed:${name}>>`)
+      out = out.push(`${pad}<<UNSUPPORTED-effect-witnessed:${name}>>`)
       return out
     }
     let acq_src = render_expr(value_field(step, "acquire"), ctx)
@@ -5670,7 +5670,7 @@ fn emit_comp_step(comp: Any, step: Any, ir: Any, ctx: Ctx,
       // RAISES on anything else; this port has no refusal channel, so it
       // REPORTS — the document diverges loudly rather than dropping a step.
       if (value_str(value_field(em, "step")) != "emit") {
-        out = out.push(`${pad}    <<DEFER-timer-body:${value_str(value_field(em, "step"))}>>`)
+        out = out.push(`${pad}    <<UNSUPPORTED-timer-body:${value_str(value_field(em, "step"))}>>`)
       } else {
         out = out.push(`${pad}    let _ = ${render_expr(value_field(em, "expr"), tctx)};`)
       }
@@ -5707,7 +5707,7 @@ fn emit_comp_step(comp: Any, step: Any, ir: Any, ctx: Ctx,
     let raw_bind = value_str(value_field(step, "bind"))
     let bind = mangle(raw_bind)
     let body = value_list(value_field(step, "body"))
-    if (body.length() == 0) { return [`${pad}<<DEFER-stream-iter-empty:${name}>>`] }
+    if (body.length() == 0) { return [`${pad}<<UNSUPPORTED-stream-iter-empty:${name}>>`] }
     let contract = value_field(step, "event")
     var bodyctx = ctx
     var gate = ""
@@ -5734,7 +5734,7 @@ fn emit_comp_step(comp: Any, step: Any, ir: Any, ctx: Ctx,
       ename = mangle(evname)
       let key = value_str(value_field(contract, "key"))
       let window = value_int(value_field(contract, "window"))
-      if (window < 1) { return [`${pad}<<DEFER-stream-event-window:${evname}>>`] }
+      if (window < 1) { return [`${pad}<<UNSUPPORTED-stream-event-window:${evname}>>`] }
       gate = `_revl_event${sbase + 1}`
       where_ = string_lit(`${name}: on ${evname}`)
       out = out.push(`${pad}let mut ${gate} = Stream::contract(${string_lit(evname)}, ${string_lit(json_dumps(value_field(contract, "schema")))}, ${string_lit(key)}, ${window});`)
@@ -5833,7 +5833,7 @@ fn emit_comp_step(comp: Any, step: Any, ir: Any, ctx: Ctx,
     out = out.push(`${pad}}`)
     return out
   }
-  return [`<<DEFER-comp-step:${kind}>>`]
+  return [`<<UNSUPPORTED-comp-step:${kind}>>`]
 }
 
 // `_emit_component` (the SIMPLE provider path): a component with NO isolate /
@@ -5842,7 +5842,7 @@ fn emit_comp_step(comp: Any, step: Any, ir: Any, ctx: Ctx,
 // service and the config (when a method reads it); the methods are pure and read
 // captures off `self`; the closure applies config, binds each require through
 // the Inject gate, and provisions each key. Host binds / routes / body-level
-// effect steps are DEFERRED (a `<<DEFER-*>>` marker keeps them loud).
+// effect steps are DEFERRED (a `<<UNSUPPORTED-*>>` marker keeps them loud).
 fn emit_component(comp: Any, services: Any, ir: Any) -> List[Str] {
   let name = value_str(value_field(comp, "name"))
   let cname = mangle(name)
@@ -6678,7 +6678,106 @@ pub fn emit_rust_src(ir: Any) -> Str {
   // silence (issue #1123).
   let test_markers = deferred_test_markers(ir)
   if (test_markers.length() > 0) { out = out.concat(test_markers) }
+  out = out.concat(deferred_emission_markers(ir)).concat(validated_markers(ir))
+  out = out.concat(host_key_collision_markers(ir))
   return rstrip(out.join(newline())).concat(newline())
+}
+
+// `_refuse_deferred_emissions`: a CALL to a `deferred` emission extern, in any
+// position inside a component, needs a session owner runtime this tier does
+// not have, so the reference refuses the document. The port names each
+// reached call, component first (issue #2353). A declared but never-called
+// deferred extern is not named, as on the reference. The flag and the class
+// are read through `flag_of` and `list_contains`: tools/selfhost_coverage.py
+// reads the inline spellings as a port, and a refusal is not one.
+fn flag_of(node: Any, field: Str) -> Bool { return value_bool(value_field(node, field)) }
+
+// `_refuse_validated_emissions`: a `validated` crossing (a service operation
+// or an extern) is a checked boundary this tier has no seam for, so the
+// reference refuses the document, declaration keyed. The port names each one
+// (issue #2367).
+// Both carriers go through one list, named as the reference names them
+// (`Service.op` for an operation, the bare name for an extern).
+fn validated_markers(ir: Any) -> List[Str] {
+  var wheres: List[Str] = []
+  var nodes: List[Any] = []
+  let services = value_field(ir, "services")
+  for (sname of value_keys(services)) {
+    let methods = value_field(value_field(services, sname), "methods")
+    for (mname of value_keys(methods)) {
+      wheres = wheres.push(`${sname}.${mname}`)
+      nodes = nodes.push(value_field(methods, mname))
+    }
+  }
+  for (e of value_list(value_field(ir, "externs"))) {
+    wheres = wheres.push(value_str(value_field(e, "name")))
+    nodes = nodes.push(e)
+  }
+  var out = []
+  var i = 0
+  while (i < nodes.length()) {
+    if (flag_of(nodes[i], "validated")) { out = out.push(`<<UNSUPPORTED-VALIDATED:${wheres[i]}>>`) }
+    i = i + 1
+  }
+  return out
+}
+
+// `_host_key` / `_check_host_keys`: a namespaced key's host spelling escapes
+// each `_` of a segment to `_u` and joins the segments on `__`, so an
+// unqualified key that already spells that image lands on the same host
+// identifier. The reference refuses the pair; the port names the second key
+// (issue #2367).
+fn host_key(key: Str) -> Str {
+  if (key.indexOf("::") < 0) { return key }
+  var parts = []
+  for (part of key.split("::")) { parts = parts.push(part.split("_").join("_u")) }
+  return parts.join("__")
+}
+
+fn host_key_collision_markers(ir: Any) -> List[Str] {
+  var seen: Map[Str, Str] = Map.empty()
+  var out = []
+  for (c of value_list(value_field(ir, "components"))) {
+    for (table of ["provides", "requires", "routes", "isolate", "intercept"]) {
+      for (k of value_keys(value_field(c, table))) {
+        let host = host_key(k)
+        if (seen.has(host)) {
+          if (map_get(seen, host) != k) { out = out.push(`<<UNSUPPORTED-HOST-KEY-COLLISION:${k}>>`) }
+        } else { seen = seen.set(host, k) }
+      }
+    }
+  }
+  return out
+}
+
+fn deferred_emission_markers(ir: Any) -> List[Str] {
+  var deferred = []
+  for (e of value_list(value_field(ir, "externs"))) {
+    if (list_contains(["emission"], value_str(value_field(e, "class"))) && flag_of(e, "deferred")) {
+      deferred = deferred.push(value_str(value_field(e, "name")))
+    }
+  }
+  var out = []
+  if (deferred.length() == 0) { return out }
+  for (c of value_list(value_field(ir, "components"))) {
+    out = deferred_calls_in(c, deferred, value_str(value_field(c, "name")), out)
+  }
+  return out
+}
+
+// Pre-order over every record and list under a component, as the reference's
+// `_reached_deferred_calls` walks it.
+fn deferred_calls_in(node: Any, deferred: List[Str], cname: Str, acc: List[Str]) -> List[Str] {
+  var out = acc
+  if (value_kind(node) == "record") {
+    let name = value_str(value_field(node, "name"))
+    let mark = `<<UNSUPPORTED-DEFERRED-EMISSION:${cname}.${name}>>`
+    if (node_kind(node) == "fn" && list_contains(deferred, name) && !list_contains(out, mark)) {
+      out = out.push(mark)
+    }
+  }
+  for (child of value_children(node)) { out = deferred_calls_in(child, deferred, cname, out) }
+  return out
 }
 
 // ---------------------------------------------------------------- in-file tests

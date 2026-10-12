@@ -1,0 +1,23 @@
+// issue #2262 on the LIVE stc-go path (issue #2260): a provide method's Int32
+// `+ - *` and unary minus set `_COMP_NEEDS_ARITH32`, so `_emit` writes the
+// `revlAddI32`/`revlSubI32`/`revlMulI32` helpers before the narrow. With no
+// top-level fn this document is the live module; comp_provide_arith.rvl
+// reaches the same helpers on the combined path. The `to_str` builtin makes
+// the document ir_version 3, the only live tier the port covers.
+service Narrow {
+  fn sum(a: Int32, b: Int32) -> Int32
+  fn diff(a: Int32, b: Int32) -> Int32
+  fn prod(a: Int32, b: Int32) -> Int32
+  fn neg(a: Int32) -> Int32
+  fn shown(n: Int) -> Str
+}
+
+component Calc32 provides narrow: Narrow {
+  provide narrow {
+    fn sum(a, b) = a + b
+    fn diff(a, b) = a - b
+    fn prod(a, b) = a * b
+    fn neg(a) = -a
+    fn shown(n) = n.to_str()
+  }
+}

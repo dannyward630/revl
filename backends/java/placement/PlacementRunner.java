@@ -45,6 +45,9 @@ import java.util.concurrent.CountDownLatch;
 public final class PlacementRunner {
     static volatile String name = "?";
     static final List<Disposable> fibers = new ArrayList<>();
+    // The label of each entry in `fibers` (a proxied key, or a component), so a
+    // teardown that could not confirm a dispose can name it (issue #2339).
+    static final List<String> fiberLabels = new ArrayList<>();
 
     // The one choke point every console line passes through (the py tier's
     // `runtime._record`, the go tier's `hostRecord`): a declared Secret[T] is
@@ -183,6 +186,21 @@ public final class PlacementRunner {
         Runtime.getRuntime().halt(1);
     }
 
+    // A teardown in which a dispose threw (or otherwise could not be confirmed)
+    // is not a finished LIFO unwind (issue #2339). One scrubbed FATAL line naming
+    // the fibers, no residue verdict and no `DOWN`, and `halt` for the reason
+    // `failAndHalt` halts: `exit` would run the shutdown hook, which prints
+    // `DOWN`. The java dispose is synchronous, so there is no wait to bound; a
+    // dispose that never returns already leaves no `DOWN`.
+    static void haltTeardownIncomplete(String owner, List<String> unconfirmed) {
+        String message = "teardown incomplete: dispose not confirmed for "
+                + String.join(", ", unconfirmed);
+        System.out.flush(); // halt skips the flush the exit path would do
+        System.err.println("[" + owner + "] FATAL " + redactFatal(message));
+        System.err.flush();
+        Runtime.getRuntime().halt(1);
+    }
+
     // The per-thread half of the same funnel. A java `try` covers the thread
     // that runs it, so `main`'s catch cannot see a failure on any OTHER thread,
     // and the JVM's default handler prints it as a bare stack trace on
@@ -250,6 +268,7 @@ public final class PlacementRunner {
                     new ForwardingHandler(client, key));
             Disposable undo = provide(ctx, key, iface, proxy);
             fibers.add(() -> { undo.dispose(); client.close(); });
+            fiberLabels.add(key);
             log("proxy", key, "-> " + socket);
         }
 
@@ -260,6 +279,7 @@ public final class PlacementRunner {
             Plugin plugin = (Plugin) instantiate(cls, (Map<String, Object>) config.getOrDefault(cname, Map.of()));
             Disposable disposable = plugin.apply(ctx);
             fibers.add(disposable);
+            fiberLabels.add(cname);
             log("load", cname, "ACTIVE");
         }
 
@@ -312,10 +332,22 @@ public final class PlacementRunner {
         CountDownLatch latch = new CountDownLatch(1);
         final Stub stubRef = stub;
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            // A dispose that threw stopped its own inverse chain part-way, so the
+            // unwind is not finished: keep going down the stack so every other
+            // fiber still gets its dispose, then refuse to say `DOWN` (the
+            // conductor reads it as proof the LIFO unwind completed) (issue #2339).
+            List<String> unconfirmed = new ArrayList<>();
             for (int i = fibers.size() - 1; i >= 0; i--) {
-                try { fibers.get(i).dispose(); } catch (Throwable ignored) {}
+                try {
+                    fibers.get(i).dispose();
+                } catch (Throwable failure) {
+                    unconfirmed.add(fiberLabels.get(i));
+                    log("swap", fiberLabels.get(i), "dispose NOT confirmed: "
+                            + failure.getClass().getSimpleName());
+                }
             }
             if (stubRef != null) stubRef.close();
+            if (!unconfirmed.isEmpty()) haltTeardownIncomplete(name, unconfirmed);
             System.out.println("[" + name + "] DOWN");
             System.out.flush();
         }));

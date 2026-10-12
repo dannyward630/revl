@@ -323,12 +323,28 @@ impl RevlWal {
         let mut line = serde_json::to_string(rec)
             .unwrap_or_else(|e| panic!("revl: write-ahead log record could not be encoded: {e}"));
         line.push('\n');
+        let start = self.file.metadata().map(|m| m.len()).ok();
         if let Err(e) = self.file.write_all(line.as_bytes()) {
+            self.cut(start);
             panic!("revl: write-ahead log write failed: {e}");
         }
         if let Err(e) = self.file.sync_all() {
             if !self.unsynced {
+                self.cut(start);
                 panic!("revl: write-ahead log fsync failed: {e}");
+            }
+        }
+    }
+
+    /// Drop a record whose write or fsync failed (issue #2345), as the py
+    /// WriteAheadLog and the wasm drain do, so recovery reads it as absent,
+    /// then fsync the cut so a power loss cannot bring it back. Best effort:
+    /// the caller panics either way, and on a target that refused the
+    /// record's fsync this fsync fails too.
+    fn cut(&mut self, start: Option<u64>) {
+        if let Some(start) = start {
+            if self.file.set_len(start).is_ok() {
+                let _ = self.file.sync_all();
             }
         }
     }
@@ -392,6 +408,82 @@ pub fn revl_record_transactional(receiver: &str, method: &str, args: Vec<String>
     }
 }
 
+/// Journal one host-extern emission BEFORE its body runs (issue #2345), the
+/// record the py tier writes for the same crossing: an `effect` of kind
+/// `emission`, one-way, no inverse. Fsync'd before it returns, and a failed
+/// fsync panics, so the host body never runs unless its start record is on
+/// disk. Returns the record's seq, or `None` when `REVL_WAL` is unset.
+pub fn revl_record_emission_start(key: &str, method: &str, service: Option<&str>) -> Option<u64> {
+    let label = if key == method { key.to_string() } else { format!("{}.{}", key, method) };
+    let sink = revl_wal_sink()?;
+    let mut wal = sink.lock().unwrap();
+    let seq = wal.seq;
+    wal.seq += 1;
+    wal.write(&serde_json::json!({
+        "record": "effect", "seq": seq, "component": serde_json::Value::Null,
+        "stepIndex": serde_json::Value::Null, "kind": "emission", "label": label,
+        "site": serde_json::Value::Null, "source": serde_json::Value::Null,
+        "origin": {},
+        "boundary": { "class": "emission", "referent": "process-crossing",
+            "compensated": false, "detail": { "key": key, "method": method,
+            "service": service, "args": [] } },
+        "inverse": { "reconstructible": false,
+            "reason": "an emission is a one-way crossing; it has no inverse" },
+    }));
+    Some(seq)
+}
+
+/// Settle a journalled emission once its body returned. A body that panics
+/// is settled as `emission-failed` by `RevlEmission`'s drop instead.
+pub fn revl_record_emission_outcome(seq: Option<u64>, outcome: &str) {
+    if let (Some(seq), Some(sink)) = (seq, revl_wal_sink()) {
+        let mut wal = sink.lock().unwrap();
+        wal.write(&serde_json::json!({ "record": outcome, "seq": seq }));
+    }
+}
+
+/// One journalled emission (issue #2345): `start` makes the start record
+/// durable before the body runs, `complete` settles it. Dropped without
+/// `complete` (the body panicked), it writes `emission-failed`, as the py
+/// tier's `_call_within` does. Only the error type is kept: this tier has
+/// no redaction funnel for a panic message.
+pub struct RevlEmission { seq: Option<u64>, done: bool }
+
+impl RevlEmission {
+    pub fn start(key: &str, method: &str, service: Option<&str>) -> Self {
+        RevlEmission { seq: revl_record_emission_start(key, method, service), done: false }
+    }
+    pub fn complete(mut self) {
+        self.done = true;
+        revl_record_emission_outcome(self.seq, "emission-complete");
+    }
+}
+
+impl Drop for RevlEmission {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        if let (Some(seq), Some(sink)) = (self.seq, revl_wal_sink()) {
+            let mut wal = sink.lock().unwrap_or_else(|e| e.into_inner());
+            let panicking = std::thread::panicking();
+            let rec = serde_json::json!({ "record": "emission-failed", "seq": seq,
+                "error": { "type": if panicking { "panic" } else { "early-return" } } });
+            if panicking {
+                // a second panic while unwinding aborts the process: write
+                // best effort and let the body's panic carry on
+                use std::io::Write;
+                let mut line = serde_json::to_string(&rec).unwrap_or_default();
+                line.push('\n');
+                let _ = wal.file.write_all(line.as_bytes());
+                let _ = wal.file.sync_all();
+            } else {
+                wal.write(&rec);
+            }
+        }
+    }
+}
+
 /// The commit-path proof that every recorded transactional seq COMMITTED,
 /// so recover SKIPS it — a committed transaction is never rolled back.
 /// Called on a clean unload, never on a crash.
@@ -415,6 +507,7 @@ pub fn revl_record_activation_complete() {
 }
 
 pub fn crasher() -> cordis::PluginHandle {
+    revl_wal_sink();
     cordis::plugin_sync::<(), _>(
         "Crasher",
         cordis::Inject::none(),

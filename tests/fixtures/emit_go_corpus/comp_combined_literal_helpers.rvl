@@ -1,0 +1,16 @@
+// issue #2260: the same literals beside a top-level fn, so the document takes
+// the combined path. Its component section's imports and preambles follow
+// the renderer's `_COMP_NEEDS_*` flags too: no literal adds `math`, the
+// checked Int trio, `revlDiv`, the Int32 narrow, `strconv` or the frame
+// teardown.
+fn one() -> Int { return 1 }
+
+service Words {
+  fn plain() -> Str
+}
+
+component Spell provides words: Words {
+  provide words {
+    fn plain() = "revlAdd( revlSub( revlMul( revlDiv( revlToI32( math.Mod( strconv.FormatInt( newRevlFrame()"
+  }
+}

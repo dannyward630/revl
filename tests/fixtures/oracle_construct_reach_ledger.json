@@ -243,6 +243,7 @@
   ],
   "gate_census": [
     "BOOT",
+    "FOLD",
     "HANDOFF",
     "HOST-ARITY",
     "ROUTE",

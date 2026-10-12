@@ -157,8 +157,22 @@ extern pure fn go_string(v: Any) -> Str = @py {
 // source, and the one place rendered text is turned back into data (the
 // `assert` message) strips it first.
 extern pure fn stdlib_mark() -> Str = @py { return chr(1) }
-fn strip_marks(s: Str) -> Str { return s.split(stdlib_mark()).join("") }
 fn marked(text: Str) -> Str { return stdlib_mark().concat(text) }
+
+// The component tier's `_COMP_NEEDS_*` flags, carried the same way. Each is
+// U+0002 and a one-letter tag in front of the helper text that sets it, so a
+// Str literal that spells a helper call (`"revlAdd("`) sets nothing, as on the
+// reference: `a` the checked Int trio, `d` revlDiv, `m` math.Mod, `n` the
+// Int32 narrow, `s` strconv, `t` a component frame (the teardown preamble).
+extern pure fn flag_char() -> Str = @py { return chr(2) }
+fn flag(tag: Str) -> Str { return flag_char().concat(tag) }
+fn flagged(tag: Str, text: Str) -> Str { return flag(tag).concat(text) }
+fn strip_marks(s: Str) -> Str {
+  var t = s.split(stdlib_mark()).join("")
+  if (t.indexOf(flag_char()) < 0) { return t }
+  for (tag of ["a", "d", "i", "m", "n", "s", "t"]) { t = t.split(flag(tag)).join("") }
+  return t
+}
 fn replace_all(s: Str, needle: Str, repl: Str) -> Str { return s.split(needle).join(repl) }
 
 // ---------------------------------------------------------------- small utils
@@ -2221,7 +2235,7 @@ fn emit_externs(externs: List[Any]) -> Eout {
     let bodies = value_field(ext, "bodies")
     let go_body = value_field(bodies, "go")
     if (value_is_null(go_body)) {
-      out = out.push(`<<EXTERN-NO-GO-BODY:${name}>>`)
+      out = out.push(`<<UNSUPPORTED-EXTERN-NO-GO-BODY:${name}>>`)
       out = out.push("")
     } else {
       let body = trim(value_str(go_body))
@@ -3239,6 +3253,35 @@ fn deferred_test_markers(ir: Any) -> List[Str] {
   return out
 }
 
+// `_refuse_deferred_emissions`: a CALL to a `deferred` emission extern, in any
+// position inside a component, needs a session owner runtime this tier does
+// not have, so the reference refuses the document. The port names each
+// reached call, component first, on every path (issue #2316). A declared but
+// never-called deferred extern is not named, as on the reference.
+fn deferred_emission_markers(ir: Any) -> List[Str] {
+  // Read through `list_contains` and `flag_of`, like the other declines:
+  // tools/selfhost_coverage.py reads an inline comparison as a port.
+  var deferred = []
+  for (e of value_list(value_field(ir, "externs"))) {
+    if (list_contains(["emission"], value_str(value_field(e, "class"))) && flag_of(e, "deferred")) {
+      deferred = deferred.push(value_str(value_field(e, "name")))
+    }
+  }
+  var out = []
+  if (deferred.length() == 0) { return out }
+  for (c of value_list(value_field(ir, "components"))) {
+    let cname = value_str(value_field(c, "name"))
+    for (n of walk_nodes(c)) {
+      let name = value_str(value_field(n, "name"))
+      let mark = `<<UNSUPPORTED-DEFERRED-EMISSION:${cname}.${name}>>`
+      if (node_kind(n) == "fn" && list_contains(deferred, name) && !list_contains(out, mark)) {
+        out = out.push(mark)
+      }
+    }
+  }
+  return out
+}
+
 // ------------------------------------------------------- the IR text probes
 // The reference gates the Opt / Result / Map preambles on substrings of
 // `json.dumps({types, functions, externs, tests})`. A probe that only names
@@ -3327,6 +3370,7 @@ fn has_text(lines: List[Str], needle: Str) -> Bool {
 }
 
 pub fn emit_go_src(ir: Any) -> Str {
+  if (takes_live_path(ir)) { return emit_live_module(ir, components_in_slice(ir)) }
   return emit_module(ir, combined_ok(ir))
 }
 
@@ -3413,17 +3457,19 @@ fn emit_module(ir: Any, combined: Bool) -> Str {
     if (has_text(marked_comp, stdlib_mark())) { used_stdlib = true }
     var comp_lines = []
     for (l of marked_comp) { comp_lines = comp_lines.push(strip_marks(l)) }
-    comp_strconv = has_text(comp_lines, "strconv.Format")
-    // a method body's Int32 `+ - *` and unary minus (issue #2262) render the
-    // I32 helpers, which the same flag writes with the narrow
-    comp_ovf32 = text_has_any(comp_lines.join(newline()), ["revlToI32(", "revlAddI32(", "revlSubI32(", "revlMulI32("])
-    // `_COMP_NEEDS_OVERFLOW`: a method body's Int `+ - *` and unary minus
-    // render the checked helpers, so a call to any of them marks the trio.
-    comp_ovf = has_text(comp_lines, "revlAdd(") || has_text(comp_lines, "revlSub(") || has_text(comp_lines, "revlMul(")
+    // The other `_COMP_NEEDS_*` flags ride on the marks the renderer put in
+    // front of each helper it rendered, never on the text: a Str literal that
+    // spells `revlAdd(` or `math.Mod(` sets nothing (issue #2260).
+    comp_strconv = has_text(marked_comp, flag("s"))
+    // a method body's Int32 `+ - *` and unary minus (issue #2262) carry the
+    // `i` mark; the combined path writes their helpers off the same flag as
+    // `to_int32`
+    comp_ovf32 = has_text(marked_comp, flag("n")) || has_text(marked_comp, flag("i"))
+    comp_ovf = has_text(marked_comp, flag("a"))
     // `_COMP_NEEDS_FLOAT_DIV` / `_COMP_NEEDS_FLOAT_REM` (issue #2198)
-    comp_fdiv = has_text(comp_lines, "revlDiv(")
-    comp_frem = has_text(comp_lines, "math.Mod(")
-    comp_teardown = has_text(comp_lines, "newRevlFrame()")
+    comp_fdiv = has_text(marked_comp, flag("d"))
+    comp_frem = has_text(marked_comp, flag("m"))
+    comp_teardown = has_text(marked_comp, flag("t"))
     // issue #1892: a component signature that takes a Result names
     // `RevlResult[` with no `Result[` in the pure sections; the struct form
     comp_result = has_text(comp_lines, "RevlResult[")
@@ -3531,6 +3577,7 @@ fn emit_module(ir: Any, combined: Bool) -> Str {
   // silence (issue #1123).
   let test_markers = deferred_test_markers(ir)
   if (test_markers.length() > 0) { out = out.concat(test_markers) }
+  out = out.concat(deferred_emission_markers(ir))
   return rstrip(out.join(newline())).concat(newline())
 }
 
@@ -3857,13 +3904,13 @@ fn comp_builtin(method: Str, recv: Str, target: Str, args: List[Str]) -> Str {
   if (method == "startsWith") { text = `strings.HasPrefix(${target}, ${a0})` }
   if (method == "endsWith") { text = `strings.HasSuffix(${target}, ${a0})` }
   if (method == "to_int") { text = `int64(${target})` }
-  if (method == "to_int32") { text = `revlToI32(${target})` }
+  if (method == "to_int32") { text = flagged("n", `revlToI32(${target})`) }
   if (method == "to_char") { text = `func(n int64) string { if n < 0 || n > 0x10FFFF || (n >= 0xD800 && n <= 0xDFFF) { return "" }; return string(rune(n)) }(${target})` }
   // an Int32 receiver is the reference's own guard; the checker admits
   // `to_str` on Int and Float only
   if (method == "to_str") {
-    text = recv == "Float" ? `strconv.FormatFloat(${target}, 'g', -1, 64)`
-      : (recv == "Int32" ? `strconv.FormatInt(int64(${target}), 10)` : `strconv.FormatInt(${target}, 10)`)
+    text = flagged("s", recv == "Float" ? `strconv.FormatFloat(${target}, 'g', -1, 64)`
+      : (recv == "Int32" ? `strconv.FormatInt(int64(${target}), 10)` : `strconv.FormatInt(${target}, 10)`))
   }
   return marked(text)
 }
@@ -3908,9 +3955,9 @@ fn comp_format(n: Any, env: CEnv) -> Str {
         text = ""
       }
       if (at == "Str") { pieces = pieces.push(arg) }
-      if (at == "Int") { pieces = pieces.push(`strconv.FormatInt(${arg}, 10)`) }
-      if (at == "Int32") { pieces = pieces.push(`strconv.FormatInt(int64(${arg}), 10)`) }
-      if (at == "Bool") { pieces = pieces.push(`strconv.FormatBool(${arg})`) }
+      if (at == "Int") { pieces = pieces.push(flagged("s", `strconv.FormatInt(${arg}, 10)`)) }
+      if (at == "Int32") { pieces = pieces.push(flagged("s", `strconv.FormatInt(int64(${arg}), 10)`)) }
+      if (at == "Bool") { pieces = pieces.push(flagged("s", `strconv.FormatBool(${arg})`)) }
       used = used + 1
     } else {
       out = out.concat(c == "%" ? "%%" : c)
@@ -4003,18 +4050,18 @@ fn comp_typed_arith(n: Any, left: Str, right: Str, env: CEnv) -> Str {
     var h = "revlMul"
     if (op == "+") { h = "revlAdd" }
     if (op == "-") { h = "revlSub" }
-    return `${h}(${l}, ${r})`
+    return flagged("a", `${h}(${l}, ${r})`)
   }
   if (opnd == "Int32" && list_contains(["+", "-", "*"], op)) {
     var h = "revlMulI32"
     if (op == "+") { h = "revlAddI32" }
     if (op == "-") { h = "revlSubI32" }
-    return `${h}(${l}, ${r})`
+    return flagged("i", `${h}(${l}, ${r})`)
   }
   if (op == "/" && list_contains(["Int", "Int32", "Float"], opnd)) {
-    return opnd == "Float" ? `revlDiv(${l}, ${r})` : `revlDiv(float64(${l}), float64(${r}))`
+    return flagged("d", opnd == "Float" ? `revlDiv(${l}, ${r})` : `revlDiv(float64(${l}), float64(${r}))`)
   }
-  if (op == "%" && opnd == "Float") { return `math.Mod(${l}, ${r})` }
+  if (op == "%" && opnd == "Float") { return flagged("m", `math.Mod(${l}, ${r})`) }
   return `(${l} ${go_bin_op(op)} ${r})`
 }
 
@@ -4049,8 +4096,8 @@ fn comp_expr_bare(n: Any, env: CEnv, expected: Str) -> Str {
     let op = node_op(n)
     if (op == "!") { return `(!${operand})` }
     if (op == "~") { return `(^${operand})` }
-    if (node_operands(n) == "Int") { return `revlSub(0, ${operand})` }
-    if (node_operands(n) == "Int32") { return `revlSubI32(0, ${operand})` }
+    if (node_operands(n) == "Int") { return flagged("a", `revlSub(0, ${operand})`) }
+    if (node_operands(n) == "Int32") { return flagged("i", `revlSubI32(0, ${operand})`) }
     return `(-${operand})`
   }
   if (k == "if") {
@@ -4354,17 +4401,45 @@ fn takes_combined_path(ir: Any) -> Bool {
 }
 
 fn combined_ok(ir: Any) -> Bool {
+  return takes_combined_path(ir) && components_in_slice(ir)
+}
+
+// The reach of this file's component renderer, shared by the combined path
+// and the live one: what each component's body may hold, and the document
+// features (a fault test, a `Secret[T]` marking, a stub host family, a
+// renamed host type, an extern `compensate`) it does not carry.
+fn components_in_slice(ir: Any) -> Bool {
   // A declared `Map` or `Pool` renames the host runtime's own type; a
   // declared `Row` only drops its alias (`host_runtime_for`).
   let types = value_field(ir, "types")
-  var ok = takes_combined_path(ir) && value_list(value_field(ir, "fault_tests")).length() == 0
+  var ok = value_list(value_field(ir, "fault_tests")).length() == 0
     && !declares_secret(ir) && !has_stub_host(ir)
     && value_is_null(value_field(types, "Map")) && value_is_null(value_field(types, "Pool"))
   // An extern's own declared `compensate` (issue #1592) registers through
   // `revlDeclared`, past this slice.
   for (ext of value_list(value_field(ir, "externs"))) { ok = ok && value_is_null(value_field(ext, "compensate")) }
+  // A called `deferred` emission is a reference refusal (issue #2316).
+  ok = ok && deferred_emission_markers(ir).length() == 0
   let doc = comp_doc(ir)
   for (c of value_list(value_field(ir, "components"))) { ok = ok && component_ok(c, doc) }
+  return ok && keys_in_slice(ir)
+}
+
+// `_key_ident` / `_check_host_keys`: a namespaced key (`acme::greeter`) is
+// mangled on the reference, and two keys that land on one Go identifier are
+// refused there. This file ports neither, so it declines both.
+fn keys_in_slice(ir: Any) -> Bool {
+  var seen: Map[Str, Str] = Map.empty()
+  var ok = true
+  for (c of value_list(value_field(ir, "components"))) {
+    for (table of ["provides", "requires", "isolate", "intercept"]) {
+      for (k of value_keys(value_field(c, table))) {
+        let first = map_get(seen, camel(k))
+        ok = ok && k.indexOf("::") < 0 && (first == "" || first == k)
+        seen = seen.set(camel(k), k)
+      }
+    }
+  }
   return ok
 }
 
@@ -4444,7 +4519,7 @@ fn emit_comp_component(c: Any, doc: CDoc) -> List[Str] {
   out = out.push(line(2, "Apply: func(ctx *stc.Context) (stc.Inverse, error) {"))
   let needs_frame = component_needs_frame(c)
   if (needs_frame) {
-    out = out.push(line(3, "_revlFrame := newRevlFrame()")).push(line(3, "if err := ctx.Effect(func() stc.Inverse {"))
+    out = out.push(line(3, flagged("t", "_revlFrame := newRevlFrame()"))).push(line(3, "if err := ctx.Effect(func() stc.Inverse {"))
     out = out.push(line(4, "return func() error { _revlFrame.runCompensationPhase(); return nil }"))
     out = out.push(line(3, "}); err != nil {")).push(line(4, "return nil, err")).push(line(3, "}"))
   }
@@ -4618,11 +4693,16 @@ fn emit_comp_realm_helper(comps: List[Any]) -> List[Str] {
 
 // The component half of the combined body, after the pure tier.
 fn emit_comp_section(ir: Any) -> List[Str] {
+  return ["", "// ---- live stc-go components (placement) -------------------"].concat(emit_comp_body(ir))
+}
+
+// The services, keys, realm interner, components and load helpers, in the
+// order both the combined path and the live one render them.
+fn emit_comp_body(ir: Any) -> List[Str] {
   let services = value_field(ir, "services")
   let types = value_field(ir, "types")
   let comps = value_list(value_field(ir, "components"))
-  var out = ["", "// ---- live stc-go components (placement) -------------------"]
-  out = out.concat(emit_comp_services(services, types))
+  var out = emit_comp_services(services, types)
   out = out.concat(emit_comp_keys(comps))
   out = out.concat(emit_comp_realm_helper(comps))
   let doc = comp_doc(ir)
@@ -4630,6 +4710,68 @@ fn emit_comp_section(ir: Any) -> List[Str] {
   out = out.concat(emit_comp_load_helpers(comps))
   return out
 }
+// ============================================ the v3 LIVE path (issue #2260)
+// `_emit`'s own stc-go module: a v3 document of services and components and
+// nothing top-level (no fn, type, extern or test) is not routed to the pure
+// typed-core path or the combined one, but rendered as a live stc-go module.
+// With no declared type the component renderer is the combined one's, so this
+// path differs from it only in the assembly: the banner, an import block in
+// the reference's fixed (unsorted) order, the preambles in `_emit`'s order
+// and no trailing strip. A body that names a Result takes `_emit`'s sealed
+// Result preamble, which this file does not carry, so it is declined with a
+// `<<UNSUPPORTED-COMPONENT:..>>` marker per component. A body that names an
+// Opt is declined too, which is stricter than the reference needs.
+fn takes_live_path(ir: Any) -> Bool {
+  return value_int(value_field(ir, "ir_version")) == 3
+    && value_list(value_field(ir, "components")).length() > 0
+    && !carries_pure_declarations(ir) && value_list(value_field(ir, "tests")).length() == 0
+}
+
+// The module, when every component is in the slice (`in_slice`) and the body
+// it renders is too. Otherwise the live tier's banner, so the answer still
+// says which module the reference renders, then one marker per component and
+// per deferred fault test, never the pure tier's module.
+fn emit_live_module(ir: Any, in_slice: Bool) -> Str {
+  let banner = ["// Code generated by backends/go/emit.py — DO NOT EDIT.",
+                "// revl -> cordis-go, targeting github.com/0xdenny218/stc-go.",
+                "package emitted", ""]
+  let marked = in_slice ? emit_comp_body(ir) : []
+  let stdlib = has_text(marked, stdlib_mark())
+  var body = []
+  for (l of marked) { body = body.push(strip_marks(l)) }
+  if (!in_slice || text_has_any(body.join(newline()), ["RevlOpt[", "RevlSome[", "RevlNone[", "RevlResult[", "RevlOk[", "RevlErr["])) {
+    let named = banner.concat(uncarried_components(ir)).concat(deferred_test_markers(ir)).concat(deferred_emission_markers(ir))
+    return rstrip(named.join(newline())).concat(newline())
+  }
+  let uses_strconv = has_text(marked, flag("s"))
+  let ovf = has_text(marked, flag("a"))
+  let teardown = has_text(marked, flag("t"))
+  var imports = [line(1, `"fmt"`), line(1, `"sync"`)]
+  if (stdlib) { imports = imports.push(line(1, `"strings"`)).push(line(1, `"unicode/utf8"`)) }
+  if (teardown) { imports = imports.push(line(1, `"time"`)).push(line(1, `"os"`)).push(line(1, `"strconv"`)) }
+  if (has_text(marked, flag("m"))) { imports = imports.push(line(1, `"math"`)) }
+  if (uses_strconv && !teardown) { imports = imports.push(line(1, `"strconv"`)) }
+  imports = imports.push(line(1, `"slices"`)).push("").push(line(1, `stc "github.com/0xdenny218/stc-go"`))
+  var out = banner.push("import (").concat(imports).push(")").push("").push("var _ = fmt.Sprintf").push("").concat(host_runtime())
+  if (stdlib) { out = out.concat(stdlib_preamble("strings")) }
+  // `_V3_OVERFLOW32_HELPER`, after `_V3_ARITH32_HELPER` when a method body's
+  // Int32 `+ - *` or unary minus set `_COMP_NEEDS_ARITH32` (issue #2262)
+  let arith32 = has_text(marked, flag("i"))
+  if (arith32 || has_text(marked, flag("n"))) {
+    if (arith32) {
+      out = out.push("func revlAddI32(a, b int32) int32 { return revlToI32(int64(a) + int64(b)) }")
+      out = out.push("func revlSubI32(a, b int32) int32 { return revlToI32(int64(a) - int64(b)) }")
+      out = out.push("func revlMulI32(a, b int32) int32 { return revlToI32(int64(a) * int64(b)) }")
+    }
+    out = out.concat(["func revlToI32(v int64) int32 {", line(1, "if v < -2147483648 || v > 2147483647 {"),
+                      line(2, `panic("revl: Int32 overflow")`), line(1, "}"), line(1, "return int32(v)"), "}", ""])
+  }
+  if (ovf) { out = out.concat(overflow_preamble()) }
+  if (has_text(marked, flag("d"))) { out = out.push("func revlDiv(a, b float64) float64 { return a / b }").push("") }
+  if (teardown) { out = out.concat(teardown_preamble()) }
+  return out.concat(body).join(newline()).concat(newline())
+}
+
 // `_host_runtime()` for this document: a declared `Row` drops the runtime's own
 // alias, so `Query` answers the declared record (issue #1356 on the reference).
 fn host_runtime_for(types: Any) -> List[Str] {

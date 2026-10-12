@@ -2359,7 +2359,7 @@ fn emit_externs(externs: List[Any], ui_externs: List[Str]) -> List[Str] {
       continue
     }
     if (!value_has(bodies, "ts")) {
-      out = out.push(`<<EXTERN-NO-TS-BODY:${name}>>`)
+      out = out.push(`<<UNSUPPORTED-EXTERN-NO-TS-BODY:${name}>>`)
     } else {
       // issue #1369: the wrapper is emitted only for an extern that HAS a body,
       // matching the reference (which refuses a bodyless one outright).
@@ -4481,6 +4481,111 @@ fn lifecycle_test_lines(tests: List[Any], services: Any, components: List[Any]) 
   return out
 }
 
+// `_refuse_deferred_emissions`: a CALL to a `deferred` emission extern, in any
+// position inside a component, needs a session owner runtime this tier does
+// not have, so the reference refuses the document. The port names each
+// reached call, component first (issue #2353). A declared but never-called
+// deferred extern is not named, as on the reference. The flag and the class
+// are read through `flag_of` and `list_contains`: tools/selfhost_coverage.py
+// reads the inline spellings as a port, and a refusal is not one.
+fn flag_of(node: Any, field: Str) -> Bool { return value_bool(value_field(node, field)) }
+
+// `_refuse_validated_emissions`: a `validated` crossing (a service operation
+// or an extern) is a checked boundary this tier has no seam for, so the
+// reference refuses the document, declaration keyed. The port names each one
+// (issue #2367).
+// Both carriers go through one list, named as the reference names them
+// (`Service.op` for an operation, the bare name for an extern).
+fn validated_markers(ir: Any) -> List[Str] {
+  var wheres: List[Str] = []
+  var nodes: List[Any] = []
+  let services = value_field(ir, "services")
+  for (sname of value_keys(services)) {
+    let methods = value_field(value_field(services, sname), "methods")
+    for (mname of value_keys(methods)) {
+      wheres = wheres.push(`${sname}.${mname}`)
+      nodes = nodes.push(value_field(methods, mname))
+    }
+  }
+  for (e of value_list(value_field(ir, "externs"))) {
+    wheres = wheres.push(value_str(value_field(e, "name")))
+    nodes = nodes.push(e)
+  }
+  var out = []
+  var i = 0
+  while (i < nodes.length()) {
+    if (flag_of(nodes[i], "validated")) { out = out.push(`<<UNSUPPORTED-VALIDATED:${wheres[i]}>>`) }
+    i = i + 1
+  }
+  return out
+}
+
+// `_host_key` / `_check_host_keys`: a namespaced key's host spelling escapes
+// each `_` of a segment to `_u` and joins the segments on `__`, so an
+// unqualified key that already spells that image lands on the same host
+// identifier. The reference refuses the pair; the port names the second key
+// (issue #2367).
+fn host_key(key: Str) -> Str {
+  if (key.indexOf("::") < 0) { return key }
+  var parts = []
+  for (part of key.split("::")) { parts = parts.push(part.split("_").join("_u")) }
+  return parts.join("__")
+}
+
+fn host_key_collision_markers(ir: Any) -> List[Str] {
+  var seen: Map[Str, Str] = Map.empty()
+  var out = []
+  for (c of value_list(value_field(ir, "components"))) {
+    for (table of ["provides", "requires", "routes", "isolate", "intercept"]) {
+      for (k of value_keys(value_field(c, table))) {
+        let host = host_key(k)
+        if (seen.has(host)) {
+          if (map_get(seen, host) != k) { out = out.push(`<<UNSUPPORTED-HOST-KEY-COLLISION:${k}>>`) }
+        } else { seen = seen.set(host, k) }
+      }
+    }
+  }
+  return out
+}
+
+// `_refuse_required_stream`: a required `Stream[T]` coeffect has no lowering
+// on this tier, and the reference refuses the component by name (item 130
+// 6b). The port names each requirement (issue #2367).
+fn required_stream_markers(ir: Any) -> List[Str] {
+  var out = []
+  for (c of value_list(value_field(ir, "components"))) {
+    let rq = value_field(c, "requires")
+    for (k of value_keys(rq)) {
+      if (value_kind(value_field(rq, k)) == "str" && value_str(value_field(rq, k)).startsWith("Stream[")) {
+        out = out.push(`<<UNSUPPORTED-REQUIRED-STREAM:${value_str(value_field(c, "name"))}.${k}>>`)
+      }
+    }
+  }
+  return out
+}
+
+fn deferred_emission_markers(ir: Any) -> List[Str] {
+  var deferred = []
+  for (e of value_list(value_field(ir, "externs"))) {
+    if (list_contains(["emission"], value_str(value_field(e, "class"))) && flag_of(e, "deferred")) {
+      deferred = deferred.push(value_str(value_field(e, "name")))
+    }
+  }
+  var out = []
+  if (deferred.length() == 0) { return out }
+  for (c of value_list(value_field(ir, "components"))) {
+    let cname = value_str(value_field(c, "name"))
+    for (n of ir_nodes(c)) {
+      let name = value_str(value_field(n, "name"))
+      let mark = `<<UNSUPPORTED-DEFERRED-EMISSION:${cname}.${name}>>`
+      if (node_kind(n) == "fn" && list_contains(deferred, name) && !list_contains(out, mark)) {
+        out = out.push(mark)
+      }
+    }
+  }
+  return out
+}
+
 fn fault_test_markers(ir: Any) -> List[Str] {
   var out = []
   for (t of value_list(value_field(ir, "fault_tests"))) {
@@ -4570,6 +4675,8 @@ pub fn emit_ts_src(ir: Any) -> Str {
   if (components.length() > 0 || value_keys(services).length() > 0) {
     out = out.concat(emit_component_tail(ir, async_names))
   }
+  out = out.concat(deferred_emission_markers(ir)).concat(validated_markers(ir))
+  out = out.concat(host_key_collision_markers(ir)).concat(required_stream_markers(ir))
   return py_rstrip(out.join(newline())).concat(newline())
 }
 

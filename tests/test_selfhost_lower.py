@@ -162,6 +162,15 @@ def _classify(e: RevlError) -> str:
     if e.code in ("G4", "A1"):
         return e.code
     m = e.message
+    # ---- issues #2224, #2275, #2309, #2334: folded names ------------------
+    # Two component names, or two service names, that differ only in letter
+    # case or underscores, in one program or against a running one. The gate
+    # spells every one of these sentences byte for byte (issue #2351,
+    # selfhost/lower.rvl's name-fold section), so the marker is a claim of
+    # agreement.
+    if (" differ only in letter case or underscores, and both reduce to `"
+            in m and (m.startswith("component `") or m.startswith("service `"))):
+        return "FOLD"
     # ---- item 512 slice 3: model placement, the DECLARATION half ------------
     # `selfhost/lower.rvl`'s model-placement section decides `model role` and
     # `route model` and tags every refusal "MODEL". First in this function, and

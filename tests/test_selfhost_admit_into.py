@@ -189,12 +189,6 @@ WITHHELD: dict[str, str] = {
     # alike — the manifest is not what this one is waiting on.
     "hole_draft":
         "the holes family (T3 `refuse_admission`) is not ported",
-    # A component header the reference's parser refuses outright. The native
-    # parser recovers from this particular shape, so the BAD family reaches it
-    # and the gate raises no objection. Standalone too: the manifest changes
-    # nothing about it.
-    "syntax_error":
-        "the BAD parse family does not reach this component-header shape",
 }
 
 
