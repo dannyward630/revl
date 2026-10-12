@@ -164,11 +164,22 @@ path, which is what the resolution needs:
   has a row for whose text the scan cannot read, and a declaration that names
   a type the document also declares (any identifier of the declaration text
   counts, so a parameter or comment word of that spelling refuses too). The
-  check is only as strong as the gate's own call typing, which also holds in a
-  single document: the argument count, the return type, and the field types
-  of a record literal passed for a nominal record (`store.put({ id: "x" })`
-  against `put(r: Row)` with `Row = { id: Int }`) are not checked, so those
-  calls are still admitted and emitted where the reference refuses them.
+  types the service carries (its record and variant types, issue #2362) are
+  appended too, rendered from the module's native `types` table, so the gate
+  can hold a record literal to a carried record parameter field-wise. A
+  generic carried type is left out.
+- The gate's own call-site rules, in a single document and through an import
+  (issue #2362): a requirement call with the wrong number of arguments is
+  refused with the reference's ``store.put` takes 1 argument(s), 2 given``; a
+  record literal passed for a nominal record parameter is held to the record's
+  fields (the same field set, each compatible) through the `field
+  <Type>.<name>` rows; a `return` of a requirement call is checked at the
+  operation's declared return; and a `fn m() = <expr>` provide method is typed
+  as the `return <expr>` the reference makes of it, with its requirement calls
+  checked as any statement's are. Still not decided: a requirement call nested
+  inside a larger expression (`store.put(1) + 1`) is untyped, so its value
+  is not held to a declared result, and a variant or generic parameter meeting
+  a record literal stays silent.
 
 This is the honest multi-file native compile: the whole chain still runs in revl,
 and the only host crossing is the read the reference loader also performs. It

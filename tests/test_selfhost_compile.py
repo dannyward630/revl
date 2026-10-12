@@ -1338,6 +1338,89 @@ def test_native_driver_types_calls_to_an_imported_service(
         assert got.startswith("REFUSED|" + expect), got[:200]
 
 
+# Issue #2362: three call-site rules the native gate did not decide, in a
+# single document and through an imported service. Each case is (the module's
+# declarations, the provide method after `fn go()`, the outcome): "T1" is the
+# reference's own message as a native T1 refusal, "emit" the reference's bytes.
+_CALL_SITE_RULES = {
+    "arity_extra": ("pub service Store { fn put(id: Int) -> Str }\n",
+                    "= store.put(1, 2)", "T1"),
+    "arity_missing": ("pub service Store { fn put(id: Int) -> Str }\n",
+                      "= store.put()", "T1"),
+    "arity_in_let": ("pub service Store { fn put(id: Int) -> Str }\n",
+                     "{\n      let x = store.put(1, 2)\n      return x\n    }", "T1"),
+    "return_arrow": ("pub service Store { fn put(id: Int) -> Int }\n",
+                     "= store.put(1)", "T1"),
+    "return_block": ("pub service Store { fn put(id: Int) -> Int }\n",
+                     "{\n      return store.put(1)\n    }", "T1"),
+    "return_literal_arrow": ("pub service Store { fn put(id: Int) -> Int }\n",
+                             "= 1", "T1"),
+    "argument_in_return": ("pub service Store { fn put(id: Int) -> Str }\n",
+                           '{\n      return store.put("x")\n    }', "T1"),
+    "record_field_type": ("pub type Row = { id: Int }\n"
+                          "pub service Store { fn put(r: Row) -> Str }\n",
+                          '= store.put({ id: "x" })', "T1"),
+    "record_extra_field": ("pub type Row = { id: Int }\n"
+                           "pub service Store { fn put(r: Row) -> Str }\n",
+                           "= store.put({ id: 1, b: 2 })", "T1"),
+    # Positive controls: admitted by the reference, and by the native gate.
+    "return_matches": ("pub service Store { fn put(id: Int) -> Str }\n",
+                       "= store.put(1)", "emit"),
+    "record_matches": ("pub type Row = { id: Int, n: Str }\n"
+                       "pub service Store { fn put(r: Row) -> Str }\n",
+                       '= store.put({ n: "a", id: 1 })', "emit"),
+}
+
+_CALL_SITE_COMPONENT = (
+    "service Front { fn go() -> Str }\n\n"
+    "component App requires store: Store provides front: Front {\n"
+    "  provide front {\n"
+    "    fn go() %s\n"
+    "  }\n"
+    "}\n")
+
+
+def _reference_message(compile_one):
+    try:
+        compile_one()
+    except RevlError as e:
+        return e.message
+    return ""
+
+
+@pytest.mark.parametrize("case", sorted(_CALL_SITE_RULES))
+def test_native_gate_decides_the_call_site_rules_in_one_document(admit, case):
+    """Issue #2362, single document: the service declared in the same text."""
+    decls, body, expect = _CALL_SITE_RULES[case]
+    src = decls + "\n" + _CALL_SITE_COMPONENT % body
+    want = _reference_message(lambda: compile_source(src, "doc.rvl"))
+    if expect == "emit":
+        assert want == ""
+        assert admit(src) == ""
+    else:
+        assert want != ""
+        assert admit(src) == "T1|" + want
+
+
+@pytest.mark.parametrize("case", sorted(_CALL_SITE_RULES))
+def test_native_driver_decides_the_call_site_rules_through_an_import(
+        compile_rvl, reference_emit, tmp_path, case):
+    """Issue #2362, imported: the service and the record it carries live in
+    the module the document imports the service from."""
+    decls, body, expect = _CALL_SITE_RULES[case]
+    (tmp_path / "lib.rvl").write_text(decls, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    doc.write_text('use "./lib.rvl" { Store }\n\n' + _CALL_SITE_COMPONENT % body,
+                   encoding="utf-8")
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
+    if expect == "emit":
+        assert got == reference_emit["py"](compile_files([str(doc)])), got[:200]
+    else:
+        want = _reference_message(lambda: compile_files([str(doc)]))
+        assert want != ""
+        assert got == "REFUSED|T1|" + want, got[:200]
+
+
 def test_six_way_composition_co_compiles(compile_rvl):
     """SEAM 2 is closed for ALL SIX TIERS (roadmap item 146, gap 2): lower.rvl plus
     emit_{py,ts,go,java,rust,wasm}.rvl ``use``d together in compile.rvl compile into

@@ -1661,6 +1661,87 @@ fn tc_first_shared(text: Str, names: List[Str]) -> Str {
 // The admission text, or the refusal ("" for none) that stopped building it.
 type TcText = { text: Str, refusal: Str }
 
+// Issue #2362. The string value of the top-level key `key` of the JSON object
+// `obj`, or "" when it is absent or not a string (a `null` payload).
+fn tc_str_value(obj: Str, key: Str) -> Str {
+  let at = ul_top_key(obj, key)
+  if ((at < 0) || (obj.slice(at, at + 1) != "\"")) { return "" }
+  let end = ul_string_end(obj, at)
+  if (end < 0) { return "" }
+  return obj.slice(at + 1, end)
+}
+
+// `type <name> = { f: T, ... }` for a record entry of the native `types`
+// table, `type <name> = A | B(T)` for a variant one, or "" for a generic type
+// or any other kind, which is left out (the gate then reads the name as one
+// it cannot resolve, as before).
+fn tc_type_text(name: Str, decl: Str) -> Str {
+  if (ul_trim(ul_key_value(decl, "params")) != "[]") { return "" }
+  let kind = tc_str_value(decl, "kind")
+  let head = "type ".concat(name).concat(" = ")
+  if (kind == "record") {
+    let fields = ul_key_value(decl, "fields")
+    let keys = ul_top_keys(fields)
+    var body = ""
+    var k = 0
+    while (k < keys.length()) {
+      if (k > 0) { body = body.concat(", ") }
+      body = body.concat(keys[k]).concat(": ").concat(tc_str_value(fields, keys[k]))
+      k += 1
+    }
+    return head.concat("{ ").concat(body).concat(" }")
+  }
+  if (kind != "variant") { return "" }
+  let cases = ul_key_value(decl, "cases")
+  var out = ""
+  var i = 0
+  while (i < cases.length()) {
+    if (cases.slice(i, i + 1) == "{") {
+      let close = ul_match_close(cases, i)
+      if (close < 0) { return "" }
+      let c = cases.slice(i, close + 1)
+      if (out != "") { out = out.concat(" | ") }
+      out = out.concat(tc_str_value(c, "name"))
+      let payload = tc_str_value(c, "payload")
+      if (payload != "") { out = out.concat("(").concat(payload).concat(")") }
+      i = close + 1
+    }
+    else { i += 1 }
+  }
+  return out == "" ? "" : head.concat(out)
+}
+
+// The types the imported service carries, as declarations to append, and the
+// names appended so far.
+type TcCarried = { text: Str, names: List[Str] }
+
+// Issue #2362. The declaration text of every type the service `name` of the
+// module at `dep` carries (`ul_carried_types`, the reference's `carried`
+// list) that `seen` does not hold yet, so the gate can resolve a record
+// parameter field-wise against a record literal, as the reference does.
+fn tc_carried_text(dep: Str, module_src: Str, name: Str, seen: List[Str]) -> TcCarried {
+  let module_ir = ul_module_ir(dep)
+  let entry = ul_service_entry(module_ir, name)
+  if (entry == "") { return { text: "", names: seen } }
+  let carry = ul_carried_types(dep, module_ir, module_src, entry)
+  let table = ul_key_value(module_ir, "types")
+  var names = seen
+  var text = ""
+  var i = 0
+  while (i < carry.names.length()) {
+    let t = carry.names[i]
+    if (!ul_has(names, t)) {
+      let decl = tc_type_text(t, ul_key_value(table, t))
+      if (decl != "") {
+        names = names.push(t)
+        text = text.concat(decl).concat(str_newline())
+      }
+    }
+    i += 1
+  }
+  return { text: text, names: names }
+}
+
 // The document `source` (at `path`, lowered to `own`) with the declaration text
 // of every service a top-level `use` names appended, once each, unless the
 // document declares that service itself or the module declares none of that
@@ -1674,6 +1755,7 @@ fn tc_admission_text(source: Str, path: Str, own: Str) -> TcText {
   let pairs = ul_use_pairs(source)
   let doc_types = ul_type_scan(source)
   var done: List[Str] = []
+  var typed: List[Str] = []
   var text = source
   var i = 0
   while (i + 1 < pairs.length()) {
@@ -1701,6 +1783,9 @@ fn tc_admission_text(source: Str, path: Str, own: Str) -> TcText {
         }
         done = done.push(name)
         text = text.concat(str_newline()).concat(str_newline()).concat(decl).concat(str_newline())
+        let carried = tc_carried_text(dep, module_src, name, typed)
+        typed = carried.names
+        text = text.concat(carried.text)
       }
     }
   }

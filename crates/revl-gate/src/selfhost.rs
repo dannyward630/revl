@@ -10244,6 +10244,15 @@ fn arrow_body(ss: Vec<Stmt>) -> Vec<Stmt> {
     return vec![Stmt { kind: ret.kind.clone(), e: ret.e.clone(), bind: String::from(""), spawnTarget: String::from(""), awaited: s.awaited, line: s.line, inTimer: s.inTimer, bindTy: String::from(""), edge: String::from("") }];
 }
 
+fn arrow_typed_body(pm: ProvM) -> Vec<Stmt> {
+    let ss = pm.body;
+    if ((((!pm.isArrow) || (ss.revl_length() != 1i64)) || ((ss)[(0i64) as usize].kind != "expr")) || ((ss)[(0i64) as usize].bind != "")) {
+        return ss;
+    }
+    let s = (ss)[(0i64) as usize].clone();
+    return vec![Stmt { kind: String::from("return"), e: s.e.clone(), bind: String::from(""), spawnTarget: String::from(""), awaited: s.awaited, line: s.line, inTimer: s.inTimer, bindTy: String::from(""), edge: String::from("") }];
+}
+
 fn p_prov_methods(ts: Vec<Token>, i: i64, end: i64, acc: Vec<ProvM>) -> ProvMR {
     if ((i >= end) || atk(&ts, i, "}")) {
         return ProvMR { xs: acc.clone(), i: i, ok: true };
@@ -13205,10 +13214,44 @@ fn ct_args(root_: &str, meth: &str, decl: MSig, args: Vec<Expr>, env: Vec<Bind>,
     }
     let pt = tk_solid(taint_strip((decl.ps)[(i) as usize].ty.clone()), &env);
     let inf = tk_infer((args)[(i) as usize].clone(), env.clone());
-    if ((((inf.v == "") && (pt != "")) && (inf.ty != "")) && (!tk_compatible(pt.clone(), inf.ty.clone()))) {
+    if ((((inf.v == "") && (pt != "")) && (inf.ty != "")) && (!tk_compatible(ct_record_shape(pt.clone(), &inf.ty, &env), inf.ty.clone()))) {
         return tagged("T1", &((((((((((String::from("`").revl_concat(&root_)).revl_concat(".")).revl_concat(&meth)).revl_concat("` argument `")).revl_concat(&(decl.ps)[(i) as usize].name)).revl_concat("` expects `")).revl_concat(&tk_render(pt.clone()))).revl_concat("`, got `")).revl_concat(&tk_render(inf.ty.clone()))).revl_concat("`")));
     }
     return ct_args(root_, meth, decl.clone(), args.clone(), env.clone(), (i).checked_add(1i64).expect("revl: Int overflow"));
+}
+
+fn ct_record_shape(pt: String, actual: &str, env: &[Bind]) -> String {
+    if ((!tk_is_struct(actual)) || (!tk_nominal_name(pt.clone()))) {
+        return pt;
+    }
+    let shape = tk_nominal_shape(&pt, env);
+    return if (shape == "") { pt.clone() } else { shape.clone() };
+}
+
+fn tk_nominal_shape(t: &str, env: &[Bind]) -> String {
+    let pfx = (String::from("field ").revl_concat(&t)).revl_concat(".");
+    let mut seen: Vec<String> = vec![];
+    let mut out = String::from("");
+    let mut i = 0i64;
+    while (i < env.revl_length()) {
+        let nm = (env)[(i) as usize].name.clone();
+        if (nm.revl_slice(0i64, pfx.revl_length()) == pfx) {
+            let f = nm.revl_slice(pfx.revl_length(), nm.revl_length());
+            if (!contains__m2(&seen, &f)) {
+                seen.push(f.clone());
+                out = (((out.revl_concat(&if (out == "") { String::from("") } else { String::from(", ") })).revl_concat(&f)).revl_concat(": ")).revl_concat(&tenv_get(env, &nm));
+            }
+        }
+        i = (i).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return if (out == "") { String::from("") } else { (String::from("{").revl_concat(&out)).revl_concat("}") };
+}
+
+fn ct_arity(root_: &str, meth: &str, decl: MSig, n: i64) -> String {
+    if ((decl.name == "") || (n == decl.ps.revl_length())) {
+        return String::from("");
+    }
+    return tagged("T1", &((((((((String::from("`").revl_concat(&root_)).revl_concat(".")).revl_concat(&meth)).revl_concat("` takes ")).revl_concat(&((decl.ps.revl_length())).to_string())).revl_concat(" argument(s), ")).revl_concat(&(n).to_string())).revl_concat(" given")));
 }
 
 fn ct_first(a: String, b: String) -> String {
@@ -13267,6 +13310,10 @@ fn ct_call(c: CallN, cx: Ctx__m2, env: Vec<Bind>) -> String {
         return inner;
     }
     let decl = ct_req_decl(c.target.clone(), cx.clone());
+    let ar = ct_arity(&ct_req_root(c.target.clone()), &ct_req_op(c.target.clone()), decl.clone(), c.args.revl_length());
+    if (ar != "") {
+        return ar;
+    }
     if ((decl.name != "") && (c.args.revl_length() == decl.ps.revl_length())) {
         let v = ct_args(&ct_req_root(c.target.clone()), &ct_req_op(c.target.clone()), decl.clone(), c.args.clone(), env.clone(), 0i64);
         if (v != "") {
@@ -13429,9 +13476,18 @@ fn mth_type_verdict(body: Vec<Stmt>, i: i64, env: Vec<Bind>, cx: Ctx__m2, ret: S
         return mk_verd(vm.clone(), ln.clone());
     }
     if (((s.kind == "return") && (ret != "")) && (!is_bad(s.e.clone()))) {
-        let rc = tk_check(s.e.clone(), ret.clone(), env.clone(), &((String::from("`").revl_concat(&mname)).revl_concat("` returns")));
+        let where__ = (String::from("`").revl_concat(&mname)).revl_concat("` returns");
+        let rc = tk_check(s.e.clone(), ret.clone(), env.clone(), &where__);
         if (rc.v != "") {
             return mk_verd(rc.v.clone(), ln.clone());
+        }
+        let rq = ct_scan(s.e.clone(), cx.clone(), env.clone());
+        if (rq != "") {
+            return mk_verd(rq.clone(), ln.clone());
+        }
+        let rr = ct_return_req(s.e.clone(), ret.clone(), cx.clone(), &env, &where__);
+        if (rr != "") {
+            return mk_verd(rr.clone(), ln.clone());
         }
         return mth_type_verdict(body.clone(), (i).checked_add(1i64).expect("revl: Int overflow"), env.clone(), cx.clone(), ret.clone(), mname, fallback);
     }
@@ -13473,6 +13529,15 @@ fn ct_stmt_req_ret(e: Expr, cx: Ctx__m2) -> String {
     Expr::Emit(u) => { let u = *u; ct_stmt_req_ret(u.e, cx.clone()) },
     _ => String::from(""),
 };
+}
+
+fn ct_return_req(e: Expr, ret: String, cx: Ctx__m2, env: &[Bind], where__: &str) -> String {
+    let rt = tk_solid(ct_stmt_req_ret(e.clone(), cx.clone()), env);
+    let want = tk_solid(ret.clone(), env);
+    if (((rt == "") || (want == "")) || tk_compatible(want.clone(), rt.clone())) {
+        return String::from("");
+    }
+    return tk_mismatch(where__, ret.clone(), rt.clone()).v;
 }
 
 fn mth_body_tys(body: Vec<Stmt>, i: i64, env: Vec<Bind>, cx: Ctx__m2) -> Vec<Bind> {
@@ -14392,7 +14457,7 @@ fn check_component(comp: CompD, cx: Ctx__m2, gtys: &[Bind]) -> Verd {
                 }
                 return mk_verd(tagged(&a.tag, &a.msg), body_line(&pm.body, mcx.clone(), comp.line));
             }
-            let mtv = mth_type_verdict(pm.body.clone(), 0i64, mth_param_tys(pm.clone(), decl.clone(), 0i64, setupTys.clone()), mcx.clone(), tk_solid(taint_strip(decl.ret.clone()), gtys), &pm.name, comp.line);
+            let mtv = mth_type_verdict(arrow_typed_body(pm.clone()), 0i64, mth_param_tys(pm.clone(), decl.clone(), 0i64, setupTys.clone()), mcx.clone(), tk_solid(taint_strip(decl.ret.clone()), gtys), &pm.name, comp.line);
             if (mtv.v != "") {
                 return mtv;
             }
