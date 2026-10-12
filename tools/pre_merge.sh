@@ -22,6 +22,17 @@
 #
 # Contract: each step is either RAN (and must pass) or SKIPPED (loud, toolchain
 # absent). The gate exits non-zero if any step ran and failed.
+#
+# The suites only CI ran (issue #2210): whole backend directories, vitest, and
+# the steps that set REVL_CROSS_TIER_SLOW, REVL_SWEEP_ALL_TIERS or a
+# REVL_REQUIRE_* switch. tools/ci_suites.py reads them from ci.yml, and step 8
+# lists every one. Each is opt-in by its CI job name, since together they take
+# far longer than this gate; one not opted in prints SKIPPED with the flag that
+# runs it, so none is silently absent:
+#
+#     sh tools/pre_merge.sh --with=backend-go,conformance   # or --with=all
+#     REVL_PREMERGE_WITH=all make pre-merge
+#     sh tools/pre_merge.sh --plan     # print what would run; run nothing
 
 set -u
 root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
@@ -122,13 +133,36 @@ fi
 # it cannot map, falls back to the full gate here.
 AFF=0
 AFF_BASE=""
+PLAN=0
+WITH=${REVL_PREMERGE_WITH:-}
 for arg in "$@"; do
     case "$arg" in
         --affected) AFF=1 ;;
         --base=*) AFF_BASE="${arg#--base=}" ;;
+        --plan) PLAN=1 ;;
+        --with=*) WITH="${WITH:+$WITH,}${arg#--with=}" ;;
         *) ;;
     esac
 done
+
+# The python that reads ci.yml for step 8 (tools/ci_suites.py needs PyYAML).
+YAML_PY=""
+for cand in "$PYTHON" "$(command -v python3 2>/dev/null)"; do
+    if [ -n "$cand" ] && "$cand" -c 'import yaml' >/dev/null 2>&1; then YAML_PY=$cand; break; fi
+done
+
+# Check the --with names before any step runs: a typo must stop the gate at
+# once, not leave the suite quietly not opted in after the whole run.
+if [ -n "$WITH" ]; then
+    if [ -z "$YAML_PY" ]; then
+        echo "pre-merge: --with=$WITH needs a python with PyYAML to read ci.yml, and none was found."
+        exit 1
+    fi
+    if ! with_err=$("$YAML_PY" tools/ci_suites.py --root "$root" --check-with "$WITH" 2>&1); then
+        echo "pre-merge: --with refused: $with_err"
+        exit 1
+    fi
+fi
 
 # Selection defaults ARE the full gate, so with AFF=0 (plain `make pre-merge`)
 # every step runs exactly as before. `want` short-circuits to true whenever
@@ -168,6 +202,8 @@ fi
 fail=0
 ran=0
 skipped=0
+planned=0
+optout=0
 
 # step "<label>" <cmd...> : run a command that MUST pass. Prints ok / FAILED and
 # the tail of its output on failure. A failure fails the whole gate.
@@ -183,6 +219,11 @@ step() {
     label=$1
     shift
     printf '  %-42s' "$label"
+    if [ "${PLAN:-0}" -eq 1 ]; then
+        echo "would run: $*"
+        planned=$((planned + 1))
+        return
+    fi
     if out=$("$@" 2>&1); then
         rc=0
     else
@@ -291,6 +332,11 @@ cordis_missing=0
 cordis_step() {
     label="frontend-cordis (cordis-py venv)"
     printf '  %-42s' "$label"
+    if [ "${PLAN:-0}" -eq 1 ]; then
+        echo "would run: tools/cordis_half.py (the tests the frontend step skips for cordis)"
+        planned=$((planned + 1))
+        return
+    fi
     set -- --root "$root" --select "$SEL_PYTEST" \
         --python "${REVL_CORDIS_PYTHON:-}" \
         --python "$root/backends/python/.venv/bin/python" \
@@ -513,11 +559,93 @@ else
     step "formal     (lake build + axioms gate)" sh formal/scripts/run_gate.sh
 fi
 
+# 8. The suites only CI ran (issue #2210). tools/ci_suites.py reads ci.yml and
+#    prints one line per CI-only suite: run (opted in, toolchain present), skip
+#    (opted in, toolchain missing: counts as skipped), optout (not opted in:
+#    SKIPPED with the flag that runs it) or covered (a step above runs it).
+#    Reading ci.yml needs PyYAML; without it the whole set is one loud SKIPPED,
+#    never an empty section.
+# >>> ci-only-step (sliced and executed by tests/test_pre_merge_ci_only_suites_2210.py)
+ci_line() { printf '  %s  %s\n' "$1" "$2"; }
+
+ci_run() {
+    label=$1
+    shift
+    printf '  %s  ' "$label"
+    # stdin is the suite list being read; a child that reads stdin would eat it.
+    if out=$("$@" </dev/null 2>&1); then rc=0; else rc=$?; fi
+    ran=$((ran + 1))
+    count=$(printf '%s\n' "$out" | grep -E '[0-9]+ (passed|failed|errors?)|no tests ran|Tests +[0-9]+' \
+        | tail -1 | sed 's/^[= ]*//; s/[= ]*$//')
+    if [ "$rc" -eq 0 ] && [ -n "$count" ]; then
+        echo "ok ($count)"
+    elif [ "$rc" -eq 0 ]; then
+        # Exit 0 with no count is a run that may have run nothing: never ok.
+        echo "FAILED (exit 0 but no test count in its output)"
+        printf '%s\n' "$out" | tail -30 | sed 's/^/      /'
+        fail=1
+    else
+        echo "FAILED (exit $rc${count:+, $count})"
+        printf '%s\n' "$out" | tail -30 | sed 's/^/      /'
+        fail=1
+    fi
+}
+
+ci_only_suites() {
+    yp=${YAML_PY:-}
+    if [ -z "$yp" ]; then
+        skip "ci-only suites (from ci.yml)" "no python with PyYAML to read ci.yml; the CI-only suites were not even listed"
+        return
+    fi
+    list=$(mktemp "${TMPDIR:-/tmp}/revl-premerge-ci.XXXXXX") || {
+        skip "ci-only suites (from ci.yml)" "mktemp failed"
+        return
+    }
+    if ! "$yp" tools/ci_suites.py --root "$root" --list --with "$WITH" \
+            --pytest "$PYTEST" --pytest-python "${PYTEST:+$PYTHON}" >"$list" 2>&1; then
+        ci_line "ci-only suites (from ci.yml)" "FAILED (tools/ci_suites.py --list)"
+        tail -30 "$list" | sed 's/^/      /'
+        fail=1
+        rm -f "$list"
+        return
+    fi
+    tab=$(printf '\t')
+    while IFS="$tab" read -r sid sstate slabel sdetail; do
+        case "$sstate" in
+            run)
+                if [ "${PLAN:-0}" -eq 1 ]; then
+                    ci_line "$slabel" "would run: $sdetail"
+                    planned=$((planned + 1))
+                else
+                    ci_run "$slabel" "$yp" tools/ci_suites.py --root "$root" --run "$sid" --pytest "$PYTEST"
+                fi ;;
+            skip)
+                ci_line "$slabel" "SKIPPED ($sdetail)"
+                skipped=$((skipped + 1)) ;;
+            optout)
+                ci_line "$slabel" "SKIPPED (not opted in; CI job ${sid%/*} runs it; $sdetail)"
+                optout=$((optout + 1)) ;;
+            covered)
+                [ "${PLAN:-0}" -eq 1 ] && ci_line "$slabel" "covered ($sdetail)" ;;
+            *)
+                ci_line "${slabel:-$sid}" "FAILED (unknown state from tools/ci_suites.py: $sstate)"
+                fail=1 ;;
+        esac
+    done <"$list"
+    rm -f "$list"
+}
+# <<< ci-only-step
+ci_only_suites
+
 # Clean up the emit shim and the cordis skip log.
 [ -n "$EMIT_PATH" ] && rm -rf "$EMIT_PATH"
 [ -n "$CORDIS_LOG" ] && rm -f "$CORDIS_LOG"
 
 echo
+if [ "${PLAN:-0}" -eq 1 ]; then
+    echo "pre-merge --plan: $planned would run, $skipped skipped, $optout CI-only suite(s) not opted in; nothing was run"
+    exit 0
+fi
 echo "pre-merge: $ran ran, $skipped skipped"
 if [ "$fail" -ne 0 ]; then
     echo "pre-merge: FAILED — a step that ran did not pass (see above). Fix it before merging to main."
@@ -528,6 +656,10 @@ if [ "$cordis_missing" -ne 0 ]; then
     echo "           Run \`sh backends/python/setup.sh\` or set REVL_CORDIS_PYTHON, then re-run."
     exit 1
 fi
+if [ "${optout:-0}" -ne 0 ]; then
+    echo "pre-merge: ${optout} CI-only suite(s) not opted in did not run; CI runs them."
+    echo "           Opt in by CI job name (--with=backend-go,...) or all of them (--with=all)."
+fi
 if [ "$skipped" -ne 0 ]; then
     echo "pre-merge: green for what ran. $skipped step(s) skipped for a missing toolchain —"
     echo "           those are covered by CI's per-backend jobs, which are the real gate for them."
@@ -537,6 +669,8 @@ if [ "$RUN_ALL" -eq 0 ]; then
     echo "           Run \`make pre-merge\` (full) before release / on CI."
 elif [ "$skipped" -ne 0 ]; then
     echo "pre-merge: ok, but $skipped step(s) SKIPPED: what needs a missing tool was not checked (see above)"
+elif [ "${optout:-0}" -ne 0 ]; then
+    echo "pre-merge: ok for what ran, which is not the CI-only suites listed above"
 else
     echo "pre-merge: ok"
 fi

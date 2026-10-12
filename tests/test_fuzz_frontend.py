@@ -461,22 +461,14 @@ def test_unterminated_string_inside_a_host_body(selfhost_lex, src):
     assert any(t["kind"] == "error" for t in selfhost_lex(src))
 
 
-@pytest.mark.xfail(reason="the two lexers disagree on what whitespace IS",
-                   strict=True)
-@pytest.mark.parametrize("ws", ["\x0b", "\x0c", "\x1c", "\x85"])
+@pytest.mark.parametrize("ws", ["\x0b", "\x0c", "\x1c", "\x85", "\xa0", "\u2028", "\u3000"])
 def test_the_two_lexers_agree_on_the_whitespace_set(selfhost_lex, ws):
-    """A vertical tab between two tokens is whitespace to the reference lexer
-    and a lexical error to the self-hosted one.
-
-    Not obviously the self-host's bug — arguably the reference's. The reference
-    asks python `str.isspace()`, which says yes to `\\x0b`, `\\x0c`, `\\x1c`-`\\x1f`
-    and `\\x85`; the self-host asks revl's `Str.is_space`, which the language
-    DEFINES as space, tab, LF, CR (src/revl/typecheck.py, docs/stdlib-2.0.md)
-    precisely so that every tier answers the same. So the reference lexer is
-    the one using a set the language does not define, and closing the gap is a
-    decision about the grammar — is a form feed revl whitespace? — rather than
-    a defect to patch. Recorded here so the answer, whichever way it goes,
-    lands deliberately.
+    """A vertical tab between two tokens is whitespace to the reference lexer,
+    which asks python `str.isspace()` (yes to `\\x0b`, `\\x0c`, `\\x1c`-`\\x1f`,
+    `\\x85` and the Unicode spaces). Issue #2343 settled which set is revl
+    whitespace: the reference's. The self-hosted lexer skips the same set
+    (selfhost/lexer.rvl `is_py_space`), while revl's `Str.is_space` builtin
+    keeps its narrower, tier-uniform definition (space, tab, LF, CR).
     """
     reference_lex(f"fn{ws}f", "fuzz.rvl")
     assert not any(t["kind"] == "error" for t in selfhost_lex(f"fn{ws}f"))

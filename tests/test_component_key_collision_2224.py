@@ -162,3 +162,152 @@ def test_the_census_mirror_of_the_certifier_withholds_the_pair():
     assert certify(pair("KVStore", "Store"))
     assert not certify(pair("KVStore", "Kvstore"))
     assert not certify(pair("A_B", "AB"))
+
+
+# Issue #2275: two SERVICE names that differ only in letter case or underscores.
+# The rust tier names a service's dispatch fn `_revl_dispatch_<snake>`, so
+# `KVStore` and `Kvstore` both define `_revl_dispatch_kvstore` (E0428), and the
+# java tier writes `Components$KVStore.class` and `Components$Kvstore.class`,
+# one file on a case-insensitive file system. Refused by the same fold.
+
+SERVICE_PAIR = """service KVStore {
+  fn get(key: Str) -> Str
+}
+
+service Kvstore {
+  fn put(key: Str) -> Str
+}
+
+component A provides a: KVStore, b: Kvstore {
+  provide a {
+    fn get(key) = key
+  }
+  provide b {
+    fn put(key) = key
+  }
+}
+"""
+
+
+def test_the_checker_refuses_two_services_naming_both():
+    with pytest.raises(RevlError) as info:
+        compile_source(SERVICE_PAIR, "svc.rvl")
+    error = info.value
+    assert error.line == 5, error
+    assert ("service `Kvstore` collides with service `KVStore` (line 1)"
+            in error.message), error.message
+    assert "reduce to `kvstore`" in error.message
+    assert "Rename one of the two services" in (error.hint or "")
+
+
+def test_the_rust_dispatch_fn_reduction_is_covered_by_the_fold():
+    """The rust tier names the dispatch fn after `_snake(service)`; any two
+    service names it merges must fold to one key."""
+    emit = _rust_emit()
+    names = ["KVStore", "Kvstore", "KvStore", "Kv_store", "HTTPServer",
+             "HttpServer", "Store", "Stores"]
+    for a in names:
+        for b in names:
+            if emit._snake(a) == emit._snake(b):
+                assert compiler.component_name_fold(a) == compiler.component_name_fold(b)
+
+
+def test_services_that_stay_apart_and_an_exact_repeat_keep_their_answers():
+    apart = SERVICE_PAIR.replace("Kvstore", "KVStores")
+    document = compile_source(apart, "svc.rvl")
+    assert [s for s in document["services"]] == ["KVStore", "KVStores"]
+    repeat = ("service KVStore {\n  fn get(key: Str) -> Str\n}\n"
+              "service KVStore {\n  fn put(key: Str) -> Str\n}\n")
+    with pytest.raises(RevlError) as info:
+        compile_source(repeat, "svc.rvl")
+    assert "duplicate service `KVStore`" in str(info.value)
+    assert "collides with" not in str(info.value)
+
+
+def test_the_multi_file_path_refuses_two_services_across_files(tmp_path):
+    first = tmp_path / "a.rvl"
+    second = tmp_path / "b.rvl"
+    first.write_text("service KVStore {\n  fn get(key: Str) -> Str\n}\n",
+                     encoding="utf-8")
+    second.write_text("service Kvstore {\n  fn put(key: Str) -> Str\n}\n",
+                      encoding="utf-8")
+    with pytest.raises(RevlError) as info:
+        compile_files([str(first), str(second)])
+    error = info.value
+    assert Path(error.filename).name == "b.rvl"
+    assert "service `Kvstore` collides with service `KVStore`" in error.message
+    assert "a.rvl:1" in error.message
+
+
+@pytest.mark.parametrize("tier", TIERS)
+def test_every_tier_refuses_the_service_pair(tier, tmp_path):
+    source = tmp_path / "svc.rvl"
+    source.write_text(SERVICE_PAIR, encoding="utf-8")
+    run = subprocess.run(
+        [sys.executable, "-m", "revl", "emit", "--backend", tier, str(source),
+         "-o", str(tmp_path / f"out.{tier}")],
+        capture_output=True, text=True, timeout=300, cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(ROOT / "src")})
+    assert run.returncode != 0, f"{tier} emitted the colliding services:\n{run.stdout}"
+    assert "service `Kvstore` collides with service `KVStore`" in run.stderr, run.stderr
+    assert not (tmp_path / f"out.{tier}").exists()
+
+
+def test_the_census_mirror_withholds_two_folded_services():
+    certify = _census_certify()
+    def pair(first: str, second: str) -> str:
+        return (f"service {first} {{\n  fn a(x: Int) -> Int\n}}\n"
+                f"service {second} {{\n  fn b(x: Int) -> Int\n}}\n")
+    assert certify(pair("KVStore", "Store"))
+    assert not certify(pair("KVStore", "Kvstore"))
+
+
+# Issue #2276: a hot-swap's incoming component against the running components
+# the admission keeps. A single compile refuses `KVStore` with `Kvstore`; a
+# hot-swap adding `Kvstore` to a composition holding `KVStore` must too, unless
+# it withdraws `KVStore`.
+
+RUNNING = """service Store {
+  fn get(key: Str) -> Str
+}
+
+component KVStore provides a: Store {
+  provide a {
+    fn get(key) = key
+  }
+}
+"""
+
+INCOMING = """component Kvstore provides b: Store {
+  provide b {
+    fn get(key) = key
+  }
+}
+"""
+
+
+def test_a_hot_swap_refuses_a_name_folded_onto_a_running_component():
+    running = compile_source(RUNNING, "running.rvl")
+    with pytest.raises(RevlError) as info:
+        compile_source(INCOMING, "incoming.rvl", manifest=running)
+    error = info.value
+    assert Path(error.filename).name == "incoming.rvl"
+    assert error.line == 1, error
+    assert ("component `Kvstore` collides with running component `KVStore`"
+            in error.message), error.message
+    assert "reduce to `kvstore`" in error.message
+    assert 'replacing=("KVStore",)' in (error.hint or ""), error.hint
+
+
+def test_a_hot_swap_that_withdraws_the_running_component_is_admitted():
+    running = compile_source(RUNNING, "running.rvl")
+    document = compile_source(INCOMING, "incoming.rvl", manifest=running,
+                              replacing=("KVStore",))
+    assert [c["name"] for c in document["components"]] == ["Kvstore"]
+
+
+def test_a_hot_swap_with_a_name_that_stays_apart_is_admitted():
+    running = compile_source(RUNNING, "running.rvl")
+    document = compile_source(INCOMING.replace("Kvstore", "Cache"),
+                              "incoming.rvl", manifest=running)
+    assert [c["name"] for c in document["components"]] == ["Cache"]

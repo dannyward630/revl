@@ -7,7 +7,8 @@
 // iteration.
 //
 // Item 435(c) fixed the helper: the decode is now memoised in `revlCps`, so
-// the emitted scan materialises exactly n code points instead of 2n^2 + n. The
+// the emitted scan materialises at most n code points instead of 2n^2 + n
+// (none at all for a string with no surrogate unit, since #2313). The
 // `while` lowering is UNCHANGED — it still calls `revlLen(s)` per iteration —
 // which is exactly the point: the helper fix alone makes that call O(1).
 //
@@ -99,7 +100,7 @@ export const summary =
 
 export const provenance = [
   // the single decode site: every helper goes through it
-  { file: 'string_scan.ts', snippet: 'const v = Array.from(s)' },
+  { file: 'string_scan.ts', snippet: 'if (u >= 0xD800 && u <= 0xDFFF) return Array.from(s)' },
   { file: 'string_scan.ts', snippet: 'return BigInt(typeof x === "string" ? revlCps(x).length : x.length)' },
   { file: 'string_scan.ts', snippet: 'const c = revlCps(s)[Number(i)]' },
   // the loop condition is still re-evaluated: the win is the helper, not a hoist
