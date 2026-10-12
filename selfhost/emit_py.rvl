@@ -4655,6 +4655,25 @@ fn fault_config_repr(cfg: Any) -> Str {
 }
 
 
+// Issue #2389: the reference spells a namespaced provision key (`acme::greeter`)
+// as a mangled host identifier (`_host_key`, issue #1914), and this port does
+// not port that mangling yet, so it would write the raw `::` key into host
+// names. Until it does, the port names every namespaced key it meets instead
+// of emitting a silent difference.
+fn namespaced_key_markers(ir: Any) -> List[Str] {
+  var out = []
+  for (c of value_list(value_field(ir, "components"))) {
+    let cname = value_str(value_field(c, "name"))
+    for (table of ["requires", "provides"]) {
+      for (k of value_keys(value_field(c, table))) {
+        let mark = `<<UNSUPPORTED-NAMESPACED-KEY:${cname}.${k}>>`
+        if (k.indexOf("::") >= 0 && !list_contains(out, mark)) { out = out.push(mark) }
+      }
+    }
+  }
+  return out
+}
+
 pub fn emit_py_src(source_ir: Any) -> Str {
   let ir = inline_pure_fns(source_ir)
   var out = []
@@ -4885,6 +4904,7 @@ pub fn emit_py_src(source_ir: Any) -> Str {
     pairs = pairs.push(`${py_repr(nm)}: ${nm}`)
   }
   out = out.push("COMPONENTS = {".concat(pairs.join(", ")).concat("}"))
+  out = out.concat(namespaced_key_markers(ir))
   return out.join(newline()).concat(newline())
 }
 

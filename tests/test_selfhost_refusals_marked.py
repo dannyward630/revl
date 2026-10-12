@@ -55,3 +55,51 @@ def test_every_refusal_document_is_marked_by_the_port(tiers, tier):
     # non-vacuity: the fixtures hold refusals for every one of these tiers
     assert refused >= 10, f"only {refused} documents refused on {tier}"
     assert silent == [], f"{tier} port answers these refusals silently: {silent}"
+
+
+# Issue #2389: on py, rust and java a namespaced provision key either emits the
+# reference bytes or carries a named marker. The ports do not mangle the key
+# yet, so each one names it (`<<UNSUPPORTED-NAMESPACED-KEY:Comp.key>>`).
+NAMESPACED_TIERS = ("py", "rust", "java")
+NAMESPACED_SOURCES = ("ISSUE_REPRODUCER", "TWO_NAMESPACES",
+                      "ROUTED_NAMESPACED", "KEYWORD_PARTS")
+
+
+@pytest.fixture(scope="module")
+def namespaced_tiers():
+    out = {}
+    for tier in NAMESPACED_TIERS:
+        module = load_by_path(f"test_selfhost_emit_{tier}",
+                              ROOT / "tests" / f"test_selfhost_emit_{tier}.py")
+        out[tier] = (module._load_reference_emit(),
+                     module._exec_emitted()[f"emit_{tier}_src"])
+    return out
+
+
+@pytest.mark.parametrize("tier", NAMESPACED_TIERS)
+def test_a_namespaced_key_matches_the_reference_or_is_named(
+        namespaced_tiers, tier, tmp_path):
+    reference, port = namespaced_tiers[tier]
+    sources = load_by_path("test_namespaced_key_emit_1914",
+                           ROOT / "tests" / "test_namespaced_key_emit_1914.py")
+    silent = []
+    for name in NAMESPACED_SOURCES:
+        path = tmp_path / f"{name}.rvl"
+        path.write_text(getattr(sources, name))
+        ir = compile_files([str(path)])
+        got = port(ir)
+        if got == reference.emit(ir):
+            continue
+        if "<<UNSUPPORTED-NAMESPACED-KEY:" not in got:
+            silent.append(name)
+    assert silent == [], f"{tier} port differs silently on: {silent}"
+
+
+@pytest.mark.parametrize("tier", NAMESPACED_TIERS)
+def test_an_unqualified_key_carries_no_namespaced_marker(
+        namespaced_tiers, tier):
+    """Positive control: the realm corpus document has only flat keys."""
+    reference, port = namespaced_tiers[tier]
+    ir = compile_files([str(ROOT / "tests" / "fixtures" / "emit_ts_corpus"
+                            / "realm_intercept.rvl")])
+    assert "<<UNSUPPORTED-NAMESPACED-KEY:" not in port(ir)

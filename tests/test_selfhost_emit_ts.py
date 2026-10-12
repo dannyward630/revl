@@ -491,6 +491,31 @@ def test_a_namespaced_key_is_mangled_as_the_reference_mangles_it(
     assert emitted["emit_ts_src"](ir) == want
 
 
+def test_a_reserved_service_key_is_refused_by_name(emitted, reference):
+    """`tests/fixtures/emit_ts_refusals/reserved_service_key.rvl` (issue
+    #2390): the reference refuses a provide or require key that cannot be a
+    `ctx.<key>` property, and the port names every such key."""
+    ir = compile_files([str(REFUSALS_DIR / "reserved_service_key.rvl")])
+    with pytest.raises(reference.EmitError,
+                       match="is not host-safe on the ts tier"):
+        reference.emit(ir)
+    got = emitted["emit_ts_src"](ir)
+    for where in ("Then.then", "Logger.logger", "Ctor.constructor"):
+        assert f"<<UNSUPPORTED-RESERVED-SERVICE-KEY:{where}>>" in got
+    assert got.count("<<UNSUPPORTED-RESERVED-SERVICE-KEY:") == 3
+
+
+def test_an_ordinary_service_key_carries_no_reserved_marker(
+        emitted, reference, tmp_path):
+    """The positive control for issue #2390: ordinary keys keep the bytes."""
+    path = tmp_path / "ordinary.rvl"
+    path.write_text(UNQUALIFIED_CONTROL)
+    ir = compile_files([str(path)])
+    got = emitted["emit_ts_src"](ir)
+    assert "<<UNSUPPORTED" not in got
+    assert got == reference.emit(ir)
+
+
 def test_selfhosted_ts_emitter_output_header_and_helpers(emitted):
     """Beyond byte-identity, pin the scaffold shape the slice is responsible for:
     the generated-header comments, the runtime import, and the gated helpers a

@@ -1,0 +1,25 @@
+// Service keys the ts tier cannot carry as a `ctx.<key>` property (issue
+// #2390). backends/typescript/emit.py::_reject_service_key refuses each one:
+// `then` makes the host object thenable, `logger` is already a cordis Context
+// member, and `constructor` is an inherited JavaScript object member. The
+// check runs on the requires side and the provides side alike.
+//
+// The reference has no bytes to agree with, so this is not a corpus case. The
+// port has no refusal channel, so selfhost/emit_ts.rvl names each key with
+// `<<UNSUPPORTED-RESERVED-SERVICE-KEY:<component>.<key>>>` instead. The
+// markers are pinned by tests/test_selfhost_emit_ts.py::
+// test_a_reserved_service_key_is_refused_by_name.
+
+service Greeter { fn hello(name: Str) -> Str }
+
+component Then provides then: Greeter {
+  provide then { fn hello(name) = "then " + name }
+}
+
+component Logger provides logger: Greeter {
+  provide logger { fn hello(name) = "logger " + name }
+}
+
+component Ctor requires constructor: Greeter provides greeter: Greeter {
+  provide greeter { fn hello(name) = constructor.hello(name) }
+}

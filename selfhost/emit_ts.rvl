@@ -4574,6 +4574,45 @@ fn required_stream_markers(ir: Any) -> List[Str] {
   return out
 }
 
+// `_reject_service_key`: a provide or require key becomes a `ctx.<key>`
+// property, so a key that is a cordis Context member (`CONTEXT_MEMBERS`), an
+// inherited JavaScript object member (`_JS_MEMBER_KEYS`) or `_`-prefixed
+// never reaches the injected service, and the reference refuses the document.
+// The port names each such key, requirement keys before provision keys as the
+// reference checks them (issue #2390).
+fn reserved_service_keys() -> List[Str] {
+  return [
+    "root", "fiber", "registry", "reflect", "events", "logger", "runtime",
+    "effect", "extend", "isolate", "intercept", "inject", "plugin",
+    "on", "once", "emit", "parallel", "serial", "bail", "waterfall",
+    "get", "set", "provide", "accessor", "mixin", "baseUrl",
+    "then", "catch", "finally",
+    "constructor", "prototype", "__proto__",
+    "toString", "toLocaleString", "valueOf",
+    "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable",
+    "__defineGetter__", "__defineSetter__",
+    "__lookupGetter__", "__lookupSetter__",
+    "length", "name", "apply", "call", "bind", "caller", "arguments"
+  ]
+}
+
+fn reserved_key_markers(ir: Any) -> List[Str] {
+  let reserved = reserved_service_keys()
+  var out = []
+  for (c of value_list(value_field(ir, "components"))) {
+    let cname = value_str(value_field(c, "name"))
+    for (table of ["requires", "provides"]) {
+      for (k of value_keys(value_field(c, table))) {
+        let host = host_key(k)
+        if (list_contains(reserved, host) || host.startsWith("_")) {
+          out = out.push(`<<UNSUPPORTED-RESERVED-SERVICE-KEY:${cname}.${k}>>`)
+        }
+      }
+    }
+  }
+  return out
+}
+
 fn deferred_emission_markers(ir: Any) -> List[Str] {
   var deferred = []
   for (e of value_list(value_field(ir, "externs"))) {
@@ -4687,6 +4726,7 @@ pub fn emit_ts_src(ir: Any) -> Str {
   }
   out = out.concat(deferred_emission_markers(ir)).concat(validated_markers(ir))
   out = out.concat(host_key_collision_markers(ir)).concat(required_stream_markers(ir))
+  out = out.concat(reserved_key_markers(ir))
   return py_rstrip(out.join(newline())).concat(newline())
 }
 

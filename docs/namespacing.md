@@ -165,7 +165,10 @@ key reaches an emit port as the joined `ns::local` spelling. The ts port
 at each place a key becomes a host name, and maps a `req` binding back to its
 qualified key, so a namespaced document with no collision emits the reference
 bytes (issue #2384, `tests/test_selfhost_emit_ts.py`). Porting the mangling into
-the other ports is owed as its own item.
+the other ports is owed as its own item. Until then the py, rust and java
+ports name each namespaced key with `<<UNSUPPORTED-NAMESPACED-KEY:<component>.<key>>>`
+rather than writing the raw `::` key into a host name (issue #2389). The go port
+already marks every component of those documents `<<UNSUPPORTED-COMPONENT:...>>`.
 
 The **parse** half is ported. `selfhost/lower.rvl` and `selfhost/checker.rvl`
 read a provision key through the same reconstruction the reference's
