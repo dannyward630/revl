@@ -282,6 +282,7 @@ CORPUS = [
     # component is refused with `<<DEFER-component-nonsimple:Agent>>`. Adding
     # the document would make this oracle red, so the UI transaction unit stays
     # unported on this tier and `class=emission` stays a recorded unported gap.
+    "to_char.rvl",  # Int.to_char, the primitive behind str_char (issue #2285)
 ]
 
 

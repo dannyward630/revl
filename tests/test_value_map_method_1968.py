@@ -37,15 +37,13 @@ from _load_by_path import load_by_path  # noqa: E402
 
 from revl.compiler import compile_source  # noqa: E402
 from revl.errors import RevlError  # noqa: E402
+from revl.lower import _BUILTIN_METHODS  # noqa: E402
 
 CORPUS = ROOT / "tests" / "fixtures" / "value_method_call"
 
-_SURFACE = ("charAt, charCodeAt, checked_div_euclid, checked_div_floor, "
-            "checked_div_trunc, checked_mod, codepoint_at, concat, div_euclid, "
-            "div_floor, div_trunc, endsWith, field, has, indexOf, is_alnum, "
-            "is_alpha, is_digit, is_space, join, keys, length, list, lookup, "
-            "mod, push, remove, repeat, set, size, slice, split, startsWith, "
-            "str, to_int, to_int32, to_str")
+# Derived from the one table the refusal is built from, so a new builtin
+# does not move every pinned message here.
+_SURFACE = ", ".join(sorted(_BUILTIN_METHODS))
 
 
 def _message(method: str, recv: str) -> str:

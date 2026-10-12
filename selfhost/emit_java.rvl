@@ -659,6 +659,11 @@ fn v3_builtin(method: Str, target: Str, args: List[Str], recv: Str) -> Str {
     if (recv == "Float") { return `<<DEFER-ftoa:to_str>>` }
     return `String.valueOf(${target})`
   }
+  // The reverse of `codepoint_at` (issue #2285): a lambda binds the receiver
+  // once and checks the scalar range before `Character.toChars`.
+  if (method == "to_char") {
+    return `((java.util.function.LongFunction<String>) (_cp) -> (_cp < 0 || _cp > 0x10FFFF || (_cp >= 0xD800 && _cp <= 0xDFFF)) ? "" : new String(Character.toChars((int) _cp))).apply(${target})`
+  }
   // The reference raises `unknown builtin method`; a pure self-host emitter fn
   // cannot fail, so the refusal travels as a loud marker (item 207).
   return `<<UNSUPPORTED-BUILTIN:${method}>>`
@@ -1893,7 +1898,8 @@ fn map_value_expr_type(node: Any, var_types: Map[Str, Str], comp: Any, services:
     // map_inference_builtins.rvl).
     if (method == "length" || method == "charCodeAt" || method == "codepoint_at"
         || method == "indexOf" || method == "to_int") { return "Int" }
-    if (method == "charAt" || method == "join" || method == "repeat" || method == "to_str" || method == "slice") { return "Str" }
+    if (method == "charAt" || method == "join" || method == "repeat" || method == "to_str"
+        || method == "to_char" || method == "slice") { return "Str" }
     if (method == "split") { return "List[Str]" }
     if (method == "concat") { return map_value_expr_type(value_field(node, "target"), var_types, comp, services, functions, ctx, types) }
     return ""
