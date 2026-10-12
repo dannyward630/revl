@@ -228,6 +228,67 @@ the cordis-py runtime alone (roadmap item 23 runs on py). Swapping to a differen
 tier (`--to node|rust|java|go`) is the same operation over the same seam; it
 additionally needs that tier's toolchain, which the placement smoke covers.
 
+## Proving the boundary (in-process hot-swap)
+
+Everything above is the placement swap, which moves a component to a fresh
+process. The in-process hot-swap is a different path: `Session.swap`
+(`src/revl/mcp/session.py`, behind `revl_swap`, `revl_edit` and rollback)
+disposes generation N and boots N+1 **in the same process**. Disposal running
+does not prove that N left nothing behind, so the swap can be asked to prove it
+(issue #2277):
+
+```python
+session.swap(ir, origin=origin, prove_boundary=True)
+```
+
+With the option, the swap seals the boundary after N's teardown and before
+N+1 loads. It compares the process against the baseline the session took
+before its first generation booted. If anything is off baseline, the swap
+refuses by name, boots N again, and N keeps serving. A clean seal adds the
+proof to the answer as `boundary`:
+
+```json
+{"noResidue": true,
+ "checks": {"residue": true, "hostResources": true, "escrow": true,
+            "registers": true, "threads": true, "env": true, "modules": true},
+ "detail": {...}}
+```
+
+A refusal is a `BoundaryRefused` (a `SessionError`). Its `code` is the first
+refusal, `refusals` lists all of them, and `boundary` holds the proof that
+refused:
+
+| Refusal | What was off baseline |
+|---|---|
+| `RESIDUE_LEFT` | An R4 teardown check failed: the cordis registry, provisions, effect stack or listeners, or a host `new`/`open` with no `drop`/`close` in the host trace. These are the same checks `unload` reports. |
+| `UNVERIFIED` | The driver captured no host trace, so the host-resource pairing could not run. A check that did not run is never a pass. |
+| `ESCROW_OPEN` | A witnessed mutation is still escrowed, or a deferred emission is still queued, on the session owner. It stays the session's to commit or abort. |
+| `REGISTER_DRIFT` | A runtime register in `swap_boundary.REGISTERS` holds something it did not hold at the baseline (for example a trace observer that was never unsubscribed, or a `config` entry). |
+| `THREAD_LEFT` | A thread is alive that was not alive at the baseline. |
+| `ENV_DRIFT` | An `os.environ` key was added, removed or changed. The proof names keys, never values. |
+| `MODULE_LEFT` | A `sys.modules` entry appeared that is not the generation namespace (`revl_run_gen*`), the standard library or revl's toolchain. A `@py ref` module counts, because the successor could import N's copy. |
+| `TIER_UNSUPPORTED` | The proof was asked for on a tier other than py. Other tiers boot each generation as a child process, so there is no shared boundary. This refuses before anything is torn down. |
+
+What the seal does **not** cover, so a clean proof is not read as more than it
+is:
+
+- **The clock.** The session clock is a ratchet and N+1 reads a later time than
+  a fresh process would (`_CLOCK_ANCHOR` is deliberately not compared).
+- **Randomness.** The state of Python's `random` module is not reset.
+- **The filesystem.** A committed witnessed write is meant to outlive its
+  generation. A write from a `@py` body that goes around a witnessed extern
+  is not seen.
+- **Registers added later.** Only the enumerated registers are compared. A
+  runtime register added later is a gap until it is added to `REGISTERS`.
+- **Other activity in the process.** Threads, environment and modules are
+  process-wide, so a second session or the host program changing them between
+  the baseline and the seal also refuses. This errs on the side of refusing.
+
+A swap without `prove_boundary` behaves exactly as before. This is the proof
+obligation only. It does not compare test results between N and N+1 in one
+process. Whether a same-process A/B run can ever count as evidence is still
+open on issue #2277.
+
 ## Deferred: shadow verification
 
 The next layer on top of `swap` is **replay-based shadow verification**: record
