@@ -1781,6 +1781,7 @@ relative to the tier's own corpus directory, `tests/fixtures/emit_<tier>_corpus/
 
 `ts`:
 
+- `block_arm_records.rvl`
 - `../../../backends/typescript/tests/fixtures/fr3_json_int.rvl`
 
 `go`:
