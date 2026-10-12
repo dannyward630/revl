@@ -1,0 +1,17 @@
+// issue #2260: a provide method whose Str literals spell the component tier's
+// helper calls. The reference picks its imports and preambles from the
+// `_COMP_NEEDS_*` flags the renderer sets, never from the rendered text, so
+// none of `revlAdd(`, `revlDiv(`, `revlToI32(`, `math.Mod(`,
+// `strconv.Format` or `newRevlFrame()` inside a literal adds an import or a
+// preamble here. Only the `Int.to_str` call asks for `strconv`.
+service Words {
+  fn plain() -> Str
+  fn shown(n: Int) -> Str
+}
+
+component Spell provides words: Words {
+  provide words {
+    fn plain() = "revlAdd( revlSub( revlMul( revlDiv( revlToI32( math.Mod( strconv.FormatInt( newRevlFrame()"
+    fn shown(n) = `revlAdd(${n.to_str()}`
+  }
+}

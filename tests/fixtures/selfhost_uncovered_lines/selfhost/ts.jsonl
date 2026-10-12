@@ -38,7 +38,7 @@
 
 ["function", "empty-list-conservative-fallbacks-empty-list-ann-uses", "list_element", 1, 1]
 
-["reason", "extern-body-and-context-empty-cases-emit-externs", "Extern-body and context empty cases: `emit_externs` writes `<<EXTERN-NO-TS-BODY>>` for a declared extern without an @ts target, while `context_augmentation` returns no declaration for a document with no provided/required keys. Admitted extern fixtures carry @ts bodies; function-only documents bypass component context output at the module gate"]
+["reason", "extern-body-and-context-empty-cases-emit-externs", "Extern-body and context empty cases: `emit_externs` writes `<<UNSUPPORTED-EXTERN-NO-TS-BODY>>` for a declared extern without an @ts target, while `context_augmentation` returns no declaration for a document with no provided/required keys. Admitted extern fixtures carry @ts bodies; function-only documents bypass component context output at the module gate"]
 
 ["function", "extern-body-and-context-empty-cases-emit-externs", "emit_externs", 1, 1]
 
@@ -97,6 +97,10 @@
 ["function", "parenthesization-and-empty-update-forms-render-call-wraps", "render_call", 1, 1]
 
 ["function", "parenthesization-and-empty-update-forms-render-call-wraps", "render_record_update", 1, 1]
+
+["reason", "required-stream-coeffect-refusal-the-document-is-a-rust-fixture", "Required `Stream[T]` coeffect refusal (issue #2367): `required_stream_markers` names a required `Stream[T]` coeffect, which the ts reference refuses. The one document that declares one is tests/fixtures/emit_rust_refusals/required_stream_coeffect.rvl, which tests/test_selfhost_emit_ts.py asserts but this tier's refusal directory does not hold, so the line-coverage gate never drives the marker push."]
+
+["function", "required-stream-coeffect-refusal-the-document-is-a-rust-fixture", "required_stream_markers", 1, 1]
 
 ["reason", "timer-emission-colouring-fallbacks-emission-is-async-returns", "Timer-emission colouring fallbacks: `emission_is_async` returns false for a call whose target is not a requirement, and tests a variable callee against the document's async callables. A timer body admits only emissions, and every admitted one lowers to a requirement-target `call` or to a component-dialect `fn` node, so neither arm has an input; the reference's `_ts_emission_is_async` carries the same three unreached statements. An async extern reached from a timer is refused by the reference before this test runs (\"called outside an async context\")"]
 
