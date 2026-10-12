@@ -317,6 +317,7 @@ CORPUS = [
     # an open gap (`selfhost_blind_spots.json`), and those two oracle modules
     # say why in their own `CORPUS` comment.
     "../emit_py_corpus/ui_transaction_unit.rvl",
+    "to_char.rvl",  # Int.to_char, the primitive behind str_char (issue #2285)
 ]
 
 def _load_reference_emit():

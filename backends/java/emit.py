@@ -1564,6 +1564,16 @@ def _v3_builtin(method: object, target: str, args: list[str],
         if recv == "Float":
             return f"revlFtoa({target})"
         return f"String.valueOf({target})"
+    # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+    # §Int.to_char): a one-code-point Str for a Unicode scalar value, "" for
+    # anything else. `Character.toChars` throws above U+10FFFF and hands back
+    # a lone surrogate for U+D800..U+DFFF, so the range is checked first; the
+    # lambda binds the receiver once.
+    if method == "to_char":
+        return ("((java.util.function.LongFunction<String>) (_cp) -> "
+                "(_cp < 0 || _cp > 0x10FFFF || (_cp >= 0xD800 && _cp <= 0xDFFF))"
+                " ? \"\" : new String(Character.toChars((int) _cp)))"
+                f".apply({target})")
     raise EmitError(f"unknown builtin method {method!r}")
 
 
@@ -6314,7 +6324,8 @@ def _map_value_expr_type(node: object, var_types: dict, env: _Env,
         if method in ("length", "charCodeAt", "codepoint_at", "indexOf",
                       "to_int"):
             return "Int"
-        if method in ("charAt", "join", "repeat", "to_str", "slice"):
+        if method in ("charAt", "join", "repeat", "to_str", "to_char",
+                      "slice"):
             return "Str"
         if method == "split":
             return "List[Str]"

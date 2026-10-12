@@ -270,6 +270,7 @@ command, in order, reporting each step:
 | lint | `ruff check` (pinned `ruff==0.16.4` via `uvx` if not on `PATH`) |
 | census artifact | `tools/census_artifact.py --verify --strict` — CI's `census-artifact` job, run locally on the artifact's own input filter, so a diff that stales `docs/census-artifact/` reds here instead of on the PR. Adding a corpus document is enough to stale it (`corpus_dirs` includes `tests/fixtures`), and the test the selector used to pick for these paths skips the half that reds. The slowest step in this gate: a full census re-run, ~85 s on a shared dev box (issue #2103) |
 | formal | `sh formal/scripts/run_gate.sh` (lake build + the axioms gate; loud-skips without lake) |
+| ci-only suites | three kinds of CI step, read from `ci.yml` by `tools/ci_suites.py`: pytest on whole backend directories (`pytest backends/<tier>/`), vitest, and pytest under `REVL_CROSS_TIER_SLOW`, `REVL_SWEEP_ALL_TIERS` or a `REVL_REQUIRE_*` switch set by the step or its job (so the frontend job's `pytest tests/` under `REVL_REQUIRE_TIERS=go` is one). Each is opt-in by its CI job name and otherwise prints `SKIPPED (not opted in; CI job <job> runs it; opt in: --with=<job>)`. Opted in, it runs CI's command with CI's switches when the job's toolchain is present, else prints `SKIPPED` with what is missing (issue #2210) |
 
 Two properties make it trustworthy rather than theatre:
 
@@ -281,9 +282,12 @@ Two properties make it trustworthy rather than theatre:
   only the emit/golden half runs — which is the half that catches a stale golden
   or a respec'd emitter, the exact item-327 drift class. The typescript
   `vitest`/`tsc` suite needs `node_modules` and is not in the fast gate; its
-  pure-Python goldens are (the `backend-ts (golden drift)` step). Run the
-  runtime half yourself when you touch that tier
-  (`cd backends/typescript && npm ci && npx vitest run`).
+  pure-Python goldens are (the `backend-ts (golden drift)` step). The
+  toolchain-executing suites are still listed, one `SKIPPED` line each, and
+  run on request: `sh tools/pre_merge.sh --with=backend-typescript,conformance`,
+  `--with=all`, or `REVL_PREMERGE_WITH=all make pre-merge`.
+  `sh tools/pre_merge.sh --plan` prints what each step would run and runs
+  nothing.
 - **Nothing is a silent skip.** Every step is either *ran* (and must pass) or
   *skipped* with the reason printed (`SKIPPED (no backends/python/.venv — run sh
   backends/python/setup.sh)`), because a silent gap is precisely what let CI stay

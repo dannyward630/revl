@@ -471,6 +471,7 @@
         "split",
         "startsWith",
         "str",
+        "to_char",
         "to_int",
         "to_int32",
         "to_str"

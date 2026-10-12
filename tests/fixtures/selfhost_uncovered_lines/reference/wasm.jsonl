@@ -72,13 +72,13 @@
 
 ["reason", "remaining-assembly-paths-detect-in-file-test-name", "Remaining assembly paths detect in-file test name collisions, emit tests/externs/missing-body comments, and append demanded interpolation/indexOf/split/join helpers. Each is an explicit scaffold deferral, not absent ordinary pure-function emission."]
 
-["function", "remaining-assembly-paths-detect-in-file-test-name", "_V3Emitter.emit", 12, 12]
+["function", "remaining-assembly-paths-detect-in-file-test-name", "_V3Emitter.emit", 13, 13]
 
-["reason", "remaining-branches-are-checked-division-indexof-split-join", "Remaining branches are checked division, indexOf/split/join helper demand, Map operations rejected by this backend, and wrong/void receiver or unsupported-method refusals. Covered length/concat/push and arithmetic conversions must not be conflated with these precise deferred families. Item 458 adds four: the `Int.MIN / -1` arm of checked division, which answers Err(\"revl: Int overflow\") as a value where `i64.div_s` used to trap. Same deferred family as the rest of the arm; the reference half is executed on all six tiers by tests/test_int_min_edges_cross_tier.py."]
+["reason", "remaining-branches-are-checked-division-indexof-split-join", "Remaining branches are checked division, indexOf/split/join/to_char helper demand, Map operations rejected by this backend, and wrong/void receiver or unsupported-method refusals. Covered length/concat/push and arithmetic conversions must not be conflated with these precise deferred families. Item 458 adds four: the `Int.MIN / -1` arm of checked division, which answers Err(\"revl: Int overflow\") as a value where `i64.div_s` used to trap. Same deferred family as the rest of the arm; the reference half is executed on all six tiers by tests/test_int_min_edges_cross_tier.py."]
 
-["function", "remaining-branches-are-checked-division-indexof-split-join", "_V3Emitter._builtin_expr", 50, 50]
+["function", "remaining-branches-are-checked-division-indexof-split-join", "_V3Emitter._builtin_expr", 54, 54]
 
-["function", "remaining-branches-are-checked-division-indexof-split-join", "_V3Emitter._builtin_type", 23, 23]
+["function", "remaining-branches-are-checked-division-indexof-split-join", "_V3Emitter._builtin_type", 26, 26]
 
 ["reason", "remaining-branches-capture-deferred-arrow-valued-lets-or", "Remaining branches capture deferred arrow-valued lets or reject undeclared assignment, void binding, bare typed return, loop control outside a loop and unknown steps. Ordinary loops and scalar/local statements are covered."]
 
@@ -312,7 +312,7 @@
 
 ["function", "the-entire-componentemitter-is-instantiated-only-for-live-2", "_ComponentEmitter._statement", 2, 2]
 
-["function", "the-entire-componentemitter-is-instantiated-only-for-live-2", "_ComponentEmitter._tail", 7, 7]
+["function", "the-entire-componentemitter-is-instantiated-only-for-live-2", "_ComponentEmitter._tail", 8, 8]
 
 ["function", "the-entire-componentemitter-is-instantiated-only-for-live-2", "_ComponentEmitter._teardown_section", 4, 4]
 
@@ -338,11 +338,13 @@
 
 ["function", "the-remaining-call-paths-inline-a-deferred-arrow", "_V3Emitter._call_expr", 7, 7]
 
-["reason", "these-helper-text-generators-are-demanded-only-by", "These helper text generators are demanded only by indexOf/join/split; the selfhost scaffold lacks those helpers and the oracle explicitly excludes those methods."]
+["reason", "these-helper-text-generators-are-demanded-only-by", "These helper text generators are demanded only by indexOf/join/split/to_char; the selfhost scaffold lacks those helpers and the oracle explicitly excludes those methods."]
 
 ["function", "these-helper-text-generators-are-demanded-only-by", "_V3Emitter._helper_str_index_of", 1, 1]
 
 ["function", "these-helper-text-generators-are-demanded-only-by", "_V3Emitter._helper_str_join", 1, 1]
+
+["function", "these-helper-text-generators-are-demanded-only-by", "_V3Emitter._helper_str_of_code_point", 1, 1]
 
 ["function", "these-helper-text-generators-are-demanded-only-by", "_V3Emitter._helper_str_split", 1, 1]
 
