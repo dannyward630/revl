@@ -307,8 +307,8 @@ def _selfhost_lower_to_ir():
     is a second implementation of the same rule, which is exactly why it needs
     the same tests: a fix in `taint.py` alone would leave the gate minting IR
     without the stamp, and the gate's IR is what `crates/revl-gate` consumes."""
-    from revl import compile_files
-    ir = compile_files([str(ROOT / "selfhost" / "lower.rvl")])
+    from _compiled_ir import compiled_ir
+    ir = compiled_ir(ROOT / "selfhost" / "lower.rvl")
     spec = importlib.util.spec_from_file_location(
         "pyemit_selfhost_receiver", ROOT / "backends" / "python" / "emit.py")
     module = importlib.util.module_from_spec(spec)

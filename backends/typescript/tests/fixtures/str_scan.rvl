@@ -37,8 +37,8 @@ pub fn checksum(s: Str) -> Int {
 }
 
 // A pairwise scan: two distinct strings alternating through the helpers. This is
-// why the memo has two slots — with one it would thrash back to the pre-435(c)
-// cost on this shape, which is common (compare, merge, diff).
+// why the memo has more than one slot: with one it would thrash back to the
+// pre-435(c) cost on this shape, which is common (compare, merge, diff).
 pub fn common_prefix(a: Str, b: Str) -> Int {
   var i = 0
   while (i < a.length()) {
@@ -47,4 +47,50 @@ pub fn common_prefix(a: Str, b: Str) -> Int {
     i = i + 1
   }
   return i
+}
+
+// Issue #2313: an index scan whose body also reads other strings. With a
+// two-slot memo the two one-character literals evicted `text` on every pass,
+// so the scan decoded `text` again each time and went quadratic.
+pub fn count_marks(text: Str) -> Int {
+  var n = 0
+  var i = 0
+  while (i < text.length()) {
+    let c = text.charAt(i)
+    if (c == "<".charAt(0) || c == ">".charAt(0)) { n = n + 1 }
+    i = i + 1
+  }
+  return n
+}
+
+// Issue #2313: three long strings read round-robin on every pass. Short-string
+// bypass alone does not keep this linear; the memo must hold all three.
+pub fn agree_three(a: Str, b: Str, c: Str) -> Int {
+  var n = 0
+  var i = 0
+  while (i < a.length() && i < b.length() && i < c.length()) {
+    if (a.charAt(i) == b.charAt(i)) { n = n + 1 }
+    if (b.charAt(i) == c.charAt(i)) { n = n + 1 }
+    if (c.charAt(i) == a.charAt(i)) { n = n + 1 }
+    i = i + 1
+  }
+  return n
+}
+
+// Direct handles on each Str helper, so a test can compare their answers with
+// a code-point reference on astral strings and lone surrogates.
+pub fn len_of(s: Str) -> Int {
+  return s.length()
+}
+
+pub fn char_at(s: Str, i: Int) -> Str {
+  return s.charAt(i)
+}
+
+pub fn code_at(s: Str, i: Int) -> Int {
+  return s.charCodeAt(i)
+}
+
+pub fn slice_of(s: Str, a: Int, b: Int) -> Str {
+  return s.slice(a, b)
 }

@@ -511,6 +511,9 @@ def _req_field(name: str) -> str:
 #: helper each one renders through (docs/arithmetic.md).
 _COMP_CHECKED_INT_OPS = {"+": "revlAdd", "-": "revlSub", "*": "revlMul"}
 
+#: The same for Int32: each traps at the i32 edge (issue #2262).
+_COMP_CHECKED_INT32_OPS = {"+": "revlAddI32", "-": "revlSubI32", "*": "revlMulI32"}
+
 
 def _comp_typed_arith(node, left: str, right: str, env: _Env):
     """The component method body's rendering of an arithmetic `bin` node the
@@ -533,6 +536,8 @@ def _comp_typed_arith(node, left: str, right: str, env: _Env):
             right = "float64(%s)" % right
     if op in _COMP_CHECKED_INT_OPS and operands == "Int":
         return _comp_checked_int(_COMP_CHECKED_INT_OPS[op], left, right)
+    if op in _COMP_CHECKED_INT32_OPS and operands == "Int32":
+        return _comp_checked_int32(_COMP_CHECKED_INT32_OPS[op], left, right)
     if op == "/" and operands in ("Int", "Int32", "Float"):
         # Go `/` on two ints is integer division, and a constant zero divisor
         # is a compile error where IEEE defines it, so the division goes
@@ -566,6 +571,18 @@ def _comp_checked_int(helper: str, left: str, right: str) -> str:
     if _go_type("Int") == "int64":
         return "%s(%s, %s)" % (helper, left, right)
     return "int(%s(%s, %s))" % (helper, _comp_int64(left), _comp_int64(right))
+
+
+def _comp_checked_int32(helper: str, left: str, right: str) -> str:
+    """Render a checked Int32 `+ - *` (or unary `-` as `0 - x`) in a component
+    method body. Go's `int32` operators wrap; the helpers compute in int64 and
+    re-impose the bound through `revlToI32` (docs/arithmetic.md). Int32 is
+    `int32` on every component tier, so no conversion is needed (issue
+    #2262)."""
+    global _COMP_NEEDS_OVERFLOW32, _COMP_NEEDS_ARITH32
+    _COMP_NEEDS_OVERFLOW32 = True
+    _COMP_NEEDS_ARITH32 = True
+    return "%s(%s, %s)" % (helper, left, right)
 
 
 def _comp_int64(operand: str) -> str:
@@ -768,6 +785,9 @@ def _expr(node, env: _Env, expected=None) -> str:
                 # through the same checked subtraction as any Int `-`
                 # (docs/arithmetic.md; wasm lowers `-x` the same way).
                 return _comp_checked_int("revlSub", "0", operand)
+            if node.get("operands") == "Int32":
+                # negating Int32.MIN overflows the same way (issue #2262)
+                return _comp_checked_int32("revlSubI32", "0", operand)
             return "(-%s)" % operand
         raise EmitError("unsupported unary operator: %r" % (node.get("op"),))
     if kind == "if":  # ternary
@@ -1408,6 +1428,14 @@ _V3_OVERFLOW32_HELPER = """func revlToI32(v int64) int32 {
 }
 """
 
+# The trapping Int32 `+ - *` that narrow through `revlToI32`, for the same
+# component-only path (issue #2262). The typed-core assemblies write the same
+# three lines off `ctx.needs_overflow32`.
+_V3_ARITH32_HELPER = (
+    "func revlAddI32(a, b int32) int32 { return revlToI32(int64(a) + int64(b)) }\n"
+    "func revlSubI32(a, b int32) int32 { return revlToI32(int64(a) - int64(b)) }\n"
+    "func revlMulI32(a, b int32) int32 { return revlToI32(int64(a) * int64(b)) }")
+
 # `/` is true division (docs/arithmetic.md). A function, not an expression: Go
 # rejects a *constant* `1.0 / 0.0` at compile time, where IEEE defines +Inf.
 _REVL_DIV_HELPER = "func revlDiv(a, b float64) float64 { return a / b }"
@@ -1469,6 +1497,12 @@ _COMP_NEEDS_STRCONV = False
 # `ctx.needs_overflow32`; a method body reaches the same helper through this
 # flag, so a component-only document carries it too (issue #1347).
 _COMP_NEEDS_OVERFLOW32 = False
+# Trapping `+ - *` on Int32 in a component body: flags the checked
+# `revlAddI32`/`revlSubI32`/`revlMulI32` (and, through
+# `_COMP_NEEDS_OVERFLOW32`, the `revlToI32` they narrow with). Kept apart from
+# the narrow flag so a body that only calls `.to_int32()` emits as before
+# (issue #2262).
+_COMP_NEEDS_ARITH32 = False
 # Trapping `+ - *` on Int referenced by a component body: flags the checked
 # helpers `revlAdd`/`revlSub`/`revlMul`. The method renderer reaches them
 # through `_Env`, not through the typed-core ctx the prelude reads, so without
@@ -1620,6 +1654,12 @@ def _comp_builtin(method, recv_surface, target, args):
     # helper as charCodeAt.
     if method == "codepoint_at":
         return "revlStrCharCodeAt(%s, %s)" % (target, args[0])
+    # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+    # §Int.to_char): a one-code-point Str for a Unicode scalar value, "" for
+    # anything else. `string(rune(n))` would hand back U+FFFD for a surrogate
+    # or an out-of-range value, so the range is checked first.
+    if method == "to_char":
+        return "%s(%s)" % (_GO_TO_CHAR, target)
     # The prefix/suffix probes (FR-6, docs/stdlib-2.0.md §Str.startsWith).
     if method == "startsWith":
         return "strings.HasPrefix(%s, %s)" % (target, args[0])
@@ -6388,6 +6428,14 @@ _GO_CHECKED_DIV = ("checked_div_trunc", "checked_div_floor",
 _GO_DIV_ZERO_MSG = "revl: division by zero"
 
 
+# Int.to_char (issue #2285, docs/stdlib-2.0.md §Int.to_char) as a closure
+# applied to the receiver, so the receiver is evaluated once and no helper has
+# to be gated on use.
+_GO_TO_CHAR = ('func(n int64) string { if n < 0 || n > 0x10FFFF || '
+               '(n >= 0xD800 && n <= 0xDFFF) { return "" }; '
+               'return string(rune(n)) }')
+
+
 def _v3_builtin_ret_type(method, recv_type):
     if method in ("length", "indexOf", "charCodeAt", "codepoint_at",
                   "div_trunc", "div_floor", "div_euclid", "mod"):
@@ -6396,8 +6444,9 @@ def _v3_builtin_ret_type(method, recv_type):
     # type follows the receiver, exactly as the checker dispatches it.
     if method == "to_int":
         return "Opt[Int]" if recv_type == "Str" else "Int"
-    # The rendering builtin (docs/stdlib-2.0.md §Int.to_str).
-    if method == "to_str":
+    # The rendering builtin (docs/stdlib-2.0.md §Int.to_str), and its
+    # one-code-point sibling (issue #2285, §Int.to_char).
+    if method in ("to_str", "to_char"):
         return "Str"
     if method == "to_int32":
         return "Int32"
@@ -7229,6 +7278,10 @@ def _go_v3_builtin(ctx, method, target_node, target, args):
     # helper as charCodeAt.
     if method == "codepoint_at":
         return f"revlStrCharCodeAt({target}, {args[0]})"
+    # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+    # §Int.to_char), the same closure as the component tier.
+    if method == "to_char":
+        return f"{_GO_TO_CHAR}({target})"
     # The prefix/suffix probes (FR-6, docs/stdlib-2.0.md §Str.startsWith):
     # HasPrefix/HasSuffix compare bytes, and a code-point prefix of a UTF-8
     # string is exactly a byte prefix.
@@ -8917,12 +8970,16 @@ const revlWALGuarantee = "the WAL records each committed effect's step identity,
 // revlWAL is the process's durable append-only log. One line per record, JSON,
 // flushed + fsync'd before the call that wrote it returns — the write-ahead
 // discipline the py tier uses, so a record a caller saw acknowledged is on disk
-// before the effect it describes is allowed to matter.
+// before the effect it describes is allowed to matter. A failed write or fsync
+// is fatal (issue #2345): the process stops instead of running on with a record
+// that never became durable. REVL_WAL_ALLOW_UNSYNCED=1 is the explicit opt-out
+// for a target that cannot fsync; it is stamped into the log itself.
 type revlWAL struct {
-	mu   sync.Mutex
-	f    *os.File
-	seq  int
-	seqs []int
+	mu       sync.Mutex
+	f        *os.File
+	seq      int
+	seqs     []int
+	unsynced bool
 }
 
 var revlWALSink *revlWAL
@@ -8936,24 +8993,41 @@ func revlWALOpen() {
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return
+		panic("revl: cannot open the write-ahead log REVL_WAL: " + err.Error())
 	}
-	revlWALSink = &revlWAL{f: f}
-	revlWALSink.write(map[string]any{
+	unsynced := os.Getenv("REVL_WAL_ALLOW_UNSYNCED") == "1"
+	revlWALSink = &revlWAL{f: f, unsynced: unsynced}
+	header := map[string]any{
 		"record": "header", "walVersion": 1, "generation": 1,
 		"guarantee": revlWALGuarantee,
-	})
+	}
+	if unsynced {
+		os.Stderr.WriteString("warning: REVL_WAL_ALLOW_UNSYNCED=1 disables the WAL fsync guarantee\\n")
+		header["durability"] = "unsynced-opt-out"
+	}
+	revlWALSink.write(header)
+	if unsynced {
+		revlWALSink.write(map[string]any{"record": "durability-opt-out", "fromSeq": 0})
+	}
 }
 
 func init() { revlWALOpen() }
 
+// write appends one record and fsyncs it. Any failure panics: a record the
+// caller cannot be sure is on disk must stop the run before the next effect,
+// never pass silently. Only the visible REVL_WAL_ALLOW_UNSYNCED opt-out lets a
+// failed fsync through.
 func (w *revlWAL) write(rec map[string]any) {
 	line, err := json.Marshal(rec)
 	if err != nil {
-		return
+		panic("revl: write-ahead log record could not be encoded: " + err.Error())
 	}
-	_, _ = w.f.Write(append(line, '\\n'))
-	_ = w.f.Sync()
+	if _, err := w.f.Write(append(line, '\\n')); err != nil {
+		panic("revl: write-ahead log write failed: " + err.Error())
+	}
+	if err := w.f.Sync(); err != nil && !w.unsynced {
+		panic("revl: write-ahead log fsync failed: " + err.Error())
+	}
 }
 
 // revlRecordTransactional appends the discharge-descriptor for one witnessed
@@ -11440,6 +11514,7 @@ def _emit(ir: dict, package: str = "emitted", package_name: str | None = None,
     global _V3_MODE, _V3_TYPES, _V3_TYPED_COMPONENTS
     global _COMP_NEEDS_STDLIB, _COMP_NEEDS_MAP, _COMP_NEEDS_PARSE_INT
     global _COMP_NEEDS_STRCONV, _COMP_NEEDS_OVERFLOW32, _COMP_NEEDS_OVERFLOW
+    global _COMP_NEEDS_ARITH32
     global _COMP_NEEDS_FLOAT_DIV, _COMP_NEEDS_FLOAT_REM
     global _COMP_NEEDS_TIMER, _TIMER_COUNTER, _STREAM_ITER_COUNTER
     global _WITNESSED_EXTERNS, _COMP_NEEDS_TEARDOWN, _WITNESSED_COUNTER
@@ -11510,6 +11585,7 @@ def _emit(ir: dict, package: str = "emitted", package_name: str | None = None,
     _COMP_NEEDS_PARSE_INT = False
     _COMP_NEEDS_STRCONV = False
     _COMP_NEEDS_OVERFLOW32 = False
+    _COMP_NEEDS_ARITH32 = False
     _COMP_NEEDS_OVERFLOW = False
     _COMP_NEEDS_FLOAT_DIV = False
     _COMP_NEEDS_FLOAT_REM = False
@@ -11633,6 +11709,9 @@ def _emit(ir: dict, package: str = "emitted", package_name: str | None = None,
     if _COMP_NEEDS_OVERFLOW32:
         # `Int.to_int32` in a method body: the same checked narrow the pure
         # typed-core path emits off `ctx.needs_overflow32` (issue #1347).
+        if _COMP_NEEDS_ARITH32:
+            # Int32 `+ - *` or unary minus in a method body (issue #2262)
+            out.append(_V3_ARITH32_HELPER)
         out.append(_V3_OVERFLOW32_HELPER)
     if _COMP_NEEDS_OVERFLOW:
         # `Int` unary minus in a method body: the same checked subtraction the
@@ -12238,6 +12317,7 @@ def _emit_v3_combined(ir: dict, package: str, placement: bool = True) -> str:
     global _V3_MODE, _V3_TYPES, _V3_TYPED_COMPONENTS
     global _COMP_NEEDS_STDLIB, _COMP_NEEDS_MAP, _COMP_NEEDS_PARSE_INT
     global _COMP_NEEDS_STRCONV, _COMP_NEEDS_OVERFLOW32, _COMP_NEEDS_OVERFLOW
+    global _COMP_NEEDS_ARITH32
     global _COMP_NEEDS_FLOAT_DIV, _COMP_NEEDS_FLOAT_REM
     global _COMP_NEEDS_TIMER, _TIMER_COUNTER, _COMP_NEEDS_STREAM
     global _COMP_NEEDS_STREAM_DRAIN, _COMP_NEEDS_STREAM_EVENT
@@ -12264,6 +12344,7 @@ def _emit_v3_combined(ir: dict, package: str, placement: bool = True) -> str:
     _COMP_NEEDS_PARSE_INT = False
     _COMP_NEEDS_STRCONV = False
     _COMP_NEEDS_OVERFLOW32 = False
+    _COMP_NEEDS_ARITH32 = False
     _COMP_NEEDS_OVERFLOW = False
     _COMP_NEEDS_FLOAT_DIV = False
     _COMP_NEEDS_FLOAT_REM = False

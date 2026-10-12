@@ -30,7 +30,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from revl import compile_source, idioms  # noqa: E402
+from revl import RevlError, compile_source, idioms  # noqa: E402
 from revl.admit_profile import AdmissionProfile  # noqa: E402
 from revl.mcp import fillspec  # noqa: E402
 from revl.mcp.server import handle  # noqa: E402
@@ -42,12 +42,15 @@ ENTRIES = idioms.table()
 #: `extern emission[CAP]` body serves CAP (the key is injected into that body
 #: and nowhere else), and an extern needs a host body. `retention NAME { ... }`
 #: is authority (a deadline the author writes is a deadline it can extend), so
-#: the admission profile refuses the declaration itself (G-RETAIN). Both are for
-#: an operator-trusted author; the admission test still pins that the refusal
-#: is exactly that one and nothing else.
+#: the admission profile refuses the declaration itself (G-RETAIN).
+#: `secret-value` shows the declared `endorse[confidential]` downgrade, and an
+#: untrusted author may not declassify. All three are for an
+#: operator-trusted author; the admission test still pins that the refusal is
+#: exactly that one and nothing else.
 OPERATOR_ONLY_IDIOMS = {
     "secret": "forbids new `extern`/host-block",
     "retention": "forbids declaring a retention policy",
+    "secret-value": "forbids declassification",
 }
 
 
@@ -109,7 +112,7 @@ def test_every_idiom_admits_for_an_untrusted_author(name):
 
 # ---- 2b. the security declarations have an idiom (issue #2280) ------------------
 
-SECURITY_IDIOMS = ("secret", "capability", "grant", "retention")
+SECURITY_IDIOMS = ("secret", "secret-value", "capability", "grant", "retention")
 
 
 def test_every_security_declaration_form_has_an_idiom():
@@ -117,6 +120,24 @@ def test_every_security_declaration_form_has_an_idiom():
     so an agent hand-rolled what the language ships. Each declaration that
     carries security meaning has one."""
     assert set(SECURITY_IDIOMS) <= set(ENTRIES)
+
+
+def test_the_secret_value_idiom_declassifies_only_through_a_declared_slot():
+    """`Secret[T]` is the value-world form, not the bound `secret NAME for CAP`.
+    The idiom must compile (the declared `endorse[confidential]` slot admits the
+    downgrade), carry the confidential taint on its audit surface, and name the
+    bound key as the thing it is not."""
+    entry = ENTRIES["secret-value"]
+    ir = _compile(entry["example"], "secret-value")
+    comp = {c["name"]: c for c in ir["components"]}["Payer"]
+    assert "confidential" in (comp.get("taint") or {}).get("declassify", [])
+    assert "Secret[Str]" in entry["example"]
+    assert "secret NAME for CAP" in entry["summary"]
+    without_slot = entry["example"].replace("endorse[confidential] fn settle", "fn settle")
+    with pytest.raises(RevlError) as excinfo:
+        _compile(without_slot, "secret-value-no-slot")
+    assert excinfo.value.code == "G9"
+    assert "endorse[confidential]" in excinfo.value.message
 
 
 def test_the_capability_idiom_declares_binds_and_scopes():

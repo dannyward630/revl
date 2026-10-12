@@ -1501,6 +1501,13 @@ _BUILTIN_SIG = {
         "Str": ("Str", [], "Opt[Int]"),
     },
     "to_int32": ("Int", [], "Int32"),
+    # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+    # §Int.to_char): the one-code-point Str for a Unicode scalar value, and ""
+    # for anything else (negative, a surrogate, above U+10FFFF). It is the
+    # blessed per-tier primitive behind `stdlib/str.rvl`'s `str_char`: the
+    # source reader folds a CR byte to LF and `"..."` carries no escapes, so a
+    # carriage return or a NUL has no other spelling in pure revl.
+    "to_char": ("Int", [], "Str"),
     # The total, value-returning forms (docs/arithmetic.md, "Still open"):
     # same rounding convention as their faulting counterparts, but a zero
     # divisor yields `Err(reason)` instead of faulting — `fail` cannot serve

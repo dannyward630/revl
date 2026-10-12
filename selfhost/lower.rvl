@@ -14481,8 +14481,9 @@ fn tk_bsig_family(m: Str, th: Str) -> Str {
       || m == "is_alnum" || m == "is_digit" || m == "is_alpha"
       || m == "is_space") { return "Str" }
   if (m == "div_trunc" || m == "div_floor" || m == "div_euclid" || m == "mod"
-      || m == "to_int32" || m == "checked_div_trunc" || m == "checked_div_floor"
-      || m == "checked_div_euclid" || m == "checked_mod") { return "Int" }
+      || m == "to_int32" || m == "to_char" || m == "checked_div_trunc"
+      || m == "checked_div_floor" || m == "checked_div_euclid"
+      || m == "checked_mod") { return "Int" }
   if (m == "set" || m == "lookup" || m == "has" || m == "size"
       || m == "remove") { return "Map" }
   if (m == "field" || m == "str" || m == "list") { return "Value" }
@@ -15132,7 +15133,7 @@ fn tk_stdlib_surface() -> Str {
     .concat("div_floor, div_trunc, endsWith, field, has, indexOf, is_alnum, ")
     .concat("is_alpha, is_digit, is_space, join, keys, length, list, lookup, ")
     .concat("mod, push, remove, repeat, set, size, slice, split, startsWith, ")
-    .concat("str, to_int, to_int32, to_str")
+    .concat("str, to_char, to_int, to_int32, to_str")
 }
 
 fn tk_divides_by(m: Str) -> Bool {
@@ -24917,6 +24918,8 @@ fn is_builtin_method(m: Str) -> Bool {
     || m == "checked_div_floor" || m == "checked_div_euclid" || m == "checked_mod"
     || m == "set" || m == "lookup" || m == "has" || m == "size" || m == "keys"
     || m == "remove" || m == "to_str"
+    // The reverse of `codepoint_at` (issue #2285): Int receiver, no argument.
+    || m == "to_char"
     // The Value dot-accessors (item 189) share this table in the reference so a
     // wrong-arity call is diagnosed here; the Value-receiver ones are redirected
     // to their `value_*` free function before this row is ever consulted
@@ -24963,6 +24966,8 @@ fn builtin_ret(method: Str, recvTy: Str) -> Str {
   }
   if (method == "to_int32") { return "Int32" }
   if (method == "to_str") { return "Str" }
+  // The reverse of `codepoint_at` (issue #2285): a one-code-point Str.
+  if (method == "to_char") { return "Str" }
   if (method == "size") { return "Int" }
   if (method == "keys") { return "List[Str]" }
   // `lookup` is the one Map row whose result is built FROM the receiver's type

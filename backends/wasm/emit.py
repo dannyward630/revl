@@ -2953,6 +2953,8 @@ class _ComponentEmitter:
                 lines.append(self.v3._helper_str_split())
             if "$str_join" in rendered:
                 lines.append(self.v3._helper_str_join())
+            if "$str_of_code_point" in rendered:
+                lines.append(self.v3._helper_str_of_code_point())
             # item 432(d): one `$str_concat<k>` per template arity actually
             # rendered, on the same demand-driven rule.
             for k in _concat_arities(rendered):
@@ -3971,6 +3973,59 @@ class _V3Emitter:
           (i64.add (i64.rem_u (local.get $x) (i64.const 10)) (i64.const 48))))
       (local.set $x (i64.div_u (local.get $x) (i64.const 10)))
       (br 0)))
+    (local.get $p))"""
+
+    def _helper_str_of_code_point(self) -> str:
+        # Int.to_char (issue #2285): encode one Unicode scalar value as UTF-8
+        # into a fresh Str of 1..4 bytes. Negative values, the surrogates
+        # U+D800..U+DFFF and anything above U+10FFFF give the empty Str, the
+        # same answer every tier gives. Emitted only when a body calls it, so
+        # every other module keeps a byte-identical helper preamble.
+        return """  (func $str_of_code_point (param $n i64) (result i32)
+    (local $c i32)
+    (local $p i32)
+    (if (i32.or
+          (i32.or (i64.lt_s (local.get $n) (i64.const 0))
+                  (i64.gt_s (local.get $n) (i64.const 1114111)))
+          (i32.and (i64.ge_s (local.get $n) (i64.const 55296))
+                   (i64.le_s (local.get $n) (i64.const 57343))))
+      (then (return (call $alloc_str (i32.const 0)))))
+    (local.set $c (i32.wrap_i64 (local.get $n)))
+    (if (i32.lt_u (local.get $c) (i32.const 128))
+      (then
+        (local.set $p (call $alloc_str (i32.const 1)))
+        (i32.store8 (i32.add (local.get $p) (i32.const 4)) (local.get $c))
+        (return (local.get $p))))
+    (if (i32.lt_u (local.get $c) (i32.const 2048))
+      (then
+        (local.set $p (call $alloc_str (i32.const 2)))
+        (i32.store8 (i32.add (local.get $p) (i32.const 4))
+          (i32.or (i32.const 192) (i32.shr_u (local.get $c) (i32.const 6))))
+        (i32.store8 (i32.add (local.get $p) (i32.const 5))
+          (i32.or (i32.const 128) (i32.and (local.get $c) (i32.const 63))))
+        (return (local.get $p))))
+    (if (i32.lt_u (local.get $c) (i32.const 65536))
+      (then
+        (local.set $p (call $alloc_str (i32.const 3)))
+        (i32.store8 (i32.add (local.get $p) (i32.const 4))
+          (i32.or (i32.const 224) (i32.shr_u (local.get $c) (i32.const 12))))
+        (i32.store8 (i32.add (local.get $p) (i32.const 5))
+          (i32.or (i32.const 128)
+            (i32.and (i32.shr_u (local.get $c) (i32.const 6)) (i32.const 63))))
+        (i32.store8 (i32.add (local.get $p) (i32.const 6))
+          (i32.or (i32.const 128) (i32.and (local.get $c) (i32.const 63))))
+        (return (local.get $p))))
+    (local.set $p (call $alloc_str (i32.const 4)))
+    (i32.store8 (i32.add (local.get $p) (i32.const 4))
+      (i32.or (i32.const 240) (i32.shr_u (local.get $c) (i32.const 18))))
+    (i32.store8 (i32.add (local.get $p) (i32.const 5))
+      (i32.or (i32.const 128)
+        (i32.and (i32.shr_u (local.get $c) (i32.const 12)) (i32.const 63))))
+    (i32.store8 (i32.add (local.get $p) (i32.const 6))
+      (i32.or (i32.const 128)
+        (i32.and (i32.shr_u (local.get $c) (i32.const 6)) (i32.const 63))))
+    (i32.store8 (i32.add (local.get $p) (i32.const 7))
+      (i32.or (i32.const 128) (i32.and (local.get $c) (i32.const 63))))
     (local.get $p))"""
 
     def _helper_f64_to_str(self) -> str:
@@ -5076,6 +5131,12 @@ class _V3Emitter:
             if target_ty != "Int":
                 raise EmitError("to_str is only lowerable on Int values")
             return "Str"
+        # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+        # §Int.to_char).
+        if method == "to_char":
+            if target_ty != "Int":
+                raise EmitError("to_char is only lowerable on Int values")
+            return "Str"
         # The prefix/suffix probes (FR-6, docs/stdlib-2.0.md §Str.startsWith).
         if method == "startsWith" or method == "endsWith":
             if target_ty not in ("Str", "Bytes"):
@@ -5656,6 +5717,14 @@ class _V3Emitter:
                 raise EmitError(f"{where}: to_str is only lowerable on Int")
             target = self._expr(target_node, scope, where, "Int")
             return _E(f"(call $int_to_str {target.wat})", "Str")
+        if method == "to_char":
+            # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+            # §Int.to_char): the UTF-8 encoding of a Unicode scalar value as a
+            # fresh one-code-point Str, "" for anything else.
+            if target_ty != "Int":
+                raise EmitError(f"{where}: to_char is only lowerable on Int")
+            target = self._expr(target_node, scope, where, "Int")
+            return _E(f"(call $str_of_code_point {target.wat})", "Str")
         if method == "to_int" and target_ty == "Str":
             # Str.to_int (FR-9, docs/stdlib-2.0.md §Str.to_int): the runtime
             # helper parses ASCII digits (leading `-` allowed) and returns the
@@ -6536,6 +6605,8 @@ class _V3Emitter:
         uses_index_of = any("$str_index_of" in block for block in all_blocks)
         uses_split = any("$str_split" in block for block in all_blocks)
         uses_join = any("$str_join" in block for block in all_blocks)
+        uses_code_point = any("$str_of_code_point" in block
+                              for block in all_blocks)
 
         # tests call the same helpers their functions do ($str_eq, $alloc_str,
         # …), so a document whose bodies are all `test` blocks still needs them
@@ -6549,6 +6620,8 @@ class _V3Emitter:
                 lines.append(self._helper_str_split())
             if uses_join:
                 lines.append(self._helper_str_join())
+            if uses_code_point:
+                lines.append(self._helper_str_of_code_point())
             # item 432(d): one `$str_concat<k>` per template arity actually
             # rendered, on the same demand-driven rule as the readers above.
             for k in _concat_arities("\n".join(all_blocks)):
