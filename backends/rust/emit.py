@@ -9173,14 +9173,18 @@ def _service_emission(node, requires: dict):
         return None
     callee = node.get("callee")
     if isinstance(callee, dict):
-        if callee.get("kind") != "field":
+        target = callee.get("target")
+        if callee.get("kind") != "field" or not isinstance(target, dict) \
+                or target.get("kind") != "instance-get":
             return None
-        target = callee.get("target") or {}
-        key = target.get("key") or target.get("name") or "instance"
-        return (str(key), str(callee.get("name")), None)
-    if "method" not in node:
+        service = target.get("service")
+        return (str(target.get("key") or "instance"), str(callee.get("name")),
+                service if isinstance(service, str) else None)
+    target = node.get("target")
+    if "method" not in node or not isinstance(target, dict) \
+            or target.get("kind") != "req":
         return None
-    key = str((node.get("target") or {}).get("name") or "call")
+    key = str(target.get("name") or "call")
     service = (requires or {}).get(key)
     return (key, str(node["method"]), service if isinstance(service, str) else None)
 
@@ -10568,8 +10572,20 @@ def _revl_record_preamble() -> list[str]:
         "        }",
         "        if let (Some(seq), Some(sink)) = (self.seq, revl_wal_sink()) {",
         "            let mut wal = sink.lock().unwrap_or_else(|e| e.into_inner());",
-        '            wal.write(&serde_json::json!({ "record": "emission-failed", "seq": seq,',
-        '                "error": { "type": "panic" } }));',
+        "            let panicking = std::thread::panicking();",
+        '            let rec = serde_json::json!({ "record": "emission-failed", "seq": seq,',
+        '                "error": { "type": if panicking { "panic" } else { "early-return" } } });',
+        "            if panicking {",
+        "                // a second panic while unwinding aborts the process: write",
+        "                // best effort and let the body's panic carry on",
+        "                use std::io::Write;",
+        "                let mut line = serde_json::to_string(&rec).unwrap_or_default();",
+        "                line.push('\\n');",
+        "                let _ = wal.file.write_all(line.as_bytes());",
+        "                let _ = wal.file.sync_all();",
+        "            } else {",
+        "                wal.write(&rec);",
+        "            }",
         "        }",
         "    }",
         "}",

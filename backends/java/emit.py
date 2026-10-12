@@ -3858,14 +3858,18 @@ def _service_emission(node, requires: dict):
         return None
     callee = node.get("callee")
     if isinstance(callee, dict):
-        if callee.get("kind") != "field":
+        target = callee.get("target")
+        if callee.get("kind") != "field" or not isinstance(target, dict) \
+                or target.get("kind") != "instance-get":
             return None
-        target = callee.get("target") or {}
-        key = target.get("key") or target.get("name") or "instance"
-        return (str(key), str(callee.get("name")), None)
-    if "method" not in node:
+        service = target.get("service")
+        return (str(target.get("key") or "instance"), str(callee.get("name")),
+                service if isinstance(service, str) else None)
+    target = node.get("target")
+    if "method" not in node or not isinstance(target, dict) \
+            or target.get("kind") != "req":
         return None
-    key = str((node.get("target") or {}).get("name") or "call")
+    key = str(target.get("name") or "call")
     service = (requires or {}).get(key)
     return (key, str(node["method"]), service if isinstance(service, str) else None)
 
@@ -7742,7 +7746,7 @@ public static void revlRecordEmissionFailed(int seq, Throwable error) {
         return;
     }
     revlWalWrite("{\"record\":\"emission-failed\",\"seq\":" + seq
-            + ",\"error\":{\"type\":" + revlWalStr(error.getClass().getSimpleName()) + "}}");
+            + ",\"error\":{\"type\":" + revlWalStr(error.getClass().getSimpleName().isEmpty() ? error.getClass().getName() : error.getClass().getSimpleName()) + "}}");
 }
 
 // revlRecordDischarge writes the commit-path proof that every recorded

@@ -387,6 +387,37 @@ def test_java_service_emission_is_journalled_before_the_call():
     assert "public static int revlRecordEmissionStart(" in src
 
 
+@pytest.mark.parametrize("tier", ["go", "rust", "java"])
+def test_service_emission_classifier(tier):
+    """Only a call through a required service (`req` target) or an instance
+    provision (`instance-get` receiver) is journalled at the site; an extern
+    call is journalled by its own wrapper and a host-local method call is not
+    an emission crossing at all."""
+    emitter = _load_emitter(tier)
+    required = {"kind": "call", "target": {"kind": "req", "name": "log"},
+                "method": "write", "args": []}
+    provision = {"kind": "call", "args": [], "callee": {
+        "kind": "field", "name": "charge", "target": {
+            "kind": "instance-get", "target": {"kind": "name", "name": "w"},
+            "component": "Wallet", "key": "pay", "service": "Pay"}}}
+    local = {"kind": "call", "target": {"kind": "name", "name": "m"},
+             "method": "get", "args": []}
+    field = {"kind": "call", "args": [], "callee": {
+        "kind": "field", "name": "get", "target": {"kind": "name", "name": "r"}}}
+    extern = {"kind": "call", "args": [], "callee": {"kind": "var", "name": "announce"}}
+    if tier == "go":
+        emitter._REQ_SERVICE = {"log": "Log"}
+        assert emitter._service_emission(required) == ("log", "write", "Log")
+        assert emitter._service_emission(provision) == ("pay", "charge", "Pay")
+        for node in (local, field, extern):
+            assert emitter._service_emission(node) is None
+    else:
+        assert emitter._service_emission(required, {"log": "Log"}) == ("log", "write", "Log")
+        assert emitter._service_emission(provision, {}) == ("pay", "charge", "Pay")
+        for node in (local, field, extern):
+            assert emitter._service_emission(node, {}) is None
+
+
 def test_go_service_emission_compiles(tmp_path):
     if GO is None:
         pytest.skip("go toolchain not available")

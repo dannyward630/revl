@@ -383,7 +383,7 @@ public final class Components {
             return;
         }
         revlWalWrite("{\"record\":\"emission-failed\",\"seq\":" + seq
-                + ",\"error\":{\"type\":" + revlWalStr(error.getClass().getSimpleName()) + "}}");
+                + ",\"error\":{\"type\":" + revlWalStr(error.getClass().getSimpleName().isEmpty() ? error.getClass().getName() : error.getClass().getSimpleName()) + "}}");
     }
 
     // revlRecordDischarge writes the commit-path proof that every recorded
