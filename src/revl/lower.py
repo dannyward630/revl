@@ -258,6 +258,9 @@ _BUILTIN_METHODS = {
     # Int32 to Int (lossless); `to_int32` narrows an Int to Int32 (checked,
     # traps out of the 32-bit range).
     "to_int": 0, "to_int32": 0,
+    # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+    # §Int.to_char): Int receiver, no argument, a one-code-point Str or "".
+    "to_char": 0,
     # The total forms (docs/arithmetic.md): a zero divisor is the *point*
     # here, so these are deliberately absent from _DIVIDES_BY below — a
     # literal zero argument is refused for the faulting operations only.

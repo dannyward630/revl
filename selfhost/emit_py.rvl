@@ -565,6 +565,9 @@ fn render_builtin(method: Str, target: Str, args: List[Str], recv: Str) -> Str {
   // transient 1-char slice `ord` consumes — no persistent 1-char Str the
   // self-host lexer would otherwise index a second time via `code0`.
   if (method == "codepoint_at") { return `ord(_revl_str_at(${target}, ${args[0]}))` }
+  // The reverse of `codepoint_at` (issue #2285): a one-code-point Str for a
+  // Unicode scalar value, "" otherwise, through the `_revl_to_char` helper.
+  if (method == "to_char") { return `_revl_to_char(${target})` }
   if (method == "concat") { return `(${target} + ${args[0]})` }
   // A preamble helper, not a lambda built and applied at every evaluation
   // (item 436 F6): one frame, no function-object allocation.
@@ -1936,6 +1939,18 @@ fn index_of_block() -> List[Str] {
   o = o.push("    if isinstance(v, str):")
   o = o.push("        return v.find(n)")
   o = o.push("    return v.index(n) if n in v else -1")
+  o = o.push("")
+  return o
+}
+
+// Int.to_char (issue #2285): total, "" outside the Unicode scalar values.
+fn to_char_block() -> List[Str] {
+  var o = []
+  o = o.push("def _revl_to_char(n):")
+  o = o.push(`    """Int.to_char: the code point as a 1-char Str, "" if it is not a scalar."""`)
+  o = o.push("    if n < 0 or n > 0x10FFFF or 0xD800 <= n <= 0xDFFF:")
+  o = o.push(`        return ""`)
+  o = o.push("    return chr(n)")
   o = o.push("")
   return o
 }
@@ -4823,6 +4838,7 @@ pub fn emit_py_src(source_ir: Any) -> Str {
   if (uses_float_rem(ir)) { out = out.concat(float_rem_block()) }
   if (uses_builtin_method(ir, "div_trunc")) { out = out.concat(div_trunc_block()) }
   if (uses_builtin_method(ir, "div_euclid")) { out = out.concat(div_euclid_block()) }
+  if (uses_builtin_method(ir, "to_char")) { out = out.concat(to_char_block()) }
   if (uses_builtin_method(ir, "indexOf")) { out = out.concat(index_of_block()) }
   if (uses_builtin_method(ir, "split")) { out = out.concat(split_block()) }
   if (uses_builtin_method(ir, "to_int")) {

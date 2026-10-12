@@ -111,6 +111,42 @@ path, which is what the resolution needs:
   - a `use "m" as alias` import, which makes the whole module a dependency;
   - a dependency that declares externs none of which lowered natively.
 
+  An extern declaration is read as a whole, host bodies included, so a
+  column-0 line of host code inside `@py { ... }` is not taken for a
+  top-level declaration of its own (issue #2308). The body is scanned as the
+  self-host lexer scans it (brace depth, `"` strings skipped), not as the
+  reference lexer does; a body whose brace sits in a `'` string or a comment is
+  misread by both self-host scans alike, its externs do not lower, and the
+  module is refused.
+- Last, the driver links the types an imported service carries (issue #2308).
+  A `use "./lib.rvl" { Store }` that names only a service makes no pure
+  dependency, but the reference's `compile_files` still brings the PUBLIC record
+  and variant types the service's operations name, closed over the types their
+  fields and case payloads name (its `carried` list, issue #1899), and appends
+  them to the merged `types` table after the document's own. `ul_link_types`
+  does the same, in the module's declaration order, each type once, and sets
+  `ir_version` to 3 as a type table does in the reference. It refuses with
+  `REFUSED|LINK|` where the reference would rename apart (a document's own type
+  of the same name), where two modules carry one name, and where any type the
+  service's module declares, public or private, has no native `types` entry.
+  The last covers a transparent alias (`pub type Al = Cell`, or a private
+  `type Id = Int`): the producer expands it in the service row and in record
+  fields and writes no entry for it, so the link would carry `Cell` where the
+  reference carries `Al`, or print `id: Int` where the reference keeps `id: Id`.
+  The module's type declarations are found by token at bracket depth 0, at any
+  column, so an indented declaration or a second one on the same line counts.
+  The native producer does not lower that second one, so such a module is
+  refused. The scan reads the text the way the reference lexer does
+  (`src/revl/lexer.py`): `//` comments, `"` and `'` strings with only the
+  `\<quote>` and `\\` escapes, `"""` strings, backtick templates and their
+  `${...}` interpolations, and `@backend { ... }` host bodies under that
+  backend's string and comment rules. A brace or quote inside any of them does
+  not move the scan. It fails closed: an unterminated string, template or host
+  body, a bracket closing below depth 0, an unclosed bracket, or a `type`
+  keyword inside brackets refuses the link, since the reference rejects all of
+  them. A `pub verified type` or `pub endorse[...] type` is read as public (the
+  native producer lowers neither, so that link refuses too).
+
 This is the honest multi-file native compile: the whole chain still runs in revl,
 and the only host crossing is the read the reference loader also performs. It
 closes the `cli.rvl` entry on the py and go tiers. `tests/test_selfhost_compile.py`

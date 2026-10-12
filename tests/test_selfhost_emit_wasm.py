@@ -309,6 +309,8 @@ def test_fn_type_param_refused(emitted, reference):
                  "(func $str_split", "<<UNSUPPORTED-BUILTIN:split>>", id="demand-split"),
     pytest.param('fn f(xs: List[Str]) -> Str { return xs.join(",") }',
                  "(func $str_join", "<<UNSUPPORTED-BUILTIN:join>>", id="demand-join"),
+    pytest.param("fn f(n: Int) -> Str { return n.to_char() }",
+                 "(func $str_of_code_point", "<<UNSUPPORTED-BUILTIN:to_char>>", id="demand-to-char"),
     pytest.param("fn f(x: Int) -> Str { return `n=${x}` }",
                  "(call $str_concat)", "<<UNSUPPORTED-EXPR:interp>>", id="interpolation"),
     pytest.param("fn f(a: Int, b: Int) -> Result[Int, Str] { return a.checked_div_trunc(b) }",
