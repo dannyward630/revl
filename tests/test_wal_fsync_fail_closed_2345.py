@@ -263,3 +263,112 @@ def test_wasm_run_never_starts_the_harness_on_a_failed_header_fsync(
     assert rc == 1
     assert started == []
     assert FSYNC_FAILED in capsys.readouterr().err
+
+
+class _FakeStdin:
+    def __init__(self):
+        self.text = ""
+
+    def write(self, text):
+        self.text += text
+
+    def flush(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class _FakeHarness:
+    """Stands in for the harness process: reads the run token from stdin and
+    prints one token-tagged WAL frame, then the proof lines of a clean run."""
+
+    def __init__(self, *args, **kwargs):
+        self.stdin = _FakeStdin()
+        self.killed = False
+        self.waited = False
+
+    @property
+    def stdout(self):
+        token = self.stdin.text.strip()
+        frame = {"seq": 0, "receiver": "beginRow", "method": "deleteRow",
+                 "witness": "row#1"}
+        yield f"[wal#{token}] {json.dumps(frame)}\n"
+        for word in ("UP", "NO-RESIDUE", "DOWN"):
+            yield f"[run#{token}] {word}\n"
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self):
+        self.waited = True
+        return 0
+
+
+def _wasm_run_fixture(tmp_path, monkeypatch, fail_after: int):
+    """Wire `run_wasm` to a fake harness and fail every fsync after the first
+    `fail_after` succeed."""
+    wal = tmp_path / "run.wal"
+    monkeypatch.setenv("REVL_WAL", str(wal))
+    monkeypatch.delenv("REVL_WAL_ALLOW_UNSYNCED", raising=False)
+    monkeypatch.setattr(run_wasm, "_load_order", lambda ir: ["Crasher"])
+    monkeypatch.setattr(run_wasm, "_wasm_emitter", lambda: None)
+    monkeypatch.setattr(run_wasm, "_emit_modules",
+                        lambda ir, record=False, emit_module=None: {"Crasher": "(module)"})
+    monkeypatch.setattr("revl.least_authority.enforce_wasm_least_authority",
+                        lambda ir, policy, modules: None)
+    monkeypatch.setattr(run_wasm, "wasm_runtime_reason", lambda: None)
+    calls = []
+    real_fsync = os.fsync
+
+    def fsync(fd):
+        calls.append(fd)
+        if len(calls) > fail_after:
+            raise OSError("injected fsync failure")
+        real_fsync(fd)
+    monkeypatch.setattr(run_wasm.os, "fsync", fsync)
+    harnesses = []
+
+    def popen(*args, **kwargs):
+        harnesses.append(_FakeHarness())
+        return harnesses[-1]
+    monkeypatch.setattr(run_wasm.subprocess, "Popen", popen)
+    return wal, harnesses
+
+
+def _records(wal: Path) -> list[str]:
+    return [json.loads(line)["record"]
+            for line in wal.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_wasm_run_stops_the_harness_on_a_failed_descriptor_fsync(
+        tmp_path, monkeypatch, capsys):
+    wal, harnesses = _wasm_run_fixture(tmp_path, monkeypatch, fail_after=1)
+    rc = run_wasm.run_wasm({}, {}, [], once=True)
+    assert rc == 1
+    assert len(harnesses) == 1 and harnesses[0].killed
+    assert FSYNC_FAILED in capsys.readouterr().err
+    assert "discharge" not in _records(wal)
+    assert "activation-complete" not in _records(wal)
+
+
+def test_wasm_run_fails_when_the_commit_markers_are_not_durable(
+        tmp_path, monkeypatch, capsys):
+    """A clean harness run whose discharge marker cannot be fsynced is a failed
+    run, not a committed one."""
+    wal, harnesses = _wasm_run_fixture(tmp_path, monkeypatch, fail_after=2)
+    rc = run_wasm.run_wasm({}, {}, [], once=True)
+    assert rc == 1
+    assert len(harnesses) == 1 and not harnesses[0].killed
+    err = capsys.readouterr().err
+    assert FSYNC_FAILED in err and "commit markers are not durable" in err
+    assert "activation-complete" not in _records(wal)
+
+
+def test_wasm_drain_write_failure_is_a_durability_error():
+    class Full:
+        def write(self, _text):
+            raise OSError(28, "No space left on device")
+
+    with pytest.raises(run_wasm.WALDurabilityError, match="write-ahead log write failed"):
+        run_wasm.write_wal_record(Full(), run_wasm.wal_header())

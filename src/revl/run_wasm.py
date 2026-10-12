@@ -137,13 +137,17 @@ def write_wal_record(handle, record: dict, *,
                      allow_unsynced: bool | None = None) -> None:
     """Append one JSONL record and fsync it: the write-ahead discipline the go
     tier uses, so a descriptor a run saw drained is on disk before the effect it
-    describes is allowed to matter. A failed fsync raises
-    :class:`WALDurabilityError` unless the run opted out (``allow_unsynced``,
-    defaulting to ``REVL_WAL_ALLOW_UNSYNCED=1``)."""
+    describes is allowed to matter. A failed write or flush always raises
+    :class:`WALDurabilityError`; a failed fsync raises it unless the run opted
+    out (``allow_unsynced``, defaulting to ``REVL_WAL_ALLOW_UNSYNCED=1``)."""
     if allow_unsynced is None:
         allow_unsynced = wal_allows_unsynced()
-    handle.write(json.dumps(record) + "\n")
-    handle.flush()
+    try:
+        handle.write(json.dumps(record) + "\n")
+        handle.flush()
+    except OSError as error:
+        raise WALDurabilityError(
+            f"write-ahead log write failed: {error}") from error
     try:
         os.fsync(handle.fileno())
     except (OSError, ValueError) as error:
