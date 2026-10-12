@@ -528,19 +528,30 @@ jobs:
       # make a red line pass: fix the document, or soften the claim.
       - run: python3 tools/check_vision_claims.py --self-test
       - run: python3 tools/check_vision_claims.py --check
-      # issue #2333: the guards below need no `revl` install, toolchain or
-      # network: they read tracked repository text (the workflow, tests/ and
-      # tools/ sources, `git ls-files`) and, at most, build scratch git
-      # repositories under tmp_path. None imports `revl` or drives a tier
-      # runner, so they run in this bare job. Before this step they ran only in
-      # `frontend`, which is main-only (#1679), so a change that broke one was
-      # first seen red on main. `!cancelled()` keeps an earlier gate's red from
-      # skipping them (tests/test_ci_steps_are_independent.py, #1358).
-      # tests/test_lint_runs_the_pure_read_guards_2333.py pins this list.
-      - if: ${{ !cancelled() }}
-        run: pip install pytest==9.1.1
-      - if: ${{ !cancelled() }}
-        run: >-
+
+  # issue #2333: the guards below need no `revl` install, toolchain or
+  # network: they read tracked repository text (the workflow, tests/ and
+  # tools/ sources, `git ls-files`) and, at most, build scratch git
+  # repositories under tmp_path. None imports `revl` or drives a tier runner.
+  # Before this job they ran only in `frontend`, which is main-only (#1679),
+  # so a change that broke one was first seen red on main.
+  #
+  # A job of its own, not a step of `lint`: every backend job `needs: lint`, so
+  # a slow step there delays every pull request's whole run. This job has no
+  # `needs` and nothing depends on it; it is non-required in branch protection
+  # (tests/test_required_checks_pinned.py) and is enforced by the drain, which
+  # waits for every non-heavy check. tests/test_pure_read_guards_job_2333.py
+  # pins the shape and the list.
+  pure-read-guards:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.12"
+      - run: pip install pytest==9.1.1 pyyaml==6.0.2
+      - run: >-
           python3 -m pytest -q -p no:cacheprovider
           tests/test_ci_backend_gate.py
           tests/test_ci_census_stale_base_2165.py
@@ -552,7 +563,7 @@ jobs:
           tests/test_gate_crate_release_path.py
           tests/test_gate_dependency_publish_ready.py
           tests/test_java_javac_gate_runs_in_ci.py
-          tests/test_lint_runs_the_pure_read_guards_2333.py
+          tests/test_pure_read_guards_job_2333.py
           tests/test_required_checks_pinned.py
           tests/test_site_wheel_gate_runs_in_ci.py
           tests/test_ts_demo_runs_in_ci.py
