@@ -78,8 +78,9 @@ there: a toolchain-probe skip for any OTHER tier that does NOT go through a
 backends/python/.venv by hand is one; `pytest.importorskip` anywhere is
 another. Those remain per-file, and the `backend-wasm` job's junit skip audit
 remains the strongest tool for a whole job at once. And everything here reads
-the workflows, not tools/pre_merge.sh: the local gate is not audited yet
-(issue #2210).
+the workflows, with one exception: the gates that make a skip a failure
+(`REVL_CROSS_TIER_SLOW`, `REVL_SWEEP_ALL_TIERS`, `REVL_REQUIRE_*`) must also be
+set by a suite `make pre-merge` can run (issue #2210), see the last section.
 """
 
 from __future__ import annotations
@@ -90,7 +91,12 @@ import posixpath
 import re
 from pathlib import Path
 
+import os
+import subprocess
+import sys
+
 import pytest
+from _load_by_path import load_by_path
 # A HARD import, deliberately (issue #266). This was `pytest.importorskip("yaml")`
 # inside `_steps_setting`, which made the two strongest checks in this file --
 # the ones that pair a gate against the job that actually runs it -- skip
@@ -841,15 +847,6 @@ _REQUIRE_ENV = "REVL_REQUIRE_TIERS"
 # file -- it may only shrink, `test_no_stale_tier_exemptions` sees to that, and
 # `test_local_declaration_carries_a_real_reason`'s rules apply to the prose.
 _TIER_NOT_REQUIRED_IN_CI: dict[str, str] = {
-    "rust": (
-        "`conformance` installs a rust toolchain, but `RUNNERS['rust']` also "
-        "reaches for crates.io to resolve cordis-rs and answers an absent-"
-        "toolchain skip when the index is unreachable. Requiring the tier would "
-        "turn a network blip into a red build on an unrelated PR, so closing "
-        "this means vendoring or caching the crate registry in that job first. "
-        "The tier still executes there when the index answers; what is missing "
-        "is the guarantee, not the coverage."
-    ),
     "java": (
         "`RUNNERS['java']` compiles against in-repo stubs unless "
         "REVL_CORDIS4J_CLASSES points at real cordis4j classes, and that "
@@ -1526,3 +1523,199 @@ def test_no_stale_runtime_exemptions():
         assert len(reason.strip()) >= _MIN_REASON_CHARS, (
             f"{rel}: a one-liner is not a reason. Say why no job can run it."
         )
+
+
+# --------------------------------------------------------------------------
+# THE LOCAL HALF: the gates are set on the `make pre-merge` path too (issue
+# #2210).
+#
+# Every check above asks whether a gate is set in a CI job that executes. That
+# proved nothing about a laptop: tools/pre_merge.sh ran the `test_emit_*` file
+# of each tier and set no `REVL_` switch, so the rust/java semantic floor, the
+# toolchain-required tiers and the all-tier sweep ran in CI only.
+# tools/ci_suites.py now lists every CI step that sets one of them and
+# `pre_merge.sh --with=<job>` runs it with CI's value. This section requires
+# that to stay true: a gate that CI sets but no suite the local gate can run
+# sets goes red here, so adding a gate to ci.yml cannot quietly leave it out of
+# `make pre-merge` again.
+# --------------------------------------------------------------------------
+
+PRE_MERGE = ROOT / "tools" / "pre_merge.sh"
+CI_SUITES = ROOT / "tools" / "ci_suites.py"
+
+#: The switches whose job is to turn a skip into a failure or to switch the
+#: slow tier probes on. A `REVL_REQUIRE_*` name is matched by prefix, so a new
+#: one is covered the day it is added.
+_LOCAL_GATE_NAMES = frozenset({"REVL_CROSS_TIER_SLOW", "REVL_SWEEP_ALL_TIERS"})
+
+
+def _is_local_gate(name: str) -> bool:
+    return name in _LOCAL_GATE_NAMES or name.startswith("REVL_REQUIRE_")
+
+
+def _tokens(value: object) -> set[str]:
+    return {t for t in str(value).replace(",", " ").split() if t}
+
+
+def _ci_gate_values() -> dict[str, dict[str, set[str]]]:
+    """gate -> {job -> every value token a gating CI step of that job sets}."""
+    out: dict[str, dict[str, set[str]]] = {}
+    for job, _spec, _step, env in _gating_steps():
+        for name, value in env.items():
+            if _is_local_gate(str(name)):
+                out.setdefault(str(name), {}).setdefault(job, set()).update(_tokens(
+                    str(value).lower() if isinstance(value, bool) else value))
+    return out
+
+
+def _local_gate_gaps(ci_values: dict[str, dict[str, set[str]]], suites, mod
+                     ) -> dict[str, str]:
+    """gate -> why `pre_merge.sh --with=...` does not reproduce it. Two things
+    must hold. Every job that sets the gate in CI has a local recipe (else the
+    gate lists it SKIPPED, "no local recipe", forever) or only runs as a slice
+    of a job that does (`COVERED_JOBS`). And the suites that can run here set
+    the gate to every value CI sets it to, in any job."""
+    runnable = [s for s in suites
+                if s.job in mod.RECIPES and s.job not in mod.COVERED_JOBS]
+    gaps: dict[str, str] = {}
+    for gate, by_job in sorted(ci_values.items()):
+        local: set[str] = set()
+        for suite in runnable:
+            local |= _tokens(mod.switches(suite).get(gate, ""))
+        why = []
+        for job, wanted in sorted(by_job.items()):
+            if job not in mod.RECIPES and job not in mod.COVERED_JOBS:
+                why.append(f"CI job {job} sets it and has no local recipe")
+            elif not wanted <= local:
+                why.append(f"CI job {job} sets {sorted(wanted - local)}, which no "
+                           f"suite `make pre-merge` can run sets (local: "
+                           f"{sorted(local) or 'nothing'})")
+        if why:
+            gaps[gate] = "; ".join(why)
+    return gaps
+
+
+def test_every_ci_gate_is_set_on_the_local_pre_merge_path():
+    """The anti-silent-skip gates are not CI-only (issue #2210).
+
+    `test_every_tier_test_is_required_to_actually_run_in_some_ci_job` and the
+    checks above are satisfied by a CI job. A contributor running `make
+    pre-merge` runs none of it unless tools/ci_suites.py lists the CI step that
+    sets the gate, with the CI value, in a job it knows how to provision.
+    """
+    mod = load_by_path("ci_suites_env_gates_2210", CI_SUITES)
+    ci_values = _ci_gate_values()
+    # the three the issue names must be among them, or the filter is wrong
+    assert {"REVL_CROSS_TIER_SLOW", "REVL_REQUIRE_TIERS",
+            "REVL_SWEEP_ALL_TIERS"} <= set(ci_values), sorted(ci_values)
+    gaps = _local_gate_gaps(
+        ci_values, mod.ci_suites(WORKFLOWS / "ci.yml"), mod)
+    assert not gaps, (
+        "these gates are set in CI but by no suite the local pre-merge gate "
+        "can run, so they run in CI only:\n"
+        + "\n".join(f"  {g}: {why}" for g, why in gaps.items())
+        + "\n\nGive the CI job a recipe in tools/ci_suites.py RECIPES (and "
+        "keep it out of COVERED_JOBS), or set the gate in a job that has one."
+    )
+
+
+def test_the_pre_merge_script_runs_the_ci_suites_that_set_the_gates():
+    """The suites above are reachable from the script, not only from the tool."""
+    text = PRE_MERGE.read_text(encoding="utf-8")
+    assert "tools/ci_suites.py" in text and "--list" in text and "--run" in text, (
+        "tools/pre_merge.sh no longer lists and runs the CI-only suites "
+        "through tools/ci_suites.py, so no gate is set on the local path"
+    )
+    assert "--with=*)" in text, "tools/pre_merge.sh has no --with opt-in"
+    mod = load_by_path("ci_suites_env_gates_2210", CI_SUITES)
+    wanted = {s.id for s in mod.ci_suites(WORKFLOWS / "ci.yml")
+              if any(_is_local_gate(k) for k in s.env)
+              and s.job in mod.RECIPES and s.job not in mod.COVERED_JOBS}
+    assert wanted, "no CI suite sets a gate; the filter is wrong"
+    env = dict(os.environ)
+    env["PATH"] = os.path.dirname(sys.executable) + os.pathsep + env.get("PATH", "")
+    env.pop("REVL_PREMERGE_WITH", None)
+    out = subprocess.run(["sh", str(PRE_MERGE), "--plan", "--with=all"], cwd=ROOT,
+                         env=env, capture_output=True, text=True, timeout=300,
+                         check=False)
+    assert out.returncode == 0 and "nothing was run" in out.stdout, \
+        out.stdout + out.stderr
+    lines = {sid: next((ln for ln in out.stdout.splitlines()
+                        if ln.strip().startswith(f"ci-only {sid}:")), "")
+             for sid in sorted(wanted)}
+    bad = {sid: ln.strip()[:160] for sid, ln in lines.items()
+           if not ln or "not opted in" in ln or "no local recipe" in ln}
+    assert not bad, f"`pre_merge.sh --plan --with=all` does not run: {bad}"
+
+
+_LOCAL_JOB = """\
+on: push
+jobs:
+  {job}:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest tests/test_x.py -q
+        env:
+          {gate}: "{value}"
+"""
+
+
+@pytest.mark.parametrize("job, gate, value, ci_values, gap", [
+    # Positive controls: a job with a local recipe, same value.
+    ("conformance", "REVL_CROSS_TIER_SLOW", "1",
+     {"REVL_CROSS_TIER_SLOW": {"conformance": {"1"}}}, False),
+    ("conformance", "REVL_REQUIRE_TIERS", "py,ts,go,rust",
+     {"REVL_REQUIRE_TIERS": {"conformance": {"rust", "go"}}}, False),
+    # A job that only runs as a slice of another job's suite is reachable.
+    ("conformance", "REVL_REQUIRE_TIERS", "go",
+     {"REVL_REQUIRE_TIERS": {"root-suite-affected": {"go"}}}, False),
+    # Set only in a job the local gate has no recipe for.
+    ("nightly-extra", "REVL_CROSS_TIER_SLOW", "1",
+     {"REVL_CROSS_TIER_SLOW": {"nightly-extra": {"1"}}}, True),
+    # A value reproduced locally by another job does not hide a job with no
+    # recipe that also sets the gate.
+    ("conformance", "REVL_REQUIRE_TIERS", "py,ts,go,rust",
+     {"REVL_REQUIRE_TIERS": {"conformance": {"rust"}, "nightly-extra": {"rust"}}},
+     True),
+    # Set locally, but not to every tier CI requires.
+    ("conformance", "REVL_REQUIRE_TIERS", "py,ts,go",
+     {"REVL_REQUIRE_TIERS": {"conformance": {"go", "rust"}}}, True),
+    # Not set by any suite at all.
+    ("conformance", "REVL_UNRELATED", "1",
+     {"REVL_REQUIRE_TIERS": {"conformance": {"1"}}}, True),
+])
+def test_a_gate_ci_sets_but_the_local_gate_cannot_is_reported(
+        tmp_path, job, gate, value, ci_values, gap):
+    """The check can fail: driven over a workflow this test writes. The real
+    tree passing is not evidence by itself, since `switches()` copies CI's
+    value; these controls are what show the check can go red."""
+    mod = load_by_path("ci_suites_env_gates_2210", CI_SUITES)
+    ci = tmp_path / "ci.yml"
+    ci.write_text(_LOCAL_JOB.format(job=job, gate=gate, value=value),
+                  encoding="utf-8")
+    gaps = _local_gate_gaps(ci_values, mod.ci_suites(ci), mod)
+    assert bool(gaps) is gap, gaps
+
+
+#: Files whose rust skip is a module-level `skipif` on `rust_runtime_reason()`
+#: or a hand `which("cargo")`, not a `revl.test` runner. The tier check above
+#: cannot see them, so each is named and must be run by a CI step that sets
+#: `REVL_REQUIRE_TIERS` for rust; the root conftest.py then fails their skip
+#: (issue #2210).
+_HAND_PROBED_RUST_FILES = ("tests/test_component_name_2200.py",)
+
+
+@pytest.mark.parametrize("rel", _HAND_PROBED_RUST_FILES)
+def test_a_hand_probed_rust_test_is_run_where_rust_is_required(rel):
+    text = (ROOT / rel).read_text(encoding="utf-8")
+    assert re.search(r"which\(\s*[\"']cargo[\"']\s*\)|rust_runtime_reason\(", text), (
+        f"{rel} no longer probes for cargo by hand; drop it from "
+        "_HAND_PROBED_RUST_FILES"
+    )
+    covered = [job for job, run, required in _require_steps()
+               if "rust" in required
+               and any(_covers(target, rel) for target in _pytest_targets(run))]
+    assert covered, (
+        f"{rel} skips when cargo or cordis-rs is missing, and no CI step that "
+        f"runs it sets {_REQUIRE_ENV} for rust, so that skip reads green."
+    )

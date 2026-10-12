@@ -736,6 +736,8 @@ pub struct CBody {
     yok: bool,
 }
 
+pub type NmLn = CshBind;
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Cut {
     s: String,
@@ -18294,6 +18296,47 @@ fn ext_decl_verdict(ts: Vec<Token>, i: i64, declared: Vec<String>, gtys: Vec<Bin
 }
 
 fn extern_decl_refusal(ts: Vec<Token>, pg: Prog) -> Verd {
+    let pv = extern_parse_refusal(ts.clone(), pg.clone());
+    if (pv.v != "") {
+        return pv;
+    }
+    return extern_lower_refusal(ts.clone(), pg.clone());
+}
+
+fn extern_parse_refusal(ts: Vec<Token>, pg: Prog) -> Verd {
+    let declared = ext_declared_names(ts.clone(), pg.clone());
+    let al = alias_map(ts.clone());
+    let gtys = sig_binds(ts.clone(), case_binds(ts.clone(), al.clone()), al.clone());
+    let mut seen: Vec<String> = vec![];
+    let mut d = 0i64;
+    let mut i = 0i64;
+    while (i < ts.revl_length()) {
+        if atk(&ts, i, "{") {
+            d = (d).checked_add(1i64).expect("revl: Int overflow");
+        } else {
+            if atk(&ts, i, "}") {
+                d = (d).checked_sub(1i64).expect("revl: Int overflow");
+            } else {
+                if ((d == 0i64) && atw(&ts, i, "extern")) {
+                    let nm = ext_decl_name(&ts, i);
+                    if ((nm == "") || (!contains__m2(&seen, &nm))) {
+                        let v = ext_decl_verdict(ts.clone(), i, declared.clone(), gtys.clone(), al.clone());
+                        if (v.v.revl_slice(0i64, 3i64) == "G8|") {
+                            return v;
+                        }
+                    }
+                    if (nm != "") {
+                        seen.push(nm.clone());
+                    }
+                }
+            }
+        }
+        i = (i).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return no_verd();
+}
+
+fn extern_lower_refusal(ts: Vec<Token>, pg: Prog) -> Verd {
     let declared = ext_declared_names(ts.clone(), pg.clone());
     let al = alias_map(ts.clone());
     let gtys = sig_binds(ts.clone(), case_binds(ts.clone(), al.clone()), al.clone());
@@ -22949,6 +22992,124 @@ fn collect_refusals(ts: Vec<Token>, pg: Prog) -> Vec<Verd> {
     return append_verds(nl.refs.clone(), link_refusals(pg.clone(), vec![], vec![], vec![], vec![]));
 }
 
+fn nf_char(c: String) -> String {
+    let k = String::from("ABCDEFGHIJKLMNOPQRSTUVWXYZ").revl_index_of(&c);
+    if (k == (0i64).checked_sub(1i64).expect("revl: Int overflow")) {
+        return c;
+    }
+    return String::from("abcdefghijklmnopqrstuvwxyz").revl_slice(k, (k).checked_add(1i64).expect("revl: Int overflow"));
+}
+
+fn name_fold(s: &str) -> String {
+    let mut out = String::from("");
+    let mut i = 0i64;
+    while (i < s.revl_length()) {
+        let c = s.revl_slice(i, (i).checked_add(1i64).expect("revl: Int overflow"));
+        if (c != "_") {
+            out.push_str(&nf_char(c.clone()));
+        }
+        i = (i).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return out;
+}
+
+fn fold_msg(kind: &str, name: &str, other: &str, wh: &str) -> String {
+    return (((((((((kind.revl_concat(" `")).revl_concat(&name)).revl_concat("` collides with ")).revl_concat(&other)).revl_concat(" (")).revl_concat(&wh)).revl_concat("): the two names differ only in letter case or underscores, ")).revl_concat("and both reduce to `")).revl_concat(&name_fold(name))).revl_concat("`");
+}
+
+fn svc_decl_lines(ts: &[Token]) -> Vec<NmLn> {
+    let mut out: Vec<NmLn> = vec![];
+    let mut depth = 0i64;
+    let mut i = 0i64;
+    while (i < ts.revl_length()) {
+        let t = (ts)[(i) as usize].clone();
+        if (t.kind == "{") {
+            depth = (depth).checked_add(1i64).expect("revl: Int overflow");
+        } else {
+            if (t.kind == "}") {
+                depth = (depth).checked_sub(1i64).expect("revl: Int overflow");
+            } else {
+                if (((depth == 0i64) && atw(ts, i, "service")) && atk(ts, (i).checked_add(1i64).expect("revl: Int overflow"), "ident")) {
+                    out.push(CshBind { name: tkc(ts, (i).checked_add(1i64).expect("revl: Int overflow")).text, line: t.line });
+                }
+            }
+        }
+        i = (i).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return out;
+}
+
+fn comp_decl_lines(cs: &[CompD]) -> Vec<NmLn> {
+    let mut out: Vec<NmLn> = vec![];
+    let mut i = 0i64;
+    while (i < cs.revl_length()) {
+        out.push(CshBind { name: (cs)[(i) as usize].name.clone(), line: (cs)[(i) as usize].line.clone() });
+        i = (i).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return out;
+}
+
+fn fold_in_program(kind: &str, ds: &[NmLn]) -> String {
+    let mut j = 0i64;
+    while (j < ds.revl_length()) {
+        let key = name_fold(&(ds)[(j) as usize].name);
+        let mut p = 0i64;
+        while ((p < j) && (name_fold(&(ds)[(p) as usize].name) != key)) {
+            p = (p).checked_add(1i64).expect("revl: Int overflow");
+        }
+        if ((p < j) && ((ds)[(p) as usize].name != (ds)[(j) as usize].name)) {
+            return tagged("FOLD", &fold_msg(kind, &(ds)[(j) as usize].name, &(((kind.revl_concat(" `")).revl_concat(&(ds)[(p) as usize].name)).revl_concat("`")), &(String::from("line ").revl_concat(&((ds)[(p) as usize].line).to_string()))));
+        }
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return String::from("");
+}
+
+fn fold_running(kind: &str, ds: &[NmLn], held: &[String]) -> String {
+    let mut j = 0i64;
+    while (j < ds.revl_length()) {
+        if (!contains__m2(held, &(ds)[(j) as usize].name)) {
+            let key = name_fold(&(ds)[(j) as usize].name);
+            let mut k = 0i64;
+            while ((k < held.revl_length()) && (name_fold(&(held)[(k) as usize]) != key)) {
+                k = (k).checked_add(1i64).expect("revl: Int overflow");
+            }
+            if (k < held.revl_length()) {
+                return tagged("FOLD", &fold_msg(kind, &(ds)[(j) as usize].name, &((((String::from("running ").revl_concat(&kind)).revl_concat(" `")).revl_concat(&(held)[(k) as usize])).revl_concat("`")), "in the manifest"));
+            }
+        }
+        j = (j).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return String::from("");
+}
+
+fn fold_after_parse(ts: Vec<Token>, pg: Prog, fold: String) -> String {
+    if (fold == "") {
+        return String::from("");
+    }
+    let ev = extern_parse_refusal(ts.clone(), pg.clone());
+    if (ev.v != "") {
+        return ev.v;
+    }
+    return fold;
+}
+
+fn program_name_folds(ts: Vec<Token>, pg: Prog) -> String {
+    let sv = fold_in_program("service", &svc_decl_lines(&ts));
+    if (sv != "") {
+        return fold_after_parse(ts.clone(), pg.clone(), sv.clone());
+    }
+    return fold_after_parse(ts.clone(), pg.clone(), fold_in_program("component", &comp_decl_lines(&pg.comps)));
+}
+
+fn running_name_folds(ts: Vec<Token>, pg: Prog, svcs: Vec<String>, kept: Vec<String>) -> String {
+    let sv = fold_running("service", &svc_decl_lines(&ts), &svcs);
+    if (sv != "") {
+        return fold_after_parse(ts.clone(), pg.clone(), sv.clone());
+    }
+    return fold_after_parse(ts.clone(), pg.clone(), fold_running("component", &comp_decl_lines(&pg.comps), &kept));
+}
+
 pub fn admit_src(src: String) -> String {
     let ts = lex_src(src.clone());
     let fgn = foreign_scan_ts(&ts);
@@ -22973,6 +23134,10 @@ pub fn admit_src(src: String) -> String {
     let rph = realm_placeholder_scan(&ts);
     if (rph.v != "") {
         return rph.v;
+    }
+    let fold = program_name_folds(ts.clone(), pg.clone());
+    if (fold != "") {
+        return fold;
     }
     let refs = collect_refusals(ts.clone(), pg.clone());
     if (refs.revl_length() == 0i64) {
@@ -23239,6 +23404,9 @@ fn parse_row(row: String, man: Manifest) -> Manifest {
             let b = cut(a.rest.clone(), "/");
             return Manifest { provs: man.provs.revl_push(Prov3 { key: b.s.clone(), rlm: b.rest.clone(), comp: a.s.clone() }), reqs: man.reqs.clone(), routes: man.routes.clone(), hands: man.hands.clone(), mnames: add_mname(man.mnames.clone(), a.s.clone()), repl: man.repl.clone(), halted: man.halted, svcs: man.svcs.clone(), svcsKnown: man.svcsKnown, svcOps: man.svcOps.clone(), bad: String::from("") };
         }
+        if bare_ident(&row, 0i64) {
+            return Manifest { provs: man.provs.clone(), reqs: man.reqs.clone(), routes: man.routes.clone(), hands: man.hands.clone(), mnames: add_mname(man.mnames.clone(), row.clone()), repl: man.repl.clone(), halted: man.halted, svcs: man.svcs.clone(), svcsKnown: man.svcsKnown, svcOps: man.svcOps.clone(), bad: String::from("") };
+        }
     }
     return man_bad(man.clone(), &((String::from("unrecognized manifest row `").revl_concat(&row)).revl_concat("`")));
 }
@@ -23486,6 +23654,14 @@ pub fn admit_ambient(src: String, manifest: String) -> String {
     let keptReqs = keep_reqs(man.reqs.clone(), drop.clone(), 0i64, vec![]);
     let keptRoutes = keep_routes(man.routes.clone(), drop.clone(), 0i64, vec![]);
     let keptNames = keep_names(man.mnames.clone(), drop.clone(), 0i64, vec![]);
+    let pfold = program_name_folds(ts.clone(), pg.clone());
+    if (pfold != "") {
+        return pfold;
+    }
+    let rfold = running_name_folds(ts.clone(), pg.clone(), man.svcs.clone(), keptNames.clone());
+    if (rfold != "") {
+        return rfold;
+    }
     let lost = lost_provs(split_provs(man.provs.clone(), drop.clone(), true, 0i64, vec![]), live_provs(live.clone(), 0i64, keptProvs.clone()), 0i64, vec![]);
     let nl = collect_nonlink(ts.clone(), pg.clone(), man.hands.clone(), withdrawal_refusals(&keptReqs, &lost, &pg.comps, 0i64), man.svcs.clone(), manifest_svcs_known(man.clone()), man.svcOps.clone());
     if nl.done {
@@ -33566,7 +33742,39 @@ fn dollar_interp(text: &str) -> bool {
 }
 
 fn is_ws(c: &str) -> bool {
-    return { let _rc: &str = &c; _rc == " " || _rc == "\t" || _rc == "\n" || _rc == "\r" };
+    if { let _rc: &str = &c; _rc == " " || _rc == "\t" || _rc == "\n" || _rc == "\r" } {
+        return true;
+    }
+    return is_py_space_extra(code0(c));
+}
+
+fn is_py_space_extra(cc: i64) -> bool {
+    if ((cc == 11i64) || (cc == 12i64)) {
+        return true;
+    }
+    if ((cc >= 28i64) && (cc <= 31i64)) {
+        return true;
+    }
+    if (((cc == 133i64) || (cc == 160i64)) || (cc == 5760i64)) {
+        return true;
+    }
+    if ((cc >= 8192i64) && (cc <= 8202i64)) {
+        return true;
+    }
+    if (((cc == 8232i64) || (cc == 8233i64)) || (cc == 8239i64)) {
+        return true;
+    }
+    return ((cc == 8287i64) || (cc == 12288i64));
+}
+
+fn is_py_space(c: &str, cc: i64) -> bool {
+    if { let _rc: &str = &c; _rc == " " || _rc == "\t" || _rc == "\n" || _rc == "\r" } {
+        return true;
+    }
+    if ((cc < 32i64) || (cc >= 133i64)) {
+        return is_py_space_extra(cc);
+    }
+    return false;
 }
 
 fn trim__m7(s: &str) -> String {
@@ -33765,7 +33973,7 @@ fn step(source: &str, i: i64, line: i64, source_revl_cs: &[char]) -> Step {
     if (cc == 10i64) {
         return Step { i: (i).checked_add(1i64).expect("revl: Int overflow"), line: (line).checked_add(1i64).expect("revl: Int overflow"), tok: none.clone() };
     }
-    if { let _rc: &str = &c; _rc == " " || _rc == "\t" || _rc == "\n" || _rc == "\r" } {
+    if is_py_space(&c, cc) {
         return Step { i: (i).checked_add(1i64).expect("revl: Int overflow"), line: line, tok: none.clone() };
     }
     if ({ let _rsn = source_revl_cs.len() as i64; let _rsa = { let x = (i) as i64; let x = if x < 0 { x + _rsn } else { x }; x.max(0).min(_rsn) }; let _rsb = { let x = ((i).checked_add(2i64).expect("revl: Int overflow")) as i64; let x = if x < 0 { x + _rsn } else { x }; x.max(0).min(_rsn).max(_rsa) }; source_revl_cs.iter().skip(_rsa as usize).take((_rsb - _rsa) as usize).collect::<String>() } == "//") {
@@ -33897,10 +34105,7 @@ fn step(source: &str, i: i64, line: i64, source_revl_cs: &[char]) -> Step {
             }
             let backend = { let _rsn = source_revl_cs.len() as i64; let _rsa = { let x = ((i).checked_add(1i64).expect("revl: Int overflow")) as i64; let x = if x < 0 { x + _rsn } else { x }; x.max(0).min(_rsn) }; let _rsb = { let x = (jb.clone()) as i64; let x = if x < 0 { x + _rsn } else { x }; x.max(0).min(_rsn).max(_rsa) }; source_revl_cs.iter().skip(_rsa as usize).take((_rsb - _rsa) as usize).collect::<String>() };
             let mut kb = jb.clone();
-            while (((kb < n1) && ({ source_revl_cs[(kb.clone()) as usize] as u32 as i64 } != 10i64)) && { let _rc: &str = &({ source_revl_cs[(kb.clone()) as usize].to_string() }); _rc == " " || _rc == "\t" || _rc == "\n" || _rc == "\r" }) {
-                kb = (kb).checked_add(1i64).expect("revl: Int overflow");
-            }
-            while ((kb < n1) && ({ source_revl_cs[(kb.clone()) as usize] as u32 as i64 } == 10i64)) {
+            while ((kb < n1) && is_py_space(&({ source_revl_cs[(kb.clone()) as usize].to_string() }), { source_revl_cs[(kb.clone()) as usize] as u32 as i64 })) {
                 kb = (kb).checked_add(1i64).expect("revl: Int overflow");
             }
             if ((kb < n1) && ({ source_revl_cs[(kb.clone()) as usize].to_string() } == "{")) {

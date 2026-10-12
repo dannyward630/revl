@@ -315,3 +315,21 @@ def test_audit_document_leaves_a_fileless_component_without_a_file_key():
     assert components, "expected at least one component to check"
     for comp in components:
         assert "file" not in comp, f"file key injected: {comp!r}"
+
+
+def test_the_wire_names_a_running_component_that_has_no_other_row():
+    """Issue #2289: a running component that provides, requires, routes and
+    exports nothing gets a presence row, its bare name, at its declaration
+    position. A component with any other row gets none, so those wires keep
+    their bytes."""
+    from revl.manifest import manifest_wire
+    running = compile_source(
+        "service Store {\n  fn get(key: Str) -> Str\n}\n"
+        "component Noop {\n}\n"
+        "component Kv provides a: Store {\n  provide a {\n"
+        "    fn get(key) = key\n  }\n}\n"
+        "component Lone {\n}\n", "running.rvl")
+    rows = manifest_wire(running).split(";")
+    assert rows[:3] == ["Noop", "Kv/a/", "Lone"], rows
+    assert rows.count("Kv") == 0, rows
+    assert manifest_wire(running, replacing=("Noop",)).split(";")[-1] == "-Noop"

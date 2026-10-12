@@ -311,3 +311,71 @@ def test_a_hot_swap_with_a_name_that_stays_apart_is_admitted():
     document = compile_source(INCOMING.replace("Kvstore", "Cache"),
                               "incoming.rvl", manifest=running)
     assert [c["name"] for c in document["components"]] == ["Cache"]
+
+
+# Issue #2334: a hot-swap's incoming SERVICE against the running composition's
+# services. A running service is never withdrawn by an admission (an incoming
+# service of the same name redeclares it, gated by the replacement relation), so
+# an incoming service whose name folds onto a running one under a different
+# spelling leaves the composition holding the pair a single compile refuses.
+
+RUNNING_SERVICE = """service KVStore {
+  fn get(key: Str) -> Str
+}
+
+component A provides a: KVStore {
+  provide a {
+    fn get(key) = key
+  }
+}
+"""
+
+INCOMING_SERVICE = """service Kvstore {
+  fn put(key: Str) -> Str
+}
+
+component B provides b: Kvstore {
+  provide b {
+    fn put(key) = key
+  }
+}
+"""
+
+
+def test_a_hot_swap_refuses_a_service_folded_onto_a_running_service():
+    running = compile_source(RUNNING_SERVICE, "running.rvl")
+    with pytest.raises(RevlError) as info:
+        compile_source(INCOMING_SERVICE, "incoming.rvl", manifest=running)
+    error = info.value
+    assert Path(error.filename).name == "incoming.rvl"
+    assert error.line == 1, error
+    assert ("service `Kvstore` collides with running service `KVStore`"
+            in error.message), error.message
+    assert "reduce to `kvstore`" in error.message
+    assert "`KVStore`" in (error.hint or ""), error.hint
+
+
+def test_a_hot_swap_refuses_a_folded_service_through_compile_files(tmp_path):
+    running = compile_source(RUNNING_SERVICE, "running.rvl")
+    incoming = tmp_path / "incoming.rvl"
+    incoming.write_text(INCOMING_SERVICE.replace("Kvstore", "Kv_store"),
+                        encoding="utf-8")
+    with pytest.raises(RevlError) as info:
+        compile_files([str(incoming)], manifest=running, replacing=("A",))
+    error = info.value
+    assert Path(error.filename).name == "incoming.rvl"
+    assert ("service `Kv_store` collides with running service `KVStore`"
+            in error.message), error.message
+
+
+def test_a_hot_swap_redeclaring_or_adding_apart_services_keeps_its_answer():
+    running = compile_source(RUNNING_SERVICE, "running.rvl")
+    apart = compile_source(INCOMING_SERVICE.replace("Kvstore", "Cache"),
+                           "incoming.rvl", manifest=running)
+    assert sorted(apart["services"]) == ["Cache", "KVStore"]
+    # the exact name is a redeclaration, which the replacement relation admits
+    # when it keeps every running toucher's operations
+    redeclared = compile_source(
+        "service KVStore {\n  fn get(key: Str) -> Str\n}\n",
+        "incoming.rvl", manifest=running)
+    assert sorted(redeclared["services"]["KVStore"]["methods"]) == ["get"]
