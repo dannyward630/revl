@@ -1046,6 +1046,29 @@ _UNLINKABLE = {
             "type P = Cell\n"
             "pub service Store { fn put(xs: List[P]) -> Str }\n"),
     }),
+    # A private alias declared indented, or on one line after the record
+    # that names it, is a top-level declaration all the same.
+    "private_alias_indented": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "  type Id = Int\n"
+            "pub type Row = { id: Id }\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    "private_alias_same_line": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub type Row = { id: Id }; type Id = Int\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    # The reference carries `Row`; the native producer does not lower a
+    # second declaration on one line, so the link refuses rather than drop it.
+    "pub_type_same_line": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "type H = { h: Int }; pub type Row = { id: Int }\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
     # Issue #2308: the reference renames the document's private `Item` apart
     # (`Item__m0`) from the `Item` the imported service carries.
     "carried_type_collision": ("collides", {
@@ -1122,6 +1145,13 @@ _LINKED_AS_REFERENCE = {
             "pub\ttype  Item = { ref: Str, qty: Int }\n"
             "pub service Store { fn put(row: Item) -> Str }\n"),
     }),
+    # A `pub type` declared indented is carried like any other.
+    "pub_type_indented": (("py", "ts", "go", "java", "rust"), {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "  pub type Row = { id: Int }\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
     # A pure dependency whose extern bodies hold column-0 host lines: they are
     # inside the declaration, not top-level declarations of their own.
     "column0_extern_body": (("py", "ts"), {
@@ -1152,6 +1182,18 @@ def test_native_driver_links_as_the_reference_does(
     for name, text in _LINKED_AS_REFERENCE[case][1].items():
         (tmp_path / name).write_text(text, encoding="utf-8")
     doc = tmp_path / "doc.rvl"
+    want = reference_emit[tier](compile_files([str(doc)]))
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
+    assert got == want, got[:200]
+
+
+@pytest.mark.parametrize("tier", ("py", "go", "java", "rust"))
+def test_native_driver_links_the_truc_cli_as_the_reference_does(
+        compile_rvl, reference_emit, tier):
+    """Issue #2308: `src/revl/truc/components/cli.rvl` imports the services
+    `Assembler` and `Shipper` on their own and links byte for byte today. The
+    carried-type refusals must not start refusing it."""
+    doc = ROOT / "src" / "revl" / "truc" / "components" / "cli.rvl"
     want = reference_emit[tier](compile_files([str(doc)]))
     got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
     assert got == want, got[:200]

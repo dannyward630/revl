@@ -133,6 +133,10 @@ path, which is what the resolution needs:
   `type Id = Int`): the producer expands it in the service row and in record
   fields and writes no entry for it, so the link would carry `Cell` where the
   reference carries `Al`, or print `id: Int` where the reference keeps `id: Id`.
+  The module's type declarations are found by token at bracket depth 0, outside
+  strings, comments and host bodies, at any column, so an indented declaration
+  or a second one on the same line counts. The native producer does not lower
+  that second one, so such a module is refused.
 
 This is the honest multi-file native compile: the whole chain still runs in revl,
 and the only host crossing is the read the reference loader also performs. It

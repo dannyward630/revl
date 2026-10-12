@@ -1090,45 +1090,88 @@ fn ul_key_value(s: Str, key: Str) -> Str {
   return s.slice(ul_top_key(s, key), end)
 }
 
-// The index just past the keyword `word` at `at` of `line` when at least one
-// space or tab follows it, or -1.
-fn ul_keyword_end(line: Str, at: Int, word: Str) -> Int {
-  let end = at + word.length()
-  if (line.slice(at, end) != word) { return 0 - 1 }
-  let c = line.slice(end, end + 1)
-  if (c == "") { return 0 - 1 }
-  let k = c.charCodeAt(0)
-  if ((k != 32) && (k != 9)) { return 0 - 1 }
-  return ul_skip_ws(line, end)
+// The identifier starting at `at` of `s`, or "" when none starts there.
+fn ul_word_at(s: Str, at: Int) -> Str {
+  if (!ul_is_word_start(s.slice(at, at + 1))) { return "" }
+  var j = at + 1
+  while ((j < s.length()) && ul_is_word_char(s.slice(j, j + 1))) { j += 1 }
+  return s.slice(at, j)
 }
 
-// The names `source` declares `type` at column 0, `pub` ones only unless
-// `private` is set (any run of spaces or tabs between the words), in order.
-// The native IR keeps no visibility for a type, so it is read off the text.
+// The index of the next token at or after `i` of `s`: whitespace, `//` line
+// comments and `/* */` block comments skipped.
+fn ul_skip_trivia(s: Str, i: Int) -> Int {
+  var j = ul_skip_ws(s, i)
+  while ((s.slice(j, j + 2) == "//") || (s.slice(j, j + 2) == "/*")) {
+    if (s.slice(j, j + 2) == "//") { j = ul_skip_ws(s, ul_line_end(s, j)) }
+    else {
+      let e = ul_find(s, "*/", j + 2)
+      if (e < 0) { return s.length() }
+      j = ul_skip_ws(s, e + 2)
+    }
+  }
+  return j
+}
+
+// The type name a `type` keyword ending at `kw_end` declares, or "".
+fn ul_type_name_after(s: Str, kw_end: Int) -> Str {
+  return ul_word_at(s, ul_skip_trivia(s, kw_end))
+}
+
+// The names `source` declares with a TOP-LEVEL `type` (`pub` ones only unless
+// `private` is set), in order. The keyword is found by token, at any column,
+// at bracket depth 0 and outside strings, comments and host bodies, so an
+// indented declaration or two on one line count, and a `type` field of a
+// record or a host-code word does not. The native IR keeps no visibility for a
+// type, so it is read off the text.
 fn ul_type_decls(source: Str, private: Bool) -> List[Str] {
   var out: List[Str] = []
+  var depth = 0
   var i = 0
   let n = source.length()
   while (i < n) {
-    let eol = ul_line_end(source, i)
-    let line = source.slice(i, eol)
-    var at = 0 - 1
-    let after_pub = ul_keyword_end(line, 0, "pub")
-    if (after_pub >= 0) { at = ul_keyword_end(line, after_pub, "type") }
+    let past = ul_skip_opaque(source, i)
+    if (past > i) { i = past }
     else {
-      if (private) { at = ul_keyword_end(line, 0, "type") }
+      let ch = source.slice(i, i + 1)
+      if (ul_is_word_start(ch)) {
+        let w = ul_word_at(source, i)
+        i += w.length()
+        if (depth == 0) {
+          var kw_end = 0 - 1
+          if (w == "pub") {
+            let k = ul_skip_trivia(source, i)
+            if (ul_word_at(source, k) == "type") { kw_end = k + 4 }
+          }
+          if ((w == "type") && private) { kw_end = i }
+          if (kw_end >= 0) {
+            i = kw_end
+            let name = ul_type_name_after(source, i)
+            if (name != "") { out = out.push(name) }
+          }
+        }
+      }
+      else {
+        if ((ch == "{") || (ch == "[") || (ch == "(")) { depth += 1 }
+        if ((ch == "}") || (ch == "]") || (ch == ")")) { depth -= 1 }
+        i += 1
+      }
     }
-    if (at >= 0) {
-      var j = at
-      while ((j < line.length()) && ul_is_word_char(line.slice(j, j + 1))) { j += 1 }
-      if (j > at) { out = out.push(line.slice(at, j)) }
-    }
-    i = eol + 1
   }
   return out
 }
 
-// The names `source` declares `pub type` at column 0, in order.
+// The index just past the string, comment or host body starting at `i` of
+// `s`, or `i` itself when none starts there.
+fn ul_skip_opaque(s: Str, i: Int) -> Int {
+  let two = s.slice(i, i + 2)
+  if (s.slice(i, i + 1) == "\"") { return ul_dquote_end(s, i) }
+  if ((two == "//") || (two == "/*")) { return ul_skip_trivia(s, i) }
+  if (s.slice(i, i + 1) == "@") { return ul_host_body_end(s, i) }
+  return i
+}
+
+// The names `source` declares with a top-level `pub type`, in order.
 fn ul_pub_types(source: Str) -> List[Str] { return ul_type_decls(source, false) }
 
 // The types an imported service carries, in its module's declaration order, or
@@ -1684,6 +1727,14 @@ test "an imported service carries the public types it names (issue #2308)" {
   assert both.length() == 2
   assert both[0] == "P"
   assert both[1] == "Q"
+  // By token at any column and depth 0: indented, two on a line, and never a
+  // record field, a string or a host body.
+  let flat = ul_type_decls("  type A = Int; pub type B = { type: A }".concat(nl)
+    .concat("// type C").concat(nl).concat("extern pure fn e() -> Int = @py { type = 1 }"), true)
+  assert flat.length() == 2
+  assert flat[0] == "A"
+  assert flat[1] == "B"
+  assert ul_pub_types("  pub type B = A; type A = Int")[0] == "B"
   // The closure is public-only, transitive, and in declaration order.
   let mod_ir = "{\"types\": {\"C\": {\"fields\": {\"x\": \"Int\"}}, \"H\": {\"fields\": {}}, \"T\": {\"cases\": [{\"name\": \"K\", \"payload\": \"C\"}]}, \"R\": {\"fields\": {\"t\": \"T\", \"h\": \"H\"}}}}"
   let mod_src = "pub type C = { x: Int }".concat(nl).concat("type H = {}").concat(nl)
