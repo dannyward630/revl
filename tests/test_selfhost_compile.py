@@ -2606,3 +2606,103 @@ def test_the_type_and_expression_rules_refuse_nothing_the_reference_reads(compil
     parse_text(text, "x.rvl")
     scan = compile_rvl["stmt_parse_scan"](compile_rvl["lex_src"](text))
     assert scan["v"] == ""
+
+
+# Issue #2399: the reference lowers `test` and `prop test` bodies through the
+# statement rules a `fn` body goes through, and `_lift_block_arm` refuses a
+# block arm it cannot lift. The self-host checked neither, so it emitted these
+# documents. Each one is refused by the reference at type-check or lowering,
+# and the self-host now refuses it with the reference's own message.
+def _test_doc(body):
+    return ("fn d(n: Int) -> Int {\n  return n * 2\n}\n"
+            "test \"d\" {\n" + body + "\n  assert true\n}\n")
+
+
+def _prop_doc(body):
+    return "prop test \"p\" (n: Int) {\n" + body + "\n  assert true\n}\n"
+
+
+_ISSUE_2399_REFUSED = {
+    "test_body_empty_map": _test_doc("  let m: Map[Str, Int] = {}"),
+    "arm_reads_untyped_binder": (
+        "fn f(o: Option[List[Int]]) -> Int {\n"
+        "  return match o { Some(xs) => { let k = xs.length\n k }, None => 0 }\n}\n"),
+    "test_body_empty_list_as_map": _test_doc("  let m: Map[Str, Int] = []"),
+    "test_body_empty_record_as_list": _test_doc("  let m: List[Int] = {}"),
+    "test_body_var_empty_map": _test_doc("  var m: Map[Str, Int] = {}"),
+    "test_body_argument_empty_map": (
+        "fn g(m: Map[Str, Int]) -> Int {\n  return 1\n}\n"
+        "test \"t\" {\n  assert g({}) == 1\n}\n"),
+    "test_body_let_mismatch": _test_doc("  let m: Int = \"s\""),
+    "second_test_refuses": (
+        "test \"a\" {\n  assert true\n}\n"
+        "test \"b\" {\n  let m: Int = \"s\"\n  assert true\n}\n"),
+    "prop_body_empty_map": _prop_doc("  let m: Map[Str, Int] = {}"),
+    "prop_body_let_mismatch": _prop_doc("  let m: Str = n"),
+    "test_body_block_arm": (
+        "test \"t\" {\n  let o: Opt[Int] = Some(1)\n"
+        "  let v = match o { Some(x) => { let k = x\n k }, None => 0 }\n"
+        "  assert v == 1\n}\n"),
+    "prop_body_block_arm": _prop_doc(
+        "  let v = match Some(n) { Some(x) => { let k = x\n k }, None => 0 }"),
+    "duplicate_test": "test \"t\" {\n  assert true\n}\ntest \"t\" {\n  assert true\n}\n",
+    "duplicate_prop_test": _prop_doc("") + _prop_doc(""),
+    "arm_reads_untyped_let": (
+        "extern pure fn g() = @py { return 1 }\n"
+        "fn f(n: Int) -> Int {\n  let a = g()\n"
+        "  let v = match Some(n) { Some(x) => { let k = a\n x }, None => 0 }\n"
+        "  return v\n}\n"),
+    "arm_reads_outer_untyped_binder": (
+        "fn f(o: Option[Int], p: Opt[Int]) -> Int {\n"
+        "  return match o { Some(x) => match p { Some(y) => { let k = x\n k + y }, "
+        "None => 0 }, None => 0 }\n}\n"),
+    "arm_binder_of_undeclared_type": (
+        "fn f(o: Maybe[Int]) -> Int {\n"
+        "  return match o { Some(x) => { let k = x\n k }, None => 0 }\n}\n"),
+}
+
+# Documents the reference compiles, each next to one of the rules above: the
+# gate must not refuse any of them.
+_ISSUE_2399_ADMITTED = {
+    "test_body_empty_list": _test_doc("  let m: List[Int] = []"),
+    "test_body_untyped_empty_record": _test_doc("  let m = {}"),
+    "two_tests": "test \"a\" {\n  assert true\n}\ntest \"b\" {\n  assert 1 == 1\n}\n",
+    "prop_body": _prop_doc("  let k: Int = n + 1"),
+    "arm_typed_binder": (
+        "fn f(o: Opt[List[Int]]) -> Int {\n"
+        "  return match o { Some(xs) => { let k = xs.length\n k }, None => 0 }\n}\n"),
+    "arm_does_not_read_binder": (
+        "fn f(o: Option[List[Int]]) -> Int {\n"
+        "  return match o { Some(xs) => { let k = 1\n k }, None => 0 }\n}\n"),
+    "expression_arm_reads_binder": (
+        "fn f(o: Option[List[Int]]) -> Int {\n"
+        "  return match o { Some(xs) => xs.length, None => 0 }\n}\n"),
+    "arm_binder_of_declared_variant": (
+        "type Sh = Circle(Int) | Pt\nfn f(s: Sh) -> Int {\n"
+        "  return match s { Circle(r) => { let k = r\n k }, Pt => 0 }\n}\n"),
+    "arm_rebinds_untyped_name": (
+        "fn f(o: Option[Int]) -> Int {\n"
+        "  return match o { Some(x) => { let x2 = 1\n x2 }, None => 0 }\n}\n"),
+}
+
+
+def _reference_refusal(text):
+    return _reference_message(lambda: compile_source(text, "x.rvl"))
+
+
+@pytest.mark.parametrize("tier", ["py", "go", "java", "rust"])
+@pytest.mark.parametrize("name", sorted(_ISSUE_2399_REFUSED))
+def test_the_self_host_refuses_what_the_reference_checker_refuses(compile_rvl, name, tier):
+    text = _ISSUE_2399_REFUSED[name]
+    want = _reference_refusal(text)
+    assert want != ""
+    got = compile_rvl["compile_to_at"](text, tier, "x.rvl")
+    assert got.startswith("REFUSED|"), got[:120]
+    assert got.split("|", 2)[2] == want
+
+
+@pytest.mark.parametrize("name", sorted(_ISSUE_2399_ADMITTED))
+def test_the_checker_rules_of_issue_2399_admit_what_the_reference_compiles(admit, name):
+    text = _ISSUE_2399_ADMITTED[name]
+    assert _reference_refusal(text) == ""
+    assert admit(text) == ""
