@@ -1,1 +1,1 @@
-{"case": "examples/rejections/g6_impure_statement.rvl", "buckets": ["no-objection-out-of-slice"]}
+{"case": "examples/rejections/g6_impure_statement.rvl", "buckets": ["refuse-out-of-slice/BAD"]}
