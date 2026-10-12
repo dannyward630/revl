@@ -2474,3 +2474,135 @@ def test_a_host_body_the_self_host_lexer_closes_elsewhere_is_refused(compile_rvl
         parse_text(text, "x.rvl")
     assert compile_rvl["ad_module_refusal"](text) != ""
     assert compile_rvl["compile_to"](text, "py").startswith("REFUSED|")
+
+
+# Issue #2396: where `expr_at` or `type_at` failed, the statement grammar left
+# the rest unread, and top-level `fn` and `test` bodies were not read by it at
+# all, so these forms the reference refuses were admitted and emitted.
+def _method(body):
+    return _SVC + (
+        "component C requires kv: K provides s: K {\n  provide s {\n"
+        "    fn put(k: Str) -> Int {\n" + body + "\n    }\n  }\n}\n")
+
+
+def _fn(body):
+    return "fn f(n: Int) -> Int {\n" + body + "\n}\n"
+
+
+_ISSUE_2396 = {
+    "else_if_expression": _method(
+        "      let n = 3\n"
+        "      return if (n > 2) { 1 } else if (n > 1) { 2 } else { 3 }"),
+    "fn_type_annotation": _method(
+        "      let f: fn(Int) -> Int = (x) => x\n      return 1"),
+    "tuple_type_and_value": _method(
+        "      let t: (Int, Str) = (1, \"a\")\n      return 1"),
+    "match_arm_ending_in_if": _method(
+        "      let v = match Some(1) { Some(x) => { if (x > 0) { x } else { 0 } }, None => 0 }\n"
+        "      return v"),
+}
+
+
+@pytest.mark.parametrize("tier", ["py", "go", "java", "rust"])
+@pytest.mark.parametrize("name", sorted(_ISSUE_2396))
+def test_the_self_host_refuses_the_forms_of_issue_2396(compile_rvl, name, tier):
+    from revl.parser import parse_text
+    text = _ISSUE_2396[name]
+    with pytest.raises(RevlError):
+        parse_text(text, "x.rvl")
+    got = compile_rvl["compile_to_at"](text, tier, "x.rvl")
+    assert got.startswith("REFUSED|"), got[:120]
+
+
+# The same shapes elsewhere: a top-level `fn` body, a plain `test` body, an
+# effect block's setup, an extern signature, and the other rules of
+# `type_`, `_if_expr`, `_match_expr`, `_match_block_arm` and `_primary`.
+_TYPE_EXPR_REFUSED = {
+    "fn_body_else_if": _fn("return if (n > 2) { 1 } else if (n > 1) { 2 } else { 3 }"),
+    "fn_body_fn_type": _fn("let f: fn(Int) -> Int = (x) => x\nreturn 1"),
+    "fn_body_tuple_type": _fn("let t: (Int, Str) = n\nreturn 1"),
+    "fn_body_arm_ending_in_if": _fn(
+        "let v = match Some(1) { Some(x) => { let y = 1; if (x > 0) { x } else { y } }, None => 0 }\n"
+        "return v"),
+    "test_body_else_if": (
+        "test \"t\" {\n  let n = 1\n"
+        "  assert (if (n > 2) { 1 } else if (n > 1) { 2 } else { 3 }) == 3\n}\n"),
+    "nested_else_if": _fn("let v = [1, if (n > 1) { 2 } else if (n > 0) { 3 } else { 4 }]\nreturn 1"),
+    "if_expression_without_else": _fn("let v = 1 + if (n > 1) { 2 }\nreturn v"),
+    "arm_ending_in_while": _fn(
+        "let v = match Some(1) { Some(x) => { while (x > 0) { } }, None => 0 }\nreturn v"),
+    "arm_ending_in_let": _fn("let v = match Some(1) { Some(x) => { let y = x }, None => 0 }\nreturn v"),
+    "return_in_arm": _fn("let v = match Some(1) { Some(x) => { return x }, None => 0 }\nreturn v"),
+    "break_leaving_arm": _fn(
+        "while (true) { let v = match Some(1) { Some(x) => { break; x }, None => 0 } }\nreturn 1"),
+    "literal_match_pattern": _fn("let v = match n { 1 => 2, _ => 3 }\nreturn v"),
+    "ternary_without_colon": _fn("let v = n > 1 ? 2 3\nreturn v"),
+    "list_comprehension": _fn("let v = [x for x of [1]]\nreturn 1"),
+    "keyword_type": _fn("let s: match = n\nreturn 1"),
+    "type_arguments_without_comma": _method("      let s: List[Int Str] = []\n      return 1"),
+    "stream_state_index": _method("      let s: Stream[Int, Foo] = k\n      return 1"),
+    "arrow_parameter_fn_type": _fn("let g = (h: fn(Int) -> Int) => h(1)\nreturn 1"),
+    "hole_tuple_type": _fn("let v = hole[(Int, Str)] \"x\"\nreturn 1"),
+    "extern_parameter_tuple_type": "extern pure fn g(a: (Int, Str)) -> Int = @py { return 1 }\n",
+    "effect_block_ending_in_if": _SVC + (
+        "component C requires kv: K {\n"
+        "  let h = effect { if (true) { kv.put(\"a\") } } undo kv.put(\"b\")\n}\n"),
+    "fail_in_effect_block": _SVC + (
+        "component C requires kv: K {\n"
+        "  let h = effect { fail \"x\"\n kv.put(\"a\") } undo kv.put(\"b\")\n}\n"),
+    "activation_let_tuple_type": _SVC + (
+        "component C requires kv: K {\n"
+        "  let h: (Int, Str) = effect kv.put(\"a\") undo kv.put(\"b\")\n}\n"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_TYPE_EXPR_REFUSED))
+def test_the_type_and_expression_rules_refuse_what_the_reference_refuses(compile_rvl, name):
+    from revl.parser import parse_text
+    text = _TYPE_EXPR_REFUSED[name]
+    with pytest.raises(RevlError):
+        parse_text(text, "x.rvl")
+    assert compile_rvl["parse_refusal"](text) != ""
+    assert compile_rvl["ad_module_refusal"](text) != ""
+    assert compile_rvl["compile_to"](text, "py").startswith("REFUSED|")
+
+
+# Documents the reference reads, exercising each rule the readers above port:
+# none of them gets a statement-grammar verdict.
+_TYPE_EXPR_READ = {
+    "function_types": (
+        "fn f(g: (Int) -> Int, h: ((Int) -> Bool)?) -> (Int) -> Int {\n"
+        "  let k: (Int, Str) -> List[Int] = (a: Int, b: Str): List[Int] => [a]\n"
+        "  return g\n}\n"),
+    "if_and_match_expressions": _fn(
+        "let a = if (n > 1) { ; 2 ; } else { 3 }\n"
+        "let b = match Some(n) { Some(x) => { let y = x + 1; y }, None => 0, }\n"
+        "let c = match Some(n) { Some(x) => { var z = x\n z += 1\n z }, _ => { 0 } }\n"
+        "if (a > 2) { return 1 } else if (a > 1) { return 2 } else { return b + c }"),
+    "fn_body_statements": _fn(
+        "let {x, y} = {x: 1, y: 2}\nlet [p, ...rest] = [1, 2]\nvar i = 0\n"
+        "while (i < 3) { i += 1\n if (i == 2) { continue } }\n"
+        "for (e of rest) { i = i + e }\nassert i > 0\n"
+        "let o = Some(1)\nlet q = o?.map(v => v)\n"
+        "let t = n > 1 ? \"a\" : \"b\"\nlet r = { a: 1, b: [1, 2][0] }\n"
+        "let u = { r | a = 2 }\nreturn x + y + p + i"),
+    "expression_bodies_and_tests": (
+        "fn d(x: Int) -> Int = x * 2\n"
+        "fn h() -> Int = hole[Int] \"later\"\n"
+        "test \"d doubles\" {\n  let s: Stream[Int, Active]? = null\n  assert d(2) == 4\n}\n"),
+    "extern_clause_arguments": (
+        "extern emission deferred idempotent(key: msg) fn post(sink: Str, msg: Str) = @py { return }\n"
+        "extern pure fn g(a: (Int) -> Int) -> Int = @py { return 1 }\n"),
+    "effect_block_setup": _SVC + (
+        "component C requires kv: K {\n"
+        "  let h = effect { let a = \"x\"; kv.put(a) } undo kv.put(\"b\")\n}\n"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_TYPE_EXPR_READ))
+def test_the_type_and_expression_rules_refuse_nothing_the_reference_reads(compile_rvl, name):
+    from revl.parser import parse_text
+    text = _TYPE_EXPR_READ[name]
+    parse_text(text, "x.rvl")
+    scan = compile_rvl["stmt_parse_scan"](compile_rvl["lex_src"](text))
+    assert scan["v"] == ""

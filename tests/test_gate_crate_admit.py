@@ -1318,7 +1318,15 @@ TYPE_LAYER_GAP = [
     # REFUSES it in the reference's own words and it is an agreement rather than
     # a gap. `test_the_gap_that_closed_is_an_agreement_now` below holds that,
     # so this list cannot go vacuous by attrition.
-    ("return arrow with no type", "fn f() -> { }"),
+    # `("return arrow with no type", "fn f() -> { }")` left the list when the
+    # statement grammar learned the reference's `type_` rule (issue #2396): the
+    # crate now REFUSES it as a parse error in the reference's own words. A
+    # parse refusal classifies as "OUT:" in the oracle and as BAD in the gate,
+    # so it cannot be a `REJECTED_PROGRAMS` row (tag AND message must match
+    # there); `test_the_arrow_gap_that_closed_is_a_parse_agreement_now` below
+    # holds it instead.
+    ("record literal missing a declared field",
+     "type P = { x: Int }\nfn f() -> P { return { y: 1 } }"),
     # `("undeclared name in a body", "fn f() -> Int { return undefined_name }")`
     # headed this list until the name-RESOLUTION rule landed
     # (docs/design/457 §2.3): a name READ is resolved against the fn's scope and
@@ -1364,6 +1372,22 @@ def test_the_gap_that_closed_is_an_agreement_now(consumer):
     assert verdict["verdict"] == "refused"
     assert verdict["admitted"] is False
     assert verdict["code"] == ref_code
+    assert verdict["message"] == ref_message
+
+
+def test_the_arrow_gap_that_closed_is_a_parse_agreement_now(consumer):
+    """`fn f() -> { }`, the last row of the list above, until the statement
+    grammar ported the reference's `type_` rule (issue #2396). The reference
+    refuses it at parse time; the crate refuses it under BAD with the
+    reference's sentence, and still issues no admission doing so."""
+    source = "fn f() -> { }"
+    ref_code, ref_message = _reference(source)
+    assert ref_code == "OUT:" + ref_message, ref_code
+    assert ref_message == "expected a type, found '{'", ref_message
+    verdict = _crate_verdicts(consumer, [source])[0]
+    assert verdict["verdict"] == "refused"
+    assert verdict["admitted"] is False
+    assert verdict["code"] == "BAD"
     assert verdict["message"] == ref_message
 
 
