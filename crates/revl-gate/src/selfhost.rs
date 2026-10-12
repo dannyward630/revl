@@ -22890,7 +22890,7 @@ fn svc_decl_lines(ts: &[Token]) -> Vec<NmLn> {
             if (t.kind == "}") {
                 depth = (depth).checked_sub(1i64).expect("revl: Int overflow");
             } else {
-                if (((depth == 0i64) && (t.text == "service")) && atk(ts, (i).checked_add(1i64).expect("revl: Int overflow"), "ident")) {
+                if (((depth == 0i64) && atw(ts, i, "service")) && atk(ts, (i).checked_add(1i64).expect("revl: Int overflow"), "ident")) {
                     out.push(CshBind { name: tkc(ts, (i).checked_add(1i64).expect("revl: Int overflow")).text, line: t.line });
                 }
             }
@@ -22944,20 +22944,31 @@ fn fold_running(kind: &str, ds: &[NmLn], held: &[String]) -> String {
     return String::from("");
 }
 
-fn program_name_folds(ts: &[Token], pg: Prog) -> String {
-    let sv = fold_in_program("service", &svc_decl_lines(ts));
-    if (sv != "") {
-        return sv;
+fn fold_after_parse(ts: Vec<Token>, pg: Prog, fold: String) -> String {
+    if (fold == "") {
+        return String::from("");
     }
-    return fold_in_program("component", &comp_decl_lines(&pg.comps));
+    let ev = extern_decl_refusal(ts.clone(), pg.clone());
+    if (ev.v.revl_slice(0i64, 3i64) == "G8|") {
+        return ev.v;
+    }
+    return fold;
 }
 
-fn running_name_folds(ts: &[Token], pg: Prog, svcs: &[String], kept: &[String]) -> String {
-    let sv = fold_running("service", &svc_decl_lines(ts), svcs);
+fn program_name_folds(ts: Vec<Token>, pg: Prog) -> String {
+    let sv = fold_in_program("service", &svc_decl_lines(&ts));
     if (sv != "") {
-        return sv;
+        return fold_after_parse(ts.clone(), pg.clone(), sv.clone());
     }
-    return fold_running("component", &comp_decl_lines(&pg.comps), kept);
+    return fold_after_parse(ts.clone(), pg.clone(), fold_in_program("component", &comp_decl_lines(&pg.comps)));
+}
+
+fn running_name_folds(ts: Vec<Token>, pg: Prog, svcs: Vec<String>, kept: Vec<String>) -> String {
+    let sv = fold_running("service", &svc_decl_lines(&ts), &svcs);
+    if (sv != "") {
+        return fold_after_parse(ts.clone(), pg.clone(), sv.clone());
+    }
+    return fold_after_parse(ts.clone(), pg.clone(), fold_running("component", &comp_decl_lines(&pg.comps), &kept));
 }
 
 pub fn admit_src(src: String) -> String {
@@ -22985,7 +22996,7 @@ pub fn admit_src(src: String) -> String {
     if (rph.v != "") {
         return rph.v;
     }
-    let fold = program_name_folds(&ts, pg.clone());
+    let fold = program_name_folds(ts.clone(), pg.clone());
     if (fold != "") {
         return fold;
     }
@@ -23501,11 +23512,11 @@ pub fn admit_ambient(src: String, manifest: String) -> String {
     let keptReqs = keep_reqs(man.reqs.clone(), drop.clone(), 0i64, vec![]);
     let keptRoutes = keep_routes(man.routes.clone(), drop.clone(), 0i64, vec![]);
     let keptNames = keep_names(man.mnames.clone(), drop.clone(), 0i64, vec![]);
-    let pfold = program_name_folds(&ts, pg.clone());
+    let pfold = program_name_folds(ts.clone(), pg.clone());
     if (pfold != "") {
         return pfold;
     }
-    let rfold = running_name_folds(&ts, pg.clone(), &man.svcs, &keptNames);
+    let rfold = running_name_folds(ts.clone(), pg.clone(), man.svcs.clone(), keptNames.clone());
     if (rfold != "") {
         return rfold;
     }

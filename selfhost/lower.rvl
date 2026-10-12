@@ -18648,7 +18648,7 @@ fn svc_decl_lines(ts: List[Token]) -> List[NmLn] {
       depth += 1
     } else if (t.kind == "}") {
       depth -= 1
-    } else if (depth == 0 && t.text == "service" && atk(ts, i + 1, "ident")) {
+    } else if (depth == 0 && atw(ts, i, "service") && atk(ts, i + 1, "ident")) {
       out = out.push({ name: tkc(ts, i + 1).text, line: t.line })
     }
     i += 1
@@ -18708,17 +18708,30 @@ fn fold_running(kind: Str, ds: List[NmLn], held: List[Str]) -> Str {
   return ""
 }
 
+// A fold refusal, unless the reference's PARSER refuses the program first:
+// an unclassified extern (G8) is raised while parsing, before the fold check,
+// but the gate decides it inside `collect_nonlink`. Only consulted when there
+// is a fold, so a program without one is byte-identical.
+fn fold_after_parse(ts: List[Token], pg: Prog, fold: Str) -> Str {
+  if (fold == "") { return "" }
+  let ev = extern_decl_refusal(ts, pg)
+  if (ev.v.slice(0, 3) == "G8|") { return ev.v }
+  return fold
+}
+
 fn program_name_folds(ts: List[Token], pg: Prog) -> Str {
   let sv = fold_in_program("service", svc_decl_lines(ts))
-  if (sv != "") { return sv }
-  return fold_in_program("component", comp_decl_lines(pg.comps))
+  if (sv != "") { return fold_after_parse(ts, pg, sv) }
+  return fold_after_parse(ts, pg,
+    fold_in_program("component", comp_decl_lines(pg.comps)))
 }
 
 fn running_name_folds(ts: List[Token], pg: Prog, svcs: List[Str],
                       kept: List[Str]) -> Str {
   let sv = fold_running("service", svc_decl_lines(ts), svcs)
-  if (sv != "") { return sv }
-  return fold_running("component", comp_decl_lines(pg.comps), kept)
+  if (sv != "") { return fold_after_parse(ts, pg, sv) }
+  return fold_after_parse(ts, pg,
+    fold_running("component", comp_decl_lines(pg.comps), kept))
 }
 
 pub fn admit_src(src: Str) -> Str {

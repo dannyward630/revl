@@ -149,6 +149,21 @@ def test_the_program_fold_comes_before_the_running_fold(native):
     assert native["admit_into"](incoming, manifest_wire(ir)) == "FOLD|" + error.message
 
 
+def test_a_parser_refusal_still_comes_before_a_fold(native):
+    """The reference's parser refuses an unclassified extern before its fold
+    check runs, so the gate names the extern, not the fold."""
+    source = SERVICE_PAIR + 'extern fn f() -> Str = @py { return "x" }\n'
+    error = _refusal(source)
+    assert "unclassified extern" in error.message, error.message
+    assert native["admit"](source).startswith("G8|"), native["admit"](source)
+    ir = compile_source(RUNNING_SERVICE, "running.rvl")
+    incoming = INCOMING_SERVICE + 'extern fn f() -> Str = @py { return "x" }\n'
+    error = _refusal(incoming, manifest=ir)
+    assert "unclassified extern" in error.message, error.message
+    verdict = native["admit_into"](incoming, manifest_wire(ir))
+    assert verdict.startswith("G8|"), verdict
+
+
 def test_withdrawn_redeclared_and_apart_names_raise_no_fold(native):
     """The positive controls: a swap that withdraws the running component, a
     service redeclared under its exact running name, and names that stay apart
