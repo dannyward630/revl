@@ -1574,10 +1574,11 @@ fn ul_link_types(ir: Str, source: Str, path: Str) -> UlLinked {
 // where the reference refuses it at check time. The driver now admits the
 // document a second time with the declaration text of every service it imports
 // appended, so the gate types those calls the way the reference checker does.
-// The module's own type declarations are NOT appended: a private one (`type Id
-// = Int`) is out of the document's scope in the reference too, which keeps the
-// parameter as `Id` and refuses every argument but an `Id`, exactly as the gate
-// does for a name it cannot resolve.
+// The module's own type declarations are NOT appended: the gate types a call
+// against a built-in parameter type, and a carried record or variant by name,
+// without them. A transparent alias never reaches this pass, since the type
+// link above refuses a module that declares one (the producer keeps no `types`
+// entry for it).
 
 // The index of the `}` closing the brace body opening at `open_at`, scanned the
 // way `ul_type_scan` scans (comments, strings, templates and host bodies are

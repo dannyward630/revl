@@ -153,16 +153,22 @@ path, which is what the resolution needs:
   `tc_admit_imports` admits the document again with the declaration text of
   every imported service appended (from `service` to its closing brace, found
   by the same reference-lexer scan; a leading `pub` or `commutative` is left
-  off), and returns that verdict as `REFUSED|<TAG>|<message>`. The module's
-  type declarations are not appended: a private `type Id = Int` is out of the
-  document's scope in the reference too, which keeps the parameter as `Id` and
-  refuses any argument that is not an `Id`, and so does the gate for a name it
-  cannot resolve. It refuses with `REFUSED|LINK|` where the appended text would
-  type the calls differently: a service the native IR has a row for whose text
-  the scan cannot read, and a declaration naming a type the document also
-  declares. The check is only as strong as the gate's own call typing: an
-  argument count or a return type the gate does not check in a single document
-  is not checked here either.
+  off), and returns that verdict as `REFUSED|<TAG>|<message>`, the reference's
+  own message where the gate types the call the way the reference does. The
+  module's type declarations are not appended. The gate types a built-in
+  parameter type, and a carried record or variant by name, without them. A
+  transparent alias never reaches this pass: the type link above refuses a
+  module that declares one, which is what refuses the issue's reproducer (a
+  private `type Id = Int` parameter). It refuses with `REFUSED|LINK|` where
+  the appended text would type the calls differently: a service the native IR
+  has a row for whose text the scan cannot read, and a declaration that names
+  a type the document also declares (any identifier of the declaration text
+  counts, so a parameter or comment word of that spelling refuses too). The
+  check is only as strong as the gate's own call typing, which also holds in a
+  single document: the argument count, the return type, and the field types
+  of a record literal passed for a nominal record (`store.put({ id: "x" })`
+  against `put(r: Row)` with `Row = { id: Int }`) are not checked, so those
+  calls are still admitted and emitted where the reference refuses them.
 
 This is the honest multi-file native compile: the whole chain still runs in revl,
 and the only host crossing is the read the reference loader also performs. It

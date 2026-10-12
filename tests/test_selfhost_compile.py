@@ -1264,38 +1264,52 @@ def test_native_driver_links_the_truc_cli_as_the_reference_does(
     assert got == want, got[:200]
 
 
-# Issue #2329: a document's call to an operation of a service it imports, and
-# the module that declares the service. The reference checker types the call
-# against the module's declaration; the native gate read only the document.
+# Issue #2329: a document's call to an operation of a service it imports, the
+# module that declares the service, and what the native chain must give:
+# "T1", the reference checker's own message as a native gate refusal; "LINK", a
+# `REFUSED|LINK|` refusal that starts with the given text; "emit", the
+# reference's bytes. The reference checker types the call against the module's
+# declaration; the native gate used to read only the document.
 _IMPORTED_CALLS = {
-    # The issue's reproducer: a private alias is out of the document's scope,
-    # so the reference keeps `Id` and refuses a `Str` (and an `Int`) for it.
+    # The issue's reproducer. The reference refuses a `Str` (and an `Int`) for
+    # the private alias `Id`, which is out of the document's scope. Natively the
+    # type link (issue #2308) refuses the module first, since the producer keeps
+    # no `types` entry for an alias, so the gate never types this call: these
+    # two pin that the alias stays refused by that link.
     "private_alias_str": ("type Id = Int\npub service Store { fn put(id: Id) -> Str }\n",
-                          'store.put("x")'),
+                          'store.put("x")', "LINK|type `Id`"),
     "private_alias_int": ("type Id = Int\npub service Store { fn put(id: Id) -> Str }\n",
-                          "store.put(1)"),
-    "int_given_str": ("pub service Store { fn put(id: Int) -> Str }\n", 'store.put("x")'),
+                          "store.put(1)", "LINK|type `Id`"),
+    # The gap itself: built-in and carried parameter types the gate types.
+    "int_given_str": ("pub service Store { fn put(id: Int) -> Str }\n", 'store.put("x")',
+                      "T1"),
     "list_given_wrong_items": ("pub service Store { fn put(xs: List[Int]) -> Str }\n",
-                               'store.put(["a"])'),
+                               'store.put(["a"])', "T1"),
     "record_given_int": ("pub type Row = { id: Int }\n"
-                         "pub service Store { fn put(r: Row) -> Str }\n", "store.put(1)"),
-    # A brace in a comment ahead of the declaration does not hide it.
+                         "pub service Store { fn put(r: Row) -> Str }\n", "store.put(1)",
+                         "T1"),
+    # A brace in a comment ahead of the declaration does not hide it: a scan
+    # that read the comment would stop at its `}` and refuse with LINK.
     "after_comment_brace": ("// } service Store {\n"
                             "pub service Store { fn put(id: Int) -> Str }\n",
-                            'store.put("x")'),
+                            'store.put("x")', "T1"),
     # Positive controls: the reference admits these, and the native output
     # must stay its bytes.
-    "int_given_int": ("pub service Store { fn put(id: Int) -> Str }\n", "store.put(1)"),
+    "after_comment_brace_ok": ("// } service Store {\n"
+                               "pub service Store { fn put(id: Int) -> Str }\n",
+                               "store.put(1)", "emit"),
+    "int_given_int": ("pub service Store { fn put(id: Int) -> Str }\n", "store.put(1)",
+                      "emit"),
     "list_given_list": ("pub service Store { fn put(xs: List[Int]) -> Str }\n",
-                        "store.put([1, 2])"),
+                        "store.put([1, 2])", "emit"),
     "record_given_record": ("pub type Row = { id: Int }\n"
                             "pub service Store { fn put(r: Row) -> Str }\n",
-                            "store.put({ id: 1 })"),
+                            "store.put({ id: 1 })", "emit"),
 }
 
 
 def _write_imported_call(tmp_path, case):
-    lib, call = _IMPORTED_CALLS[case]
+    lib, call, _expect = _IMPORTED_CALLS[case]
     (tmp_path / "lib.rvl").write_text(lib, encoding="utf-8")
     doc = tmp_path / "doc.rvl"
     doc.write_text('use "./lib.rvl" { Store }\n\n'
@@ -1307,19 +1321,21 @@ def _write_imported_call(tmp_path, case):
 def test_native_driver_types_calls_to_an_imported_service(
         compile_rvl, reference_emit, tmp_path, case):
     """Issue #2329: where the reference refuses a call to an imported
-    service's operation, the native chain refuses too, never emits; a refusal
-    the native gate gives is the reference's own message. Where the reference
-    admits, the native output is its bytes."""
+    service's operation, the native chain refuses too and never emits, with
+    the reference's own message where the native gate is what refuses. Where
+    the reference admits, the native output is its bytes."""
+    expect = _IMPORTED_CALLS[case][2]
     doc = _write_imported_call(tmp_path, case)
     got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
-    try:
-        ir = compile_files([str(doc)])
-    except RevlError as e:
-        assert got.startswith("REFUSED|"), got[:200]
-        if not got.startswith("REFUSED|LINK|"):
-            assert got.split("|", 2)[2] == e.message, got[:200]
+    if expect == "emit":
+        assert got == reference_emit["py"](compile_files([str(doc)])), got[:200]
         return
-    assert got == reference_emit["py"](ir), got[:200]
+    with pytest.raises(RevlError) as refused:
+        compile_files([str(doc)])
+    if expect == "T1":
+        assert got == "REFUSED|T1|" + refused.value.message, got[:200]
+    else:
+        assert got.startswith("REFUSED|" + expect), got[:200]
 
 
 def test_six_way_composition_co_compiles(compile_rvl):
