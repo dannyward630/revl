@@ -1,5 +1,7 @@
 ["decides_verdicts", "backends/python/emit.py"]
 
+["decides_verdicts", "tests/_compiled_ir.py"]
+
 ["decides_verdicts", "tests/test_selfhost_lower.py"]
 
 ["decides_verdicts", "tools/build_gate_crate.py"]
