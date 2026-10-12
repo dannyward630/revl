@@ -1230,7 +1230,6 @@ def test_native_module_admission_reads_every_stdlib_and_truc_module(compile_rvl)
     assert refused == {}
 
 
-
 _LIB_STORE = "pub service Store { fn put(x: Int) -> Str }\n"
 
 # Review of #2358: case -> (the reference's error, the self-host's, files). The
@@ -1294,6 +1293,41 @@ def test_an_expression_bodied_fn_is_named_unsupported_not_malformed(compile_rvl,
     assert "line 1: an expression-bodied fn" in got, got[:200]
     assert "not supported by the self-host" in got
     assert "expected {" not in got
+
+
+def test_a_malformed_fn_before_an_expression_bodied_one_keeps_the_plain_refusal(compile_rvl):
+    """The expression-fn message is given only when that fn is the one the
+    program grammar refuses: a malformed fn earlier in the module keeps the
+    plain refusal, at its own line."""
+    text = ("pub fn broken(x: Int) -> Int\n\n"
+            "pub fn twice(x: Int) -> Int = x * 2\n\n" + _LIB_STORE)
+    assert compile_rvl["ad_module_refusal"](text) == "line 1: expected { after fn signature"
+
+
+# A diamond (doc -> a, b -> c): `c.rvl` is read once, it is no cycle, and the
+# link carries every extern the way `compile_files` merges them.
+_DIAMOND = {
+    "doc.rvl": ('use "./a.rvl" { a_one }\nuse "./b.rvl" { b_one }\n\n'
+                "extern pure fn d_own(x: Int) -> Int = @py { return x }\n"),
+    "a.rvl": ('use "./c.rvl" { c_one }\n\n'
+              "pub extern pure fn a_one(x: Int) -> Int = @py { return x + 1 }\n"),
+    "b.rvl": ('use "./c.rvl" { c_one }\n\n'
+              "pub extern pure fn b_one(x: Int) -> Int = @py { return x + 2 }\n"),
+    "c.rvl": "pub extern pure fn c_one(x: Int) -> Int = @py { return x * 3 }\n",
+}
+
+
+def test_native_driver_compiles_a_diamond_import_like_the_reference(
+        compile_rvl, reference_emit, tmp_path):
+    """The positive control of the depth-first walk: a module two imports
+    reach is no cycle, and the document compiles as the reference compiles it."""
+    for name, text in _DIAMOND.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    want = reference_emit["py"](compile_files([str(doc)]))
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
+    assert got == want
+
 
 # Issue #2343: the whitespace the reference lexer skips between an `@backend`
 # name and its `{` is Python's `str.isspace`, newlines included in any order.
