@@ -87,9 +87,8 @@
 // in a stage.
 
 use "./lower.rvl" { admit_src, admit_ambient, lower_to_ir, lower_to_ir_refs, parse_prog,
-  foreign_scan }
+  parse_refusal }
 use "./lexer.rvl" { Token, lex_src }
-use "./parser.rvl" { type_at, is_record_key }
 use "./emit_py.rvl" { emit_py_src }
 use "./emit_rust.rvl" { emit_rust_src }
 use "./emit_ts.rvl" { emit_ts_src }
@@ -1666,14 +1665,13 @@ fn rf_ref_rows(source: Str, path: Str) -> List[Str] {
 // read refuses the document with `REFUSED|BAD|<module>: <message>`.
 //
 // What admission reads, all native:
-//   * the lexer's error tokens and the top-level program grammar
-//     (`lower.rvl::parse_prog`): a top-level token that heads no declaration,
-//     a malformed fn, extern, service or component;
-//   * the foreign-construct redirects (`lower.rvl::foreign_scan`);
-//   * every top-level `type` declaration against the reference grammar
-//     (`parser.py::type_decl`), which `parse_prog` steps over unread: a record
-//     body, a function type, an alias or `|`-separated cases, each followed by
-//     a top-level declaration or the end of the text.
+//   * the lexer's error tokens and every `use` declaration, an import list
+//     written over several lines included;
+//   * the whole parse stage of the native gate (`lower.rvl::parse_refusal`,
+//     issue #2359): the foreign-construct redirects, the nesting limit, the
+//     top-level program grammar, every top-level `type` declaration against
+//     `parser.py::type_decl`, and the statement-level rules the reference
+//     parser raises (`lower.rvl::stmt_parse_scan`).
 
 // The token at `i` of `ts`, or an `eof` token past either end.
 fn ad_tok(ts: List[Token], i: Int) -> Token {
@@ -1687,120 +1685,6 @@ fn ad_kind(ts: List[Token], i: Int, k: Str) -> Bool { return ad_tok(ts, i).kind 
 fn ad_kw(ts: List[Token], i: Int, w: Str) -> Bool {
   let t = ad_tok(ts, i)
   return (t.kind == "kw") && (t.text == w)
-}
-
-// Whether `ts[i]` is the identifier `w` (a contextual word).
-fn ad_word(ts: List[Token], i: Int, w: Str) -> Bool {
-  let t = ad_tok(ts, i)
-  return (t.kind == "ident") && (t.text == w)
-}
-
-// Whether a top-level declaration, or the end of the text, starts at `i`: the
-// heads the reference's program loop dispatches on, with the contextual ones
-// (`boot component`, `event`, a qualified test, `model role`/`model council`,
-// `secret NAME for`) read as `lower.rvl::at_top_decl` reads them.
-fn ad_decl_head(ts: List[Token], i: Int) -> Bool {
-  let t = ad_tok(ts, i)
-  if (t.kind == "eof") { return true }
-  if (t.kind == "kw") {
-    let w = t.text
-    if ((w == "type") || (w == "fn") || (w == "extern") || (w == "service")) { return true }
-    return (w == "component") || (w == "use") || (w == "test") || (w == "pub")
-  }
-  if (t.kind != "ident") { return false }
-  if (t.text == "boot") { return ad_kw(ts, i + 1, "component") }
-  if (t.text == "event") { return ad_kind(ts, i + 1, "ident") }
-  if ((t.text == "prop") || (t.text == "lifecycle") || (t.text == "fault")) {
-    return ad_kw(ts, i + 1, "test")
-  }
-  if (t.text == "model") { return ad_word(ts, i + 1, "role") || ad_word(ts, i + 1, "council") }
-  if (t.text == "secret") { return ad_kind(ts, i + 1, "ident") && ad_word(ts, i + 2, "for") }
-  return false
-}
-
-// The index just past the type spelling at `i`, or -1 when none parses there.
-fn ad_type_end(ts: List[Token], i: Int) -> Int {
-  let r = type_at(ts, i)
-  if (!r.ok || (r.i <= i)) { return 0 - 1 }
-  return r.i
-}
-
-// The index just past the record body whose `{` is at `i`, or -1: `key: Type`
-// rows, each optionally followed by `,`, up to `}` (`type_decl`'s record arm).
-fn ad_record_end(ts: List[Token], i: Int) -> Int {
-  var j = i + 1
-  while (!ad_kind(ts, j, "}")) {
-    if (!is_record_key(ad_tok(ts, j))) { return 0 - 1 }
-    if (!ad_kind(ts, j + 1, ":")) { return 0 - 1 }
-    j = ad_type_end(ts, j + 2)
-    if (j < 0) { return 0 - 1 }
-    if (ad_kind(ts, j, ",")) { j += 1 }
-  }
-  return j + 1
-}
-
-// The index just past the right-hand side of a `type` declaration at `i`, or
-// -1: a record body, a function type, an alias (`List[Row]`, `Row?`, not
-// followed by `|`), or one or more `Case` / `Case(Type)` joined by `|`.
-fn ad_type_rhs_end(ts: List[Token], i: Int) -> Int {
-  if (ad_kind(ts, i, "{")) { return ad_record_end(ts, i) }
-  if (ad_kind(ts, i, "(")) { return ad_type_end(ts, i) }
-  var j = i
-  var first = true
-  while (true) {
-    if (!ad_kind(ts, j, "ident")) { return 0 - 1 }
-    if (first && (ad_kind(ts, j + 1, "[") || ad_kind(ts, j + 1, "?"))) {
-      let e = ad_type_end(ts, j)
-      if ((e < 0) || ad_kind(ts, e, "|")) { return 0 - 1 }
-      return e
-    }
-    first = false
-    j += 1
-    if (ad_kind(ts, j, "(")) {
-      j = ad_type_end(ts, j + 1)
-      if ((j < 0) || !ad_kind(ts, j, ")")) { return 0 - 1 }
-      j += 1
-    }
-    if (!ad_kind(ts, j, "|")) { return j }
-    j += 1
-  }
-  return 0 - 1
-}
-
-// Why the `type` declaration whose keyword is at `i` does not read as the
-// reference reads it, or "".
-fn ad_type_refusal(ts: List[Token], i: Int) -> Str {
-  let name = ad_tok(ts, i + 1)
-  let at_line = "line ".concat(ad_tok(ts, i).line.to_str()).concat(": ")
-  if (name.kind != "ident") { return at_line.concat("a `type` declaration has no name") }
-  var j = i + 2
-  if (ad_kind(ts, j, "[")) {
-    j += 1
-    while (!ad_kind(ts, j, "]")) {
-      if (!ad_kind(ts, j, "ident")) {
-        return at_line.concat("the type parameters of `").concat(name.text).concat("` do not parse")
-      }
-      j += 1
-      if (ad_kind(ts, j, ",")) { j += 1 }
-    }
-    j += 1
-  }
-  if (!ad_kind(ts, j, "=")) {
-    return at_line.concat("expected `=` in the declaration of type `").concat(name.text).concat("`")
-  }
-  var end = ad_type_rhs_end(ts, j + 1)
-  if (end < 0) {
-    return at_line.concat("the declaration of type `").concat(name.text).concat("` does not parse")
-  }
-  // a run of `;` between top-level declarations is no declaration of its own
-  // (`_skip_semis` in the program loop, item 157)
-  while (ad_kind(ts, end, ";")) { end += 1 }
-  if (!ad_decl_head(ts, end)) {
-    let t = ad_tok(ts, end)
-    return "line ".concat(t.line.to_str()).concat(": expected a top-level declaration, found `")
-      .concat(t.text).concat("` after type `").concat(name.text).concat("`")
-  }
-  return ""
 }
 
 // The first lexer error token of `ts`, as a refusal message, or "".
@@ -1858,8 +1742,6 @@ fn ad_module_refusal(source: Str) -> Str {
   let ts = lex_src(source)
   let lexed = ad_lex_refusal(ts)
   if (lexed != "") { return lexed }
-  let fgn = foreign_scan(source)
-  if (fgn != "") { return fgn }
   var program = source
   var depth = 0
   var i = 0
@@ -1867,10 +1749,6 @@ fn ad_module_refusal(source: Str) -> Str {
     let k = ts[i].kind
     if ((k == "{") || (k == "[") || (k == "(")) { depth += 1 }
     if ((k == "}") || (k == "]") || (k == ")")) { depth -= 1 }
-    if ((depth == 0) && (k == "kw") && (ts[i].text == "type")) {
-      let why = ad_type_refusal(ts, i)
-      if (why != "") { return why }
-    }
     if ((depth == 0) && (k == "kw") && (ts[i].text == "use")) {
       let end = ad_use_end(ts, i)
       if (end < 0) {
@@ -1885,7 +1763,10 @@ fn ad_module_refusal(source: Str) -> Str {
     }
     i += 1
   }
-  return parse_prog(program).bad
+  // the whole parse stage `admit_src` runs, as its message (issue #2359)
+  let why = parse_refusal(program)
+  let bar = why.indexOf("|")
+  return bar < 0 ? why : why.slice(bar + 1, why.length())
 }
 
 // The `use` targets of `source` as written, in order: every `use` keyword at

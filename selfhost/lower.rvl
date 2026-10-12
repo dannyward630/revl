@@ -18588,6 +18588,427 @@ fn collect_refusals(ts: List[Token], pg: Prog) -> List[Verd] {
   return append_verds(nl.refs, link_refusals(pg, [], [], [], []))
 }
 
+// ============================================================ statement parse rules
+// Issue #2359. The reference PARSER refuses these programs before any check
+// runs (src/revl/parser.py), while `parse_prog` reads statement bodies and
+// type declarations too loosely to see them, so the gate used to admit them.
+// Each rule below is the parser's own, read off the token stream, and each
+// refusal carries the parser's message. `stmt_parse_scan` runs in the parse
+// stage of `admit_src`/`admit_all` and in `parse_refusal`, the whole parse
+// stage a USED module goes through in `compile.rvl` (issue #2332).
+
+// The reference's type declaration grammar (`parser.py::type_decl`), which
+// `type_decl_end` steps over unread: a record body, a function type, an
+// alias (not followed by `|`: revl has no union types), or `|`-separated
+// cases, then a top-level declaration or the end of the text.
+// Whether a top-level declaration, or the end of the text, starts at `i`: the
+// heads the reference's program loop dispatches on, with the contextual ones
+// (`boot component`, `event`, a qualified test, `model role`/`model council`,
+// `secret NAME for`) read as `lower.rvl::at_top_decl` reads them.
+fn pt_decl_head(ts: List[Token], i: Int) -> Bool {
+  let t = tkc(ts, i)
+  if (t.kind == "eof") { return true }
+  if (t.kind == "kw") {
+    let w = t.text
+    if ((w == "type") || (w == "fn") || (w == "extern") || (w == "service")) { return true }
+    return (w == "component") || (w == "use") || (w == "test") || (w == "pub")
+  }
+  if (t.kind != "ident") { return false }
+  if (t.text == "boot") { return atw(ts, i + 1, "component") }
+  if (t.text == "event") { return atk(ts, i + 1, "ident") }
+  if ((t.text == "prop") || (t.text == "lifecycle") || (t.text == "fault")) {
+    return atw(ts, i + 1, "test")
+  }
+  if (t.text == "model") { return at_word(ts, i + 1, "role") || at_word(ts, i + 1, "council") }
+  if (t.text == "secret") { return atk(ts, i + 1, "ident") && at_word(ts, i + 2, "for") }
+  return false
+}
+
+// The index just past the type spelling at `i`, or -1 when none parses there.
+fn pt_type_end(ts: List[Token], i: Int) -> Int {
+  let r = type_at(ts, i)
+  if (!r.ok || (r.i <= i)) { return 0 - 1 }
+  return r.i
+}
+
+// The index just past the record body whose `{` is at `i`, or -1: `key: Type`
+// rows, each optionally followed by `,`, up to `}` (`type_decl`'s record arm).
+fn pt_record_end(ts: List[Token], i: Int) -> Int {
+  var j = i + 1
+  while (!atk(ts, j, "}")) {
+    if (!is_record_key(tkc(ts, j))) { return 0 - 1 }
+    if (!atk(ts, j + 1, ":")) { return 0 - 1 }
+    j = pt_type_end(ts, j + 2)
+    if (j < 0) { return 0 - 1 }
+    if (atk(ts, j, ",")) { j += 1 }
+  }
+  return j + 1
+}
+
+// The index just past the right-hand side of a `type` declaration at `i`, or
+// -1: a record body, a function type, an alias (`List[Row]`, `Row?`, not
+// followed by `|`), or one or more `Case` / `Case(Type)` joined by `|`.
+fn pt_type_rhs_end(ts: List[Token], i: Int) -> Int {
+  if (atk(ts, i, "{")) { return pt_record_end(ts, i) }
+  if (atk(ts, i, "(")) { return pt_type_end(ts, i) }
+  var j = i
+  var first = true
+  while (true) {
+    if (!atk(ts, j, "ident")) { return 0 - 1 }
+    if (first && (atk(ts, j + 1, "[") || atk(ts, j + 1, "?"))) {
+      let e = pt_type_end(ts, j)
+      if ((e < 0) || atk(ts, e, "|")) { return 0 - 1 }
+      return e
+    }
+    first = false
+    j += 1
+    if (atk(ts, j, "(")) {
+      j = pt_type_end(ts, j + 1)
+      if ((j < 0) || !atk(ts, j, ")")) { return 0 - 1 }
+      j += 1
+    }
+    if (!atk(ts, j, "|")) { return j }
+    j += 1
+  }
+  return 0 - 1
+}
+
+// Why the `type` declaration whose keyword is at `i` does not read as the
+// reference reads it, or "".
+fn pt_type_refusal(ts: List[Token], i: Int) -> Str {
+  let name = tkc(ts, i + 1)
+  let at_line = "line ".concat(tkc(ts, i).line.to_str()).concat(": ")
+  if (name.kind != "ident") { return at_line.concat("a `type` declaration has no name") }
+  var j = i + 2
+  if (atk(ts, j, "[")) {
+    j += 1
+    while (!atk(ts, j, "]")) {
+      if (!atk(ts, j, "ident")) {
+        return at_line.concat("the type parameters of `").concat(name.text).concat("` do not parse")
+      }
+      j += 1
+      if (atk(ts, j, ",")) { j += 1 }
+    }
+    j += 1
+  }
+  if (!atk(ts, j, "=")) {
+    return at_line.concat("expected `=` in the declaration of type `").concat(name.text).concat("`")
+  }
+  var end = pt_type_rhs_end(ts, j + 1)
+  if (end < 0) {
+    return at_line.concat("the declaration of type `").concat(name.text).concat("` does not parse")
+  }
+  // a run of `;` between top-level declarations is no declaration of its own
+  // (`_skip_semis` in the program loop, item 157)
+  while (atk(ts, end, ";")) { end += 1 }
+  if (!pt_decl_head(ts, end)) {
+    let t = tkc(ts, end)
+    return "line ".concat(t.line.to_str()).concat(": expected a top-level declaration, found `")
+      .concat(t.text).concat("` after type `").concat(name.text).concat("`")
+  }
+  return ""
+}
+
+// The first top-level `type` declaration that does not read, as a verdict.
+fn pt_types_scan(ts: List[Token]) -> Verd {
+  var depth = 0
+  var i = 0
+  while (i < ts.length()) {
+    let k = ts[i].kind
+    if ((k == "{") || (k == "[") || (k == "(")) { depth += 1 }
+    if ((k == "}") || (k == "]") || (k == ")")) { depth -= 1 }
+    if ((depth == 0) && atw(ts, i, "type")) {
+      let why = pt_type_refusal(ts, i)
+      if (why != "") { return mk_verd(tagged("BAD", why), ts[i].line) }
+    }
+    i += 1
+  }
+  return no_verd()
+}
+
+// Whether the token at `i` begins a statement: it follows `{` or `;` at the
+// same nesting, or it opens a new line after a token that cannot continue an
+// expression.
+fn sp_stmt_head(ts: List[Token], i: Int) -> Bool {
+  if (i == 0) { return true }
+  let p = tkc(ts, i - 1)
+  if ((p.kind == "{") || (p.kind == ";") || (p.kind == "}")) { return true }
+  if (p.line >= tkc(ts, i).line) { return false }
+  let ops = [",", "=", "==", "!=", "+", "-", "*", "/", "%", "<", ">", "<=", ">=",
+    "&&", "||", "??", "?", ":", ".", "?.", "=>", "arrow", "(", "[", "|", "!", "&", "^"]
+  if (contains(ops, p.kind)) { return false }
+  if (p.kind == "kw") {
+    let w = p.text
+    return !((w == "undo") || (w == "compensate") || (w == "return") || (w == "in")
+      || (w == "with") || (w == "effect") || (w == "emit") || (w == "await")
+      || (w == "else") || (w == "of"))
+  }
+  return true
+}
+
+// `??` beside an unparenthesised `||` or `&&` in the same expression
+// (`_reject_nullish_mix`): the operator found, or "". Each side is walked at
+// the `??`'s own bracket depth up to the first delimiter.
+fn sp_nullish_mix(ts: List[Token], i: Int) -> Str {
+  let stops = [",", ";", "=", ":", "?", "=>", "arrow", "|", "kw", "eof"]
+  var d = 0
+  var j = i - 1
+  while (j >= 0) {
+    let k = ts[j].kind
+    if ((k == ")") || (k == "]") || (k == "}")) { d += 1 }
+    else {
+      if ((k == "(") || (k == "[") || (k == "{")) {
+        if (d == 0) { j = 0 - 1 } else { d -= 1 }
+      } else {
+        if (d == 0) {
+          if ((k == "||") || (k == "&&")) { return k }
+          if (contains(stops, k)) { j = 0 - 1 }
+        }
+      }
+    }
+    j -= 1
+  }
+  d = 0
+  j = i + 1
+  while (j < ts.length()) {
+    let k = ts[j].kind
+    if ((k == "(") || (k == "[") || (k == "{")) { d += 1 }
+    else {
+      if ((k == ")") || (k == "]") || (k == "}")) {
+        if (d == 0) { j = ts.length() } else { d -= 1 }
+      } else {
+        if (d == 0) {
+          if ((k == "||") || (k == "&&")) { return k }
+          if (contains(stops, k)) { j = ts.length() }
+        }
+      }
+    }
+    j += 1
+  }
+  return ""
+}
+
+// The reversibility class of a computer-use capability token (`ui_family.py`
+// `REVERSIBILITY` through `verb_of`: parameters stripped, a ladder rung read
+// as its verb), or "" outside the family.
+fn sp_ui_class(tok: Str) -> Str {
+  let segs = tok.split(".")
+  if (segs.length() < 2) { return "" }
+  let verb = segs[0].concat(".").concat(segs[1])
+  if ((verb == "screen.observe") || (verb == "ui.find")) { return "reversible" }
+  if (verb == "ui.text") { return "compensatable" }
+  if (verb == "ui.click") { return "unknown" }
+  if (verb == "ui.download") { return "irreversible" }
+  return ""
+}
+
+// The computer-use teardown rule on the extern declared at `i`
+// (`ui_family.py::teardown_refusal`): a compensatable verb must declare
+// `compensate`, a verb with no inverse may not. A message, or "".
+fn sp_ui_teardown(ts: List[Token], i: Int) -> Str {
+  let kind = tkc(ts, i + 1).text
+  if (!atk(ts, i + 2, "[")) { return "" }
+  // the header runs to the `=` that opens the first body, at bracket depth 0
+  var j = i + 1
+  var d = 0
+  var comp = false
+  var name = ""
+  while ((j < ts.length()) && !atk(ts, j, "eof") && !((d == 0) && atk(ts, j, "="))) {
+    let k = ts[j].kind
+    if ((k == "(") || (k == "[")) { d += 1 }
+    if ((k == ")") || (k == "]")) { d -= 1 }
+    if (atw(ts, j, "compensate") && (d == 0)) { comp = true }
+    if (atw(ts, j, "fn") && (name == "")) { name = tkc(ts, j + 1).text }
+    j += 1
+  }
+  var toks: List[Str] = []
+  var cur = ""
+  var pd = 0
+  var m = i + 3
+  while ((m < ts.length()) && !((pd == 0) && atk(ts, m, "]")) && !atk(ts, m, "eof")) {
+    let k = ts[m].kind
+    if (k == "(") { pd += 1 }
+    else {
+      if (k == ")") { pd -= 1 }
+      else {
+        if (pd == 0) {
+          if (k == ",") {
+            toks = toks.push(cur)
+            cur = ""
+          } else { cur = cur.concat(ts[m].text) }
+        }
+      }
+    }
+    m += 1
+  }
+  if (cur != "") { toks = toks.push(cur) }
+  var t = 0
+  while (t < toks.length()) {
+    let cls = sp_ui_class(toks[t])
+    let head = "`".concat(kind).concat("[").concat(toks[t]).concat("]` is ")
+    if (((cls == "irreversible") || (cls == "unknown")) && comp) {
+      return head.concat(cls).concat(", so extern `").concat(name)
+        .concat("` may not declare `compensate`")
+    }
+    if ((cls == "compensatable") && !comp) {
+      return head.concat("compensatable, so extern `").concat(name)
+        .concat("` must declare `compensate`")
+    }
+    t += 1
+  }
+  return ""
+}
+
+// What the brace opened at `i` holds, given the kind of the frame around it
+// (`outer`, "" at top level), the declaration head seen at top level and
+// whether the last `fn` in a provide block was `async`.
+fn sp_frame_kind(ts: List[Token], i: Int, outer: Str, decl: Str, async_fn: Bool) -> Str {
+  if (outer == "") { return decl }
+  if (outer == "comp") {
+    if (atk(ts, i - 1, "ident") && atw(ts, i - 2, "provide")) { return "provide" }
+    return "block"
+  }
+  if (outer == "provide") { return async_fn ? "amethod" : "method" }
+  return outer
+}
+
+// The first statement-level parse error of `ts` the reference parser raises
+// and `parse_prog` does not, as a verdict.
+fn stmt_parse_scan(ts: List[Token]) -> Verd {
+  let tv = pt_types_scan(ts)
+  if (tv.v != "") { return tv }
+  var kinds: List[Str] = []
+  var pds: List[Int] = []
+  var pd = 0
+  var decl = "other"
+  var comp_name = ""
+  var async_fn = false
+  var i = 0
+  while (i < ts.length()) {
+    let t = ts[i]
+    let k = t.kind
+    let top = kinds.length() == 0 ? "" : kinds[kinds.length() - 1]
+    let head = (kinds.length() > 0) && (pds[pds.length() - 1] == pd) && sp_stmt_head(ts, i)
+    if (kinds.length() == 0) {
+      if (atw(ts, i, "component")) {
+        decl = "comp"
+        comp_name = tkc(ts, i + 1).text
+      }
+      if (atw(ts, i, "fn")) { decl = "fn" }
+      if (atw(ts, i, "test")) {
+        decl = at_word(ts, i - 1, "lifecycle") ? "ltest" : "test"
+        if (at_word(ts, i - 1, "prop") || at_word(ts, i - 1, "fault")) { decl = "other" }
+      }
+      if (atw(ts, i, "service") || atw(ts, i, "type") || atw(ts, i, "extern")) { decl = "other" }
+    }
+    if (k == "{") {
+      kinds = kinds.push(sp_frame_kind(ts, i, top, decl, async_fn))
+      pds = pds.push(pd)
+      if (top == "") { decl = "other" }
+    }
+    if (k == "}") {
+      if (kinds.length() > 0) {
+        kinds = kinds.slice(0, kinds.length() - 1)
+        pds = pds.slice(0, pds.length() - 1)
+      }
+    }
+    if ((k == "(") || (k == "[")) { pd += 1 }
+    if ((k == ")") || (k == "]")) { pd -= 1 }
+    if ((top == "provide") && atw(ts, i, "fn")) { async_fn = atw(ts, i - 1, "async") }
+    let ln = t.line
+    if (atw(ts, i, "fail") && ((top == "fn") || (top == "method") || (top == "amethod") || (top == "test"))) {
+      return mk_verd(tagged("BAD", "`fail` is only allowed in a component activation body (A8)"), ln)
+    }
+    if (atw(ts, i, "await") && ((top == "method") || ((top == "provide") && !async_fn))) {
+      return mk_verd(tagged("A1", "`await` is only allowed in a component body"), ln)
+    }
+    if (atw(ts, i, "effect") && atw(ts, i + 1, "await") && atk(ts, i + 2, "{")) {
+      return mk_verd(tagged("BAD",
+        "`effect await { … }` — the block effect form does not take `await` (item 131)"), ln)
+    }
+    if (head && ((top == "test") || (top == "fn"))) {
+      let n = tkc(ts, i + 1)
+      var word = ""
+      if ((k == "ident") && ((t.text == "load") || (t.text == "unload") || (t.text == "call"))
+          && (n.kind == "ident")) { word = t.text }
+      if ((k == "ident") && (t.text == "advance") && ((n.kind == "ident") || (n.kind == "int"))) {
+        word = "advance"
+      }
+      if ((k == "ident") && (t.text == "abort")
+          && ((n.kind == "}") || (n.kind == ";") || (n.kind == "kw") || (n.kind == "ident"))) {
+        word = "abort"
+      }
+      if (atw(ts, i, "assert") && at_word(ts, i + 1, "no_residue")) { word = "assert no_residue" }
+      if (word != "") {
+        return mk_verd(tagged("BAD", "`".concat(word)
+          .concat("` is only allowed in a `lifecycle test` body")), ln)
+      }
+    }
+    if (head && (top == "ltest") && at_word(ts, i, "swap")) {
+      return mk_verd(tagged("BAD", "there is no `swap` statement"), ln)
+    }
+    if (head && (top == "comp")) {
+      if (atw(ts, i, "requires") || atw(ts, i, "provides")) {
+        return mk_verd(tagged("BAD", "`".concat(t.text)
+          .concat("` is part of the component header, not a statement in the body of ")
+          .concat(comp_name)), ln)
+      }
+      if ((k == "ident") && (atk(ts, i + 1, ".") || atk(ts, i + 1, "("))) {
+        return mk_verd(tagged("BAD",
+          "expected a statement (`let`, `effect`, `emit`, `fail`, `if`, `provide`), found '"
+            .concat(t.text).concat("'")), ln)
+      }
+    }
+    if ((k == "??") && (sp_nullish_mix(ts, i) != "")) {
+      let op = sp_nullish_mix(ts, i)
+      let msg = op == "||" ? "`||` cannot be mixed with `??` without parentheses"
+                           : "`??` cannot be mixed with `&&` without parentheses"
+      return mk_verd(tagged("BAD", msg), ln)
+    }
+    if ((k == "?.") && (atk(ts, i + 2, ".") || atk(ts, i + 2, "(") || atk(ts, i + 2, "["))) {
+      return mk_verd(tagged("BAD",
+        "an optional access `?.` can only be followed by another `?.` — a plain `.field`, call, or index after `?.` would not short-circuit"),
+        ln)
+    }
+    if (atw(ts, i, "realm") && atk(ts, i + 1, "(") && !atk(ts, i + 2, "string") && !atk(ts, i + 2, "?")) {
+      return mk_verd(tagged("BAD",
+        "dynamic realm labels are not supported — a realm is a static string literal"), ln)
+    }
+    if (atw(ts, i, "extern")) {
+      let c = tkc(ts, i + 1)
+      let named = (c.text == "pure") || (c.text == "acquire") || (c.text == "emission")
+        || (c.text == "witnessed") || (c.text == "local")
+      let shaped = (c.kind == "kw") || at_word(ts, i + 1, "witnessed") || at_word(ts, i + 1, "local")
+      if (!named || !shaped) { return mk_verd(tagged("G8", ext_unclassified_msg()), ln) }
+      let ui = sp_ui_teardown(ts, i)
+      if (ui != "") { return mk_verd(tagged("G4", ui), ln) }
+    }
+    i += 1
+  }
+  return no_verd()
+}
+
+// The whole PARSE stage of the native gate over `src`, the refusals the
+// reference raises before any check: "" when `src` parses, else
+// "<TAG>|<message>". `admit_src` runs the same steps, in this order, before
+// it collects anything; `compile.rvl` runs this over every used module, whose
+// checks it cannot judge alone (issue #2359).
+pub fn parse_refusal(src: Str) -> Str {
+  let ts = lex_src(src)
+  let fgn = foreign_scan_ts(ts)
+  if (fgn != "") { return tagged("FOREIGN", fgn) }
+  if (nesting_depth(ts) > nesting_limit()) { return tagged("BAD", too_deep_msg()) }
+  let cav = closure_assign_scan(ts)
+  if (cav.v != "") { return cav.v }
+  let pg = parse_prog_ts(ts)
+  if (pg.bad != "") { return tagged("BAD", pg.bad) }
+  let pps = first_parse_verd(verified_parse_scan(ts), effect_no_undo_scan(ts))
+  if (pps.v != "") { return pps.v }
+  let rph = realm_placeholder_scan(ts)
+  if (rph.v != "") { return rph.v }
+  return stmt_parse_scan(ts).v
+}
+
 pub fn admit_src(src: Str) -> Str {
   let ts = lex_src(src)
   // item 384: the foreign-construct redirects run first — the reference's
@@ -18615,6 +19036,9 @@ pub fn admit_src(src: Str) -> Str {
   // issue #1728: an unbound realm placeholder is refused before lowering.
   let rph = realm_placeholder_scan(ts)
   if (rph.v != "") { return rph.v }
+  // issue #2359: the statement-level and type-declaration parse rules.
+  let sps = stmt_parse_scan(ts)
+  if (sps.v != "") { return sps.v }
   // item 419c: collect every recoverable refusal and report the minimum by
   // `(line, seq)` — the reference's `diagnostics[0]`. A single-refusal program
   // yields exactly the wire it did before the sink existed.
@@ -18656,6 +19080,8 @@ pub fn admit_all(src: Str) -> Str {
   if (pps.v != "") { return fmt_all([mk_verd(pps.v, 0)]) }
   let rph = realm_placeholder_scan(ts)
   if (rph.v != "") { return fmt_all([rph]) }
+  let sps = stmt_parse_scan(ts)
+  if (sps.v != "") { return fmt_all([sps]) }
   let refs = collect_refusals(ts, pg)
   let fxe = fn_extern_scan(ts)
   if (refs.length() == 0 && fxe.v != "") { return fmt_all([fxe]) }
