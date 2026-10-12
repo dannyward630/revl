@@ -46,6 +46,7 @@ a stage.
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1227,6 +1228,111 @@ def test_native_module_admission_reads_every_stdlib_and_truc_module(compile_rvl)
     assert len(modules) > 20
     refused = {name: why for name, text in modules
                if (why := compile_rvl["ad_module_refusal"](text)) != ""}
+    assert refused == {}
+
+
+# Issue #2363: case -> (the reference's refusal, files). Each document is
+# refused by `compile_files`, and the native driver used to emit code for it.
+# `doc.rvl` is written into `sub/`, so `use "./lib.rvl"` names a module that
+# sits only in the PARENT directory: the reference resolves a `use` relative to
+# the importer and then on its search path, never up through the importer's
+# ancestors.
+_IMPORT_REFUSED = {
+    "module_only_in_the_parent_directory": ("cannot find imported module `./lib.rvl`", {
+        "sub/doc.rvl": _STORE_DOC % "1",
+        "lib.rvl": "pub service Store { fn put(x: Int) -> Str }\n",
+    }),
+    "a_name_the_module_does_not_declare": ("`Nope` is not a public declaration in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, Nope }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": "pub service Store { fn put(x: Int) -> Str }\n",
+    }),
+    "a_private_fn": ("`helper` is module-private in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, helper }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "fn helper() -> Int { return 1 }\n\n"
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+    }),
+    "a_private_type": ("`Row` is module-private in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, Row }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "type Row = { id: Int }\n\n"
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+    }),
+    "a_private_extern": ("`raw` is module-private in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, raw }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "extern pure fn raw(x: Int) -> Int = @py { return x }\n\n"
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+    }),
+    "a_component": ("`Impl` is not a public declaration in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, Impl }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "pub service Store { fn put(x: Int) -> Str }\n\n"
+            "component Impl provides store: Store {\n"
+            "  provide store {\n"
+            '    fn put(x: Int) = "a"\n'
+            "  }\n"
+            "}\n"),
+    }),
+    # One `use` further down: the reference checks the names `lib.rvl` imports
+    # too, though nothing of `inner.rvl` is carried.
+    "a_private_fn_two_uses_away": ("`hidden` is module-private in", {
+        "sub/doc.rvl": _STORE_DOC % "1",
+        "sub/lib.rvl": (
+            'use "./inner.rvl" { hidden }\n\n'
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+        "sub/inner.rvl": "fn hidden() -> Int { return 1 }\n",
+    }),
+}
+
+
+@pytest.mark.parametrize("tier", ("py", "go", "java", "rust"))
+@pytest.mark.parametrize("case", sorted(_IMPORT_REFUSED))
+def test_native_driver_refuses_an_import_the_reference_refuses(
+        compile_rvl, tmp_path, monkeypatch, case, tier):
+    """Issue #2363: a `use` target the reference does not find, or an imported
+    name the module does not export, makes the native driver refuse with
+    `REFUSED|BAD|<importer>: line N: <the reference's message>` instead of
+    emitting code for a document the reference rejects."""
+    monkeypatch.delenv("REVL_IMPORT_PATH", raising=False)
+    message, files = _IMPORT_REFUSED[case]
+    for name, text in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    doc = tmp_path / "sub" / "doc.rvl"
+    with pytest.raises(RevlError, match=re.escape(message)):
+        compile_files([str(doc)])
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
+    assert got.startswith("REFUSED|BAD|"), got[:160]
+    assert message in got, got[:300]
+
+
+@pytest.mark.parametrize("tier", ("py", "rust"))
+def test_native_driver_resolves_a_use_on_the_import_path(
+        compile_rvl, reference_emit, tmp_path, monkeypatch, tier):
+    """Issue #2363, the positive control: a module that is not beside the
+    importer resolves through `REVL_IMPORT_PATH` exactly as the reference
+    resolves it, and the native output is the reference's bytes."""
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "store.rvl").write_text(
+        "pub service Store { fn put(x: Int) -> Str }\n", encoding="utf-8")
+    (tmp_path / "app").mkdir()
+    doc = tmp_path / "app" / "doc.rvl"
+    doc.write_text('use "store.rvl" { Store }\n\n' + _STORE_COMPONENT % "1",
+                   encoding="utf-8")
+    monkeypatch.setenv("REVL_IMPORT_PATH", str(tmp_path / "lib"))
+    want = reference_emit[tier](compile_files([str(doc)]))
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
+    assert got == want
+
+
+def test_native_import_check_passes_every_stdlib_and_truc_module(compile_rvl):
+    """Issue #2363, the positive control: every `use` of every stdlib module
+    and truc component resolves and names only what its module exports, so the
+    check does not refuse an import the reference accepts."""
+    modules = _modules_the_reference_parses()
+    refused = {name: why for name, text in modules
+               if (why := compile_rvl["ad_imports_refusal"](text, str(ROOT / name))) != ""}
     assert refused == {}
 
 

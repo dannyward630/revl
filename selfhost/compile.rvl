@@ -179,29 +179,36 @@ fn emit_ir(ir: Any, tier: Str) -> Str {
 
 // The FIRST host crossing of this driver: find, then read, the module a `use`
 // names. `base` is the importing document's path ("" when the caller had none),
-// `target` the literal `use` target. Resolution follows the reference loader: the
-// target as written, relative to the importing document's directory, then the
-// same relative path walked up through the document's ancestors, which is how
-// `cli.rvl`'s sibling imports and the canary's `stdlib/json.rvl` both resolve.
-// The answer is the module's ABSOLUTE path (the reference loader's module key,
-// `os.path.abspath`, so two spellings of one module are one module and the
-// closure below sorts exactly as `compile_files` does), or "" when nothing is
-// there, so an unresolvable import is skipped rather than fatal.
+// `target` the literal `use` target. Resolution follows the reference loader
+// (`compiler.py::resolve_use`): the target relative to the importing document's
+// directory, then each search-path entry in order, `REVL_IMPORT_PATH` and then
+// the parent of the toolchain's `stdlib/`, which is how `cli.rvl`'s sibling
+// imports and a fixture's `stdlib/json.rvl` resolve. The first candidate that
+// exists wins. Issue #2363: nothing walks up through the document's ancestors,
+// since the reference never does and a module found that way is one it refuses
+// as "cannot find imported module". The answer is the module's ABSOLUTE path
+// (the reference loader's module key, `os.path.abspath`, so two spellings of
+// one module are one module and the closure below sorts exactly as
+// `compile_files` does), or "" when nothing is there. `ad_imports_refusal`
+// refuses such a `use` by the reference's message before anything is linked.
 extern pure fn module_path(base: Str, target: Str) -> Str = @py {
     import os
     if base == "" or target == "":
         return ""
-    cur = os.path.dirname(base)
-    for _ in range(0, 12):
-        cand = os.path.join(cur, target) if cur else target
-        if os.path.isfile(cand):
+    roots = [os.path.dirname(os.path.abspath(base))]
+    for entry in os.environ.get("REVL_IMPORT_PATH", "").split(os.pathsep):
+        entry = entry.strip()
+        if entry:
+            roots.append(entry)
+    try:
+        from revl._paths import stdlib_root
+        roots.append(str(stdlib_root().parent))
+    except ImportError:
+        pass
+    for root in roots:
+        cand = os.path.join(root, target)
+        if os.path.exists(cand):
             return os.path.abspath(cand)
-        if not cur:
-            break
-        parent = os.path.dirname(cur)
-        if parent == cur:
-            break
-        cur = parent
     return ""
 }
 
@@ -1936,6 +1943,137 @@ fn ad_used_modules_refusal(source: Str, path: Str) -> Str {
   return ""
 }
 
+// Issue #2363: the top-level names of a module, split the way the reference
+// loader splits them. `open` holds every name another module may import: a
+// `pub fn`, a `pub type`, a `pub extern` and every `service`, `pub` or not
+// (`_LoadedModule.public_fns`, `public_types`, `public_externs`, `services`).
+// `fns`, `types` and `externs` hold the names declared without `pub`.
+type AdDecls = { open: List[Str], fns: List[Str], types: List[Str], externs: List[Str] }
+
+// `decls` with the name `name` of a declaration of kind `kind` ("fn", "type",
+// "extern" or "service") added, open when `public` says so.
+fn ad_add_decl(decls: AdDecls, kind: Str, name: Str, public: Bool) -> AdDecls {
+  if (public || (kind == "service")) {
+    return { open: decls.open.push(name), fns: decls.fns, types: decls.types, externs: decls.externs }
+  }
+  if (kind == "fn") {
+    return { open: decls.open, fns: decls.fns.push(name), types: decls.types, externs: decls.externs }
+  }
+  if (kind == "type") {
+    return { open: decls.open, fns: decls.fns, types: decls.types.push(name), externs: decls.externs }
+  }
+  return { open: decls.open, fns: decls.fns, types: decls.types, externs: decls.externs.push(name) }
+}
+
+// The declarations of the module tokens `ts`. Every head is read at bracket
+// depth 0: `pub` marks the next declaration public, `type NAME`, `service NAME`
+// and `fn NAME` name one, and `extern ... fn NAME` names an extern (its class,
+// `emission[...]` scope and the like sit between `extern` and `fn`). A `fn`
+// that is not followed by a name is a function type and names nothing. The
+// module parsed already (`ad_used_modules_refusal`), so no head is malformed.
+fn ad_decls(ts: List[Token]) -> AdDecls {
+  var out: AdDecls = { open: [], fns: [], types: [], externs: [] }
+  var depth = 0
+  var public = false
+  var in_extern = false
+  var i = 0
+  while (i < ts.length()) {
+    let k = ts[i].kind
+    if ((k == "{") || (k == "[") || (k == "(")) { depth += 1 }
+    if ((k == "}") || (k == "]") || (k == ")")) { depth -= 1 }
+    if ((depth == 0) && (k == "kw")) {
+      let w = ts[i].text
+      let named = ad_kind(ts, i + 1, "ident")
+      if ((w == "fn") && named) {
+        out = ad_add_decl(out, in_extern ? "extern" : "fn", ts[i + 1].text, public)
+        public = false
+        in_extern = false
+      }
+      if (((w == "type") || (w == "service")) && named) {
+        out = ad_add_decl(out, w, ts[i + 1].text, public)
+        public = false
+      }
+      if (w == "extern") { in_extern = true }
+      if (w == "pub") { public = true }
+      if ((w == "use") || (w == "component") || (w == "test")) {
+        public = false
+        in_extern = false
+      }
+    }
+    i += 1
+  }
+  return out
+}
+
+// The reference loader's verdict on importing `name` from the module whose
+// declarations are `decls` at `dep` (`compiler.py::_import_named`), or "".
+fn ad_name_refusal(decls: AdDecls, name: Str, dep: Str) -> Str {
+  if (ul_has(decls.open, name)) { return "" }
+  let place = "`".concat(dep).concat("`")
+  if (ul_has(decls.fns, name) || ul_has(decls.types, name) || ul_has(decls.externs, name)) {
+    return "`".concat(name).concat("` is module-private in ").concat(place).concat(" and cannot be imported (G1)")
+  }
+  return "`".concat(name).concat("` is not a public declaration in ").concat(place)
+}
+
+// Why one `use` of the module tokens `ts` at `path` does not import as the
+// reference imports it, or "": the `use` at token `i` names a target that
+// resolves nowhere, or lists a name its module does not export.
+fn ad_use_refusal(ts: List[Token], i: Int, path: Str) -> Str {
+  let target = ts[i + 1].text
+  let at = "line ".concat(ts[i].line.to_str()).concat(": ")
+  let dep = module_path(path, target)
+  if (dep == "") {
+    return at.concat("cannot find imported module `").concat(target).concat("`")
+  }
+  if (!ad_kind(ts, i + 2, "{")) { return "" }
+  let decls = ad_decls(lex_src(read_module_text(dep)))
+  var j = i + 3
+  while (ad_kind(ts, j, "ident")) {
+    let why = ad_name_refusal(decls, ts[j].text, dep)
+    if (why != "") { return at.concat(why) }
+    j += 1
+    if (ad_kind(ts, j, ",")) { j += 1 }
+  }
+  return ""
+}
+
+// `REFUSED|BAD|<module>: line N: <message>` for the first `use`, breadth first
+// from the document `source` at `path` and each module once, that the reference
+// loader refuses: a target it cannot find (issue #2363: relative to the
+// importer, then on the search path, `module_path`), or an imported name the
+// module does not export. "" when every `use` imports. The reference loads
+// depth first, so with two such faults in one document it may name the other
+// one; it refuses the document either way.
+fn ad_imports_refusal(source: Str, path: Str) -> Str {
+  if (path == "") { return "" }
+  var paths: List[Str] = [path]
+  var srcs: List[Str] = [source]
+  var q = 0
+  while (q < paths.length()) {
+    let ts = lex_src(srcs[q])
+    var depth = 0
+    var i = 0
+    while (i < ts.length()) {
+      let k = ts[i].kind
+      if ((k == "{") || (k == "[") || (k == "(")) { depth += 1 }
+      if ((k == "}") || (k == "]") || (k == ")")) { depth -= 1 }
+      if ((depth == 0) && ad_kw(ts, i, "use") && ad_kind(ts, i + 1, "string")) {
+        let why = ad_use_refusal(ts, i, paths[q])
+        if (why != "") { return "REFUSED|BAD|".concat(paths[q]).concat(": ").concat(why) }
+        let dep = module_path(paths[q], ts[i + 1].text)
+        if (!ul_has(paths, dep)) {
+          paths = paths.push(dep)
+          srcs = srcs.push(read_module_text(dep))
+        }
+      }
+      i += 1
+    }
+    q += 1
+  }
+  return ""
+}
+
 // The path-taking driver — the honest multi-file native compile. Identical to
 // `compile_to` except that `path` names the document on disk, so its `use`
 // declarations resolve and the imported service rows are spliced into the IR
@@ -1953,6 +2091,9 @@ pub fn compile_to_at(source: Str, tier: Str, path: Str) -> Str {
   // Issue #2332: every used module reads whole, or nothing is linked.
   let unread = ad_used_modules_refusal(source, path)
   if (unread != "") { return unread }
+  // Issue #2363: every `use` resolves, and imports only what its module exports.
+  let unimported = ad_imports_refusal(source, path)
+  if (unimported != "") { return unimported }
   // FULLY NATIVE from here: native IR producer → use linking → parse → emitter.
   // Issue #2089: the producer also takes the document's host-ref WIRE, so an
   // extern's `refs` survive the native chain and the emitters can see them.
