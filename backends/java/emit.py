@@ -7657,7 +7657,7 @@ public static int revlRecordEmissionStart(String name) {
         String quoted = revlWalStr(name);
         revlWalWrite("{\"record\":\"effect\",\"seq\":" + seq
                 + ",\"component\":null,\"stepIndex\":null,\"kind\":\"emission\",\"label\":" + quoted
-                + ",\"site\":null,\"source\":null,\"origin\":{\"phase\":\"activation\"}"
+                + ",\"site\":null,\"source\":null,\"origin\":{}"
                 + ",\"boundary\":{\"class\":\"emission\",\"referent\":\"process-crossing\""
                 + ",\"compensated\":false,\"detail\":{\"key\":" + quoted + ",\"method\":" + quoted
                 + ",\"service\":null,\"args\":[]}}"

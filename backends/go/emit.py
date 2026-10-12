@@ -9053,7 +9053,7 @@ func revlRecordEmissionStart(name string) int {
 	w.write(map[string]any{
 		"record": "effect", "seq": seq, "component": nil, "stepIndex": nil,
 		"kind": "emission", "label": name, "site": nil, "source": nil,
-		"origin": map[string]any{"phase": "activation"},
+		"origin": map[string]any{},
 		"boundary": map[string]any{
 			"class": "emission", "referent": "process-crossing", "compensated": false,
 			"detail": map[string]any{"key": name, "method": name, "service": nil, "args": []any{}},

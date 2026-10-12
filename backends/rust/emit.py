@@ -10467,7 +10467,7 @@ def _revl_record_preamble() -> list[str]:
         '        "record": "effect", "seq": seq, "component": serde_json::Value::Null,',
         '        "stepIndex": serde_json::Value::Null, "kind": "emission", "label": name,',
         '        "site": serde_json::Value::Null, "source": serde_json::Value::Null,',
-        '        "origin": { "phase": "activation" },',
+        '        "origin": {},',
         '        "boundary": { "class": "emission", "referent": "process-crossing",',
         '            "compensated": false, "detail": { "key": name, "method": name,',
         '            "service": serde_json::Value::Null, "args": [] } },',

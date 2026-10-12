@@ -33,22 +33,27 @@ sink writes its header from the package `init` and the java sink when the
 `Components` class loads, so a failed header fsync stops the run before any
 component body. The rust sink is opened by each component factory, so there
 too a failed open or header fsync stops the run before the first mutation.
-
-On these three tiers an `extern emission fn` is wrapped at its definition:
-the wrapper writes and fsyncs the same `effect` record of kind `emission` the
-Python backend writes, then runs the host body, then writes
-`emission-complete` with the original `seq`. A start record that cannot be
-made durable stops the process, so the host body never runs unless its start
-record reached disk. Emissions made through a required service (the Python
-`_ServiceProxy` path) are not journalled on these tiers yet.
-
-When an fsync fails without the opt-out, the Python WAL and the wasm host
-drain truncate the file back to its length before that record, so recovery
-reads the record as absent rather than as a durable one.
 `REVL_WAL_ALLOW_UNSYNCED=1` is their explicit opt-out for a target that cannot
 fsync: it prints a warning, adds `"durability": "unsynced-opt-out"` to the
 header and writes a `durability-opt-out` record, the same marks
 `--allow-unsynced-wal` leaves.
+
+On these three tiers, in a document with components, an `extern emission fn`
+is wrapped at its definition: the wrapper writes and fsyncs an `effect` record
+of kind `emission` with the Python backend's record shape (without the
+component, step, origin or arguments), then runs the host body, then writes
+`emission-complete` with the original `seq`. A body that throws writes nothing
+more, so the crossing stays unresolved, as `emission-failed` leaves it on
+Python. A start record that cannot be made durable stops the process, so the
+host body never runs unless its start record reached disk. Emissions made
+through a required service (the Python `_ServiceProxy` path) are not
+journalled on these tiers yet.
+
+When an fsync fails without either opt-out, the Python WAL and the wasm host
+drain truncate the file back to its length before that record, so recovery
+reads the record as absent rather than as a durable one. The truncation is
+not itself fsynced, so after a power loss the record can reappear; the run
+still stopped before acting on it.
 
 `revl run app.rvl --wal run.wal --require-settled-wal` refuses before activation
 when the existing WAL has an emission without completion, an approved deferred
