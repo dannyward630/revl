@@ -50,6 +50,9 @@ gap 2). `compile_to(source, tier)` runs the whole chain in that one artifact:
 - the native gate refuses → `REFUSED|<TAG>|<message>` (the IR producer and emitter
   never run: a program the checker rejects cannot be compiled, the one revl
   promise, enforced natively)
+- `compile_to_at` only: a `use` the native link cannot reproduce →
+  `REFUSED|LINK|<message>` (issue #2181; the producer has run, the emitter never
+  does, so no source that differs from the reference is returned)
 - admitted → **the emitted target source**, `lower_to_ir(source)` → `json_parse`
   → `emit_<tier>_src`, byte-exact with the reference compile for the covered
   surface. A control verdict never collides with real output: py source begins
@@ -86,6 +89,27 @@ path, which is what the resolution needs:
   table **after** the document's own rows. A name already present in the output is
   left alone, so a diamond import is not duplicated and an import that is not a
   service is a no-op.
+- Then the driver links externs (issue #2181). The reference `compile_files`
+  merges every module whose pure declarations the document imports (a `pub fn`,
+  `type` or `extern` named in a `use` list, transitively) and appends that
+  module's whole `extern` section, so `use "stdlib/json.rvl" { json_parse,
+  json_stringify }` also carries `json_try_parse`. `ul_link_externs` builds the
+  same closure (breadth first from the document, each module's dependencies
+  sorted by absolute path, each module once), lowers each module and appends its
+  externs after the document's own, creating the `externs` array when the
+  document declares none. A module imported only for a service adds no extern.
+  Where the result would differ from the reference, the driver returns
+  `REFUSED|LINK|<message>` instead of emitting different source:
+  - an appended extern whose name the document already declares as an extern or
+    function (the reference renames colliding private names apart, this driver
+    does not);
+  - a pure dependency that carries anything but externs, which the reference
+    merges and this driver does not: any IR section beyond `ir_version`,
+    `services`, `components` and `externs` (functions, types, secrets, tests),
+    and any top-level declaration other than an extern, a `use`, a service or a
+    component (a `prop test`, say, for which the producer writes no key at all);
+  - a `use "m" as alias` import, which makes the whole module a dependency;
+  - a dependency that declares externs none of which lowered natively.
 
 This is the honest multi-file native compile: the whole chain still runs in revl,
 and the only host crossing is the read the reference loader also performs. It
@@ -121,7 +145,7 @@ document the **fully-native** chain does not reproduce is therefore a
 they are named document by document in
 [`LOWER_GAP_DOCS`](../tests/test_selfhost_compile.py).
 
-Tiers whose whole corpus survives the fully-native chain: `go`, `java`, `wasm`.
+Tiers whose whole corpus survives the fully-native chain: `py`, `ts`, `go`, `java`, `wasm`.
 
 The per-tier counts are not stored here, because they move with every
 corpus document a pull request adds. Print them with
@@ -354,8 +378,8 @@ What Stage 4 still needs after this is no longer an emit gap:
 ## Files
 
 - `selfhost/compile.rvl`: the fully-native driver (`compile_to_at` /
-  `compile_to`, the `use`-resolution scan and the one `read_module` extern read,
-  `admit`, the `CompileStream`/`Compile` plugin wrapper, in-file `test` blocks).
+  `compile_to`, the `use`-resolution scan and its two extern reads,
+  `module_path` and `read_module_text`, `admit`, the `CompileStream`/`Compile` plugin wrapper, in-file `test` blocks).
 - `selfhost/emit_{py,ts,go,java,rust,wasm}.rvl`: entrypoints renamed to
   `emit_<tier>_src` (items 230, 146) so all six co-compile in one composition.
 - `tests/test_selfhost_compile.py`: the fully-native byte-exact proof on all six

@@ -3043,18 +3043,73 @@ def _empty_map_decl_type(node: dict, pins: dict | None) -> str:
     return "java.util.Map"
 
 
+def _empty_list_decl_type(value: dict) -> str:
+    """Declaration type for a local bound to an empty list literal (#2296).
+
+    A raw `java.util.List` iterates as `Object`, so `for (x of xs)` over an
+    annotated `var xs: List[Str] = []` bound `x` as `Object` and every use that
+    needs the element type (a call `f(x)` with a `Str` parameter, `x.slice`)
+    was rejected by javac. That is what made every program importing
+    stdlib/str.rvl uncompilable here: `dedent` accumulates into exactly such a
+    list and then loops over it. The annotation is on the literal as
+    `"expected"` (roadmap 76b), the same pin the empty-map case reads, so the
+    local declares as that precise type and the loop binding gets the element
+    type. An unannotated `var xs = []` names no type and keeps the raw list,
+    and so does an element type `_java_v3_type` cannot spell
+    (`_declarable_type`).
+    """
+    return _annotated_list_decl_type(value) or "java.util.List"
+
+
+#: The scalar leaves an empty list may declare precisely: every TYPE_MAP name
+#: whose boxed spelling is a Java type. `Int32` boxes to `int` and `Unit` to
+#: `void`, so both are left out.
+_DECLARABLE_SCALARS = frozenset(TYPE_MAP) - {"Int32", "Unit"}
+
+
+def _declarable_type(name: str) -> bool:
+    """True when `_java_v3_type` spells *name* as a real Java type (#2296).
+
+    An allowlist, not a denylist: `_java_v3_type` turns any name it does not
+    know into a bare identifier (`Int8`, `Duration`, `Set<Object>`), and
+    rejects a function type outright. So a leaf is declarable only when it is
+    a `_DECLARABLE_SCALARS` name or a type the document declares, nested only
+    under `List`, `Opt` and `Map`.
+    """
+    name = name.strip()
+    if "[" not in name:
+        return name in _DECLARABLE_SCALARS or name in _V3_DECLARED_TYPES
+    base = name[: name.index("[")]
+    args = _split_v3_types(name[name.index("[") + 1 : name.rindex("]")])
+    arity = {"List": 1, "Opt": 1, "Map": 2}.get(base)
+    return arity == len(args) and all(_declarable_type(a) for a in args)
+
+
+def _annotated_list_decl_type(value: dict) -> str | None:
+    """The precise `java.util.List<E>` an empty list literal's `expected` pin
+    names, or None when it names none this tier can declare (#2296)."""
+    expected = value.get("expected")
+    expected = expected.strip() if isinstance(expected, str) else ""
+    if not (expected.startswith("List[") and _declarable_type(expected)):
+        return None
+    return _java_v3_type(expected)
+
+
 def _let_keyword(node: dict, ctx: _V3Ctx | None = None,
                  pins: dict | None = None) -> str:
     """Declaration type for a v3 `let`/`var`.
 
     An empty list literal has no element type, and `var` would freeze it as
-    `List<Object>` — later pushes and the declared return type then fail to
-    unify. A raw `java.util.List` keeps javac's erasure in play (unchecked
-    warning, correct code); non-empty literals infer their element type.
+    `List<Object>`, so later pushes and the declared return type then fail to
+    unify. An annotated `var xs: List[Str] = []` carries its annotation on the
+    literal (`"expected"`), so it declares the precise `java.util.List<String>`
+    (`_empty_list_decl_type`, issue #2296). Without an annotation a raw
+    `java.util.List` keeps javac's erasure in play (unchecked warning, correct
+    code); non-empty literals infer their element type.
     """
     value = node.get("value")
     if isinstance(value, dict) and value.get("kind") == "list" and not value.get("items"):
-        return "java.util.List"
+        return _empty_list_decl_type(value)
     if isinstance(value, dict) and value.get("kind") == "maplit" and not value.get("entries"):
         return _empty_map_decl_type(node, pins)
     adt = _adt_binding_type(value, ctx)
@@ -7879,6 +7934,11 @@ def _method_body_lines(
                 # issue #274, one path over: this arm never went through
                 # `_let_keyword`, so `var m = Map.empty()` froze here too.
                 decl = _empty_map_decl_type(stmt, v3_ctx.map_locals)
+            elif (isinstance(raw, dict) and raw.get("kind") == "list"
+                    and not raw.get("items") and _annotated_list_decl_type(raw)):
+                # issue #2296, the same path: `var` froze an annotated
+                # `var xs: List[Str] = []` as `List<Object>` here.
+                decl = _annotated_list_decl_type(raw)
             else:
                 decl = _adt_binding_type(raw, v3_ctx) or "var"
             lines.append(f"{pad}{decl} {name} = {value};" if step == "let"

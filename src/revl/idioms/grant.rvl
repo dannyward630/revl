@@ -1,0 +1,12 @@
+// idiom: grant
+// summary: the reach a confined row (one a stack layer adds) may compose against, named by the composition's owner
+// rule: `grant @row with { key, ... }` lists keys the row `requires`; only the base composition or the site layer may write it, never a layer for itself
+// rule: a grant is reach, not trust: the row stays non-first-party; `with` is required, because `@row {` lexes as a host body
+// fill: grant @records with { approvals, writer }
+
+composition Demo {
+  row @approvals from "approvals.rvl" provides approvals
+  row @writer from "writer.rvl" provides writer
+  stack "layers/records.rvl"
+  grant @records with { approvals, writer }
+}

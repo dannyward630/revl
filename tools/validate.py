@@ -713,8 +713,6 @@ class GoValidator(Validator):
 # A case with no probe is not run and not counted; it carries the weaker
 # compile-only claim and the matrix says so per row.
 
-_RUNNER_KEY = {"python": "py", "typescript": "ts", "go": "go"}
-
 # A trivial document, used once per tier to ask whether that runtime is here at
 # all. A runner that answers "skip" is unavailable with its own reason —
 # never a pass, for the same reason the compile validators refuse to conflate
@@ -744,10 +742,12 @@ def _run_program(tier: str, source: str) -> tuple[str, str]:
     import io  # noqa: PLC0415
 
     compile_source, runners = _revl()
+    from revl.tiers import short_tier  # noqa: PLC0415: _revl() put src on sys.path
+
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):
         try:
-            outcome, message = runners[_RUNNER_KEY[tier]](compile_source(source))
+            outcome, message = runners[short_tier(tier)](compile_source(source))
         except Exception as error:  # noqa: BLE001 — a crashed runner is a datum
             outcome, message = "fail", f"{type(error).__name__}: {error}"
     narration = " | ".join(line.strip() for line in buffer.getvalue().splitlines()

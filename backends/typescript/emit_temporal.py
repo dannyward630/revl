@@ -72,7 +72,7 @@ from typing import Any
 # The Temporal renderer is a SINK VARIANT of this backend, so it borrows the
 # backend's identifier / literal / scope / type machinery unchanged. emit.py is
 # loaded under several names across the repo (`emit` for the standalone CLI,
-# `revl_bundle_typescript_emit` for the bundle), so `emit.py::emit` registers
+# `revl_typescript_emit` for the bundle), so `emit.py::emit` registers
 # itself as `sys.modules["emit"]` and puts backends/typescript on the path
 # BEFORE it imports this module — the import below then resolves to that one
 # shared module, keeping a single copy of the emitter machinery (`EmitError`

@@ -184,7 +184,8 @@ CORPUS = [
     # ... and `Any` and a Result parameter in a component signature (issue #1892)
     "comp_provide_any_result.rvl",
     # ... and arithmetic keyed on `operands`: the checked Int `+ - *`, true
-    # division, a Float `%` and Int-to-Float widening (issues #2259, #2198)
+    # division, a Float `%` and Int-to-Float widening (issues #2259, #2198),
+    # and the checked Int32 `+ - *` and unary minus (issue #2262)
     "comp_provide_arith.rvl",
 ]
 

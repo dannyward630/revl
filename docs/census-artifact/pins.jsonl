@@ -8,6 +8,8 @@
 
 ["reference", "src/revl/__init__.py"]
 
+["reference", "src/revl/_doc_text.py"]
+
 ["reference", "src/revl/_paths.py"]
 
 ["reference", "src/revl/admission.py"]
@@ -41,8 +43,6 @@
 ["reference", "src/revl/hostfile.py"]
 
 ["reference", "src/revl/hostref.py"]
-
-["reference", "src/revl/import_openapi.py"]
 
 ["reference", "src/revl/kernel_boundary.py"]
 

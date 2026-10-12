@@ -638,27 +638,15 @@ LOWER_GAP_DOCS: dict[str, tuple[str, ...]] = {
         # rest of it. `../../../backends/typescript/tests/fixtures/fr1_loop.rvl`
         # left it when the component dialect grew its `Arrow` arm, issue #1844:
         # its provide method passes an arrow to `run_loop`.)
-        # (issue #2091, DIAGNOSED and split out as issue #2181: this entry is
-        # NOT a whole-program combination of the families above — it is ONE
-        # cause, and it is the only py entry left. `fr3_json_int.rvl` declares
-        # no externs of its own; it imports them (`use "stdlib/json.rvl"
-        # { json_parse, json_stringify }`). The reference's `compile_files`
-        # merges every module in the import closure into one `Program`, and
-        # `src/revl/compiler.py:1127` appends each module's extern declarations
-        # to it — so the document's IR carries that module's WHOLE `pub extern`
-        # section: `json_parse`, `json_stringify` and `json_try_parse`, which
-        # the `use` list does not even name. The native chain links imports in
-        # the DRIVER, not in `lower_to_ir`: `selfhost/compile.rvl`'s
-        # `ul_link_uses` appends only the resolved target's `services[name]`
-        # row, and `lower_to_ir` never sees the used module at all, so a
-        # document that declares no `extern` of its own produces no `externs`
-        # key — and the emitted module loses those three extern bodies (py ref
-        # 3902 bytes vs native 958; ts ref 8540 vs native 1092). The emitter
-        # half is byte-exact when fed the REFERENCE IR, as asserted above. The
-        # native producer also emits no top-level `manifest` key; that is NOT
-        # this cause — every other document here is byte-exact without it, so
-        # no tier emitter reads it.)
-        "../../../backends/typescript/tests/fixtures/fr3_json_int.rvl",
+        # (issue #2181: `../../../backends/typescript/tests/fixtures/fr3_json_int.rvl`
+        # left this list, the last py entry. It declares no externs of its own
+        # and imports them (`use "stdlib/json.rvl" { json_parse,
+        # json_stringify }`); the reference's `compile_files` merges that
+        # module's WHOLE extern section into the document's IR, `json_try_parse`
+        # included. `selfhost/compile.rvl`'s driver linked only the imported
+        # `services` rows. `ul_link_externs` now appends the extern section of
+        # every module in the document's pure closure, in the reference's
+        # order, and the document is byte-exact on py and ts.)
     ),
     "ts": (
         # (`services_composite.rvl` left this list when lower.rvl grew the
@@ -689,12 +677,8 @@ LOWER_GAP_DOCS: dict[str, tuple[str, ...]] = {
         # (`../../../examples/java_match.rvl` left this list with issue #1845:
         # its component's `Err(_)` arm binds `__`, the reference's `_safe_name`
         # spelling of the soft keyword `_`.)
-        # (issue #2091, split out as issue #2181: the SAME single cause as the
-        # py entry above — the native import linker carries a `use`d module's
-        # `services` rows but not its `pub extern` declarations. It is named in
-        # full on the py entry; one producer fix closes the residual on both
-        # tiers.)
-        "../../../backends/typescript/tests/fixtures/fr3_json_int.rvl",
+        # (issue #2181: `fr3_json_int.rvl` left this list with the py entry
+        # above; one driver fix closes both tiers.)
         # (issue #2092: `component_edges.rvl` left this list with the py entry
         # above. Its ONE async provide method was withheld by a producer that
         # had the `await` step for an ACTIVATION body but not for a provide
@@ -918,6 +902,122 @@ def test_the_residual_is_located_in_lower_not_in_the_emitter(
         f"LOWER_GAP_DOCS[{tier!r}]): {closed}\n"
         f"  newly diverging (a lower.rvl regression, or a corpus document whose "
         f"IR surface lower.rvl does not cover yet): {opened}")
+
+
+_PURE_CLOSURE_MODULES = {
+    # Declared z before a, so a path-sorted closure and a declaration-order one
+    # disagree; `Store` is a service-only import, so `s_hidden` must not travel.
+    "doc.rvl": (
+        'use "z_mod.rvl" { z_one }\n'
+        'use "a_mod.rvl" { a_one }\n'
+        'use "s_mod.rvl" { Store }\n\n'
+        "extern pure fn d_own(x: Int) -> Int = @py { return x } = @ts { return x }\n\n"
+        "fn total(x: Int) -> Int { return d_own(a_one(z_one(x))) }\n"),
+    # a_mod brings a private extern (the whole section travels) and a pure
+    # dependency of its own (the closure is transitive).
+    "a_mod.rvl": (
+        'use "t_mod.rvl" { t_one }\n\n'
+        "pub extern pure fn a_one(x: Int) -> Int = @py { return x + 1 } = @ts { return x + 1n }\n\n"
+        "extern pure fn a_priv(x: Int) -> Int = @py { return x } = @ts { return x }\n"),
+    "z_mod.rvl": (
+        "pub extern pure fn z_one(x: Int) -> Int = @py { return x * 2 } = @ts { return x * 2n }\n"),
+    "t_mod.rvl": (
+        "pub extern pure fn t_one(x: Int) -> Int = @py { return x - 1 } = @ts { return x - 1n }\n"),
+    "s_mod.rvl": (
+        "pub extern pure fn s_hidden(x: Int) -> Int = @py { return x } = @ts { return x }\n\n"
+        "service Store {\n  fn get(key: Str) -> Str\n}\n"),
+}
+
+
+@pytest.mark.parametrize("tier", ("py", "ts"))
+def test_native_driver_links_the_pure_closure_externs(
+        compile_rvl, reference_emit, tmp_path, tier):
+    """Issue #2181: a `use`d module's extern section reaches the document's IR
+    the way `compile_files` merges it: the document's own externs first, then
+    every module in its pure closure, breadth first and path-sorted, each
+    module's WHOLE section (a private extern too), and nothing from a module
+    imported only for a service."""
+    for name, text in _PURE_CLOSURE_MODULES.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    reference_ir = compile_files([str(doc)])
+    assert [e["name"] for e in reference_ir["externs"]] == [
+        "d_own", "a_one", "a_priv", "z_one", "t_one"]
+    want = reference_emit[tier](reference_ir)
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
+    assert got == want
+
+
+_UNLINKABLE = {
+    # The reference renames both private `h` apart (`h__m0`, `h__m1`); emitting
+    # two `h` would let the document's `f` call a.rvl's.
+    "private_extern_collision": ("collides", {
+        "doc.rvl": (
+            'use "a.rvl" { g }\n\n'
+            "extern pure fn h(x: Int) -> Int = @py { return x } = @ts { return x }\n\n"
+            "fn f(x: Int) -> Int { return h(g(x)) }\n"),
+        "a.rvl": (
+            "pub extern pure fn g(x: Int) -> Int = @py { return x } = @ts { return x }\n\n"
+            "extern pure fn h(x: Int) -> Int = @py { return x + 1 } = @ts { return x + 1n }\n"),
+    }),
+    # Two dependencies with a private `h` each: renamed apart by the reference.
+    "dependency_extern_collision": ("collides", {
+        "doc.rvl": (
+            'use "a.rvl" { g }\n'
+            'use "b.rvl" { k }\n\n'
+            "fn f(x: Int) -> Int { return g(k(x)) }\n"),
+        "a.rvl": (
+            "pub extern pure fn g(x: Int) -> Int = @py { return x } = @ts { return x }\n\n"
+            "extern pure fn h(x: Int) -> Int = @py { return x } = @ts { return x }\n"),
+        "b.rvl": (
+            "pub extern pure fn k(x: Int) -> Int = @py { return x } = @ts { return x }\n\n"
+            "extern pure fn h(x: Int) -> Int = @py { return x + 1 } = @ts { return x + 1n }\n"),
+    }),
+    # The producer writes no IR key for a `prop test`, which the reference
+    # merges and the go, java, rust and wasm emitters print.
+    "prop_test": ("`prop test", {
+        "doc.rvl": 'use "a.rvl" { g }\n\nfn f(x: Int) -> Int { return g(x) }\n',
+        "a.rvl": (
+            "pub extern pure fn g(x: Int) -> Int = @py { return x } = @ts { return x }\n\n"
+            'prop test "g is total" (a: Int) {\n  assert a == a\n}\n'),
+    }),
+    "pub_fn": ("`functions`", {
+        "doc.rvl": 'use "a.rvl" { helper }\n\nfn f(x: Int) -> Int { return helper(x) }\n',
+        "a.rvl": "pub fn helper(x: Int) -> Int { return x + 1 }\n",
+    }),
+    "type": ("`types`", {
+        "doc.rvl": 'use "a.rvl" { Pt }\n\nfn f(p: Pt) -> Int { return p.x }\n',
+        "a.rvl": "pub type Pt = { x: Int }\n",
+    }),
+    "secret": ("`secrets`", {
+        "doc.rvl": 'use "a.rvl" { post }\n\nfn f(x: Int) -> Int { return x }\n',
+        "a.rvl": (
+            "secret api_key for net.send\n\n"
+            "pub extern emission[net.send] fn post(m: Str) -> Int"
+            " = @py { return len(m) + len(api_key) } = @ts { return 1n }\n"),
+    }),
+    "alias": ("by alias", {
+        "doc.rvl": 'use "a.rvl" as m\n\nfn f(x: Int) -> Int { return m.helper(x) }\n',
+        "a.rvl": "pub fn helper(x: Int) -> Int { return x + 1 }\n",
+    }),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_UNLINKABLE))
+def test_native_driver_refuses_what_it_cannot_link(compile_rvl, tmp_path, case):
+    """Issue #2181: where the native link would emit something other than the
+    reference (two declarations under one name, or a dependency whose functions,
+    types or secrets it does not carry), the driver refuses loudly with
+    `REFUSED|LINK|` instead of emitting silently different source. The
+    reference compiles every one of these documents."""
+    why, files = _UNLINKABLE[case]
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    compile_files([str(doc)])
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), "py", str(doc))
+    assert got.startswith("REFUSED|LINK|"), got[:120]
+    assert why in got
 
 
 def test_six_way_composition_co_compiles(compile_rvl):

@@ -346,7 +346,7 @@ fn is_relational(op: Str) -> Bool {
 type Ctx = {
   fns: Map[Str, Bool], ca: Map[Str, Str], cp: Map[Str, Str],
   rbf: Map[Str, Str], vcases: Map[Str, Str], rfields: Map[Str, Str],
-  rn: Map[Str, Str]
+  rn: Map[Str, Str], tys: Map[Str, Bool]
 }
 // A rendered expression: its text AND the running match-temp counter.
 type Rendered = { text: Str, counter: Int }
@@ -1045,17 +1045,56 @@ fn render_expr(node: Any, ctx: Ctx, counter: Int) -> Rendered {
 }
 
 // -------------------------------------------------------------- statements
-// `_let_keyword`: an empty list literal declares as raw `java.util.List` (keeps
-// erasure in play); an empty `maplit` declares as the Map type its `expected`
-// pin names (issue #274 — `var` would freeze the local at `Map.of()`'s
-// `Map<Object, Object>` and neither the writer static nor the `return` would
-// then apply); an ADT-construction binding declares as its sealed interface
-// (`final Owner o`, restoring the type the frontend gave the expression); else
-// the `var` / `final var` inference.
+// `_empty_list_decl_type`: the precise List type an empty list literal's
+// `expected` pin names when `declarable_type` accepts it, else the raw
+// `java.util.List`.
+fn empty_list_decl_type(value: Any, ctx: Ctx) -> Str {
+  let pin = value_field(value, "expected")
+  if (!value_is_null(pin)) {
+    let t = trim(value_str(pin))
+    if (t.startsWith("List[") && declarable_type(t, ctx)) { return java_v3_type(pin, false) }
+  }
+  return "java.util.List"
+}
+
+// `_declarable_type`: an ALLOWLIST. A leaf is a scalar `type_map` name other
+// than `Int32`/`Unit`, or a type the document declares, nested only under
+// `List`, `Opt` and `Map`. Anything else (`Int8`, `Set[Int]`, a fn type)
+// keeps the raw list, since `java_v3_type` would spell it as no Java type.
+fn declarable_type(raw: Str, ctx: Ctx) -> Bool {
+  let name = trim(raw)
+  if (name.indexOf("[") < 0) {
+    if (name == "Int32" || name == "Unit") { return false }
+    if (type_map(name) != "") { return true }
+    return match ctx.tys.lookup(name) { Some(v) => v, None => false }
+  }
+  let lb = name.indexOf("[")
+  let base = name.slice(0, lb)
+  let args = split_top(name.slice(lb + 1, last_index_of(name, "]")), ",")
+  var arity = 0
+  if (base == "List" || base == "Opt") { arity = 1 }
+  if (base == "Map") { arity = 2 }
+  if (arity == 0 || args.length() != arity) { return false }
+  for (a of args) {
+    if (!declarable_type(a, ctx)) { return false }
+  }
+  return true
+}
+
+// `_let_keyword`: an empty list literal declares as the List type its
+// `expected` pin names (issue #2296: a raw `java.util.List` iterates as
+// `Object`, so a loop over an annotated list lost its element type), and as
+// raw `java.util.List` when unpinned (keeps erasure in play); an empty
+// `maplit` declares as the Map type its `expected` pin names (issue #274:
+// `var` would freeze the local at `Map.of()`'s `Map<Object, Object>` and
+// neither the writer static nor the `return` would then apply); an
+// ADT-construction binding declares as its sealed interface (`final Owner o`,
+// restoring the type the frontend gave the expression); else the `var` /
+// `final var` inference.
 fn let_keyword(node: Any, ctx: Ctx) -> Str {
   let value = value_field(node, "value")
   if (node_kind(value) == "list" && value_list(value_field(value, "items")).length() == 0) {
-    return "java.util.List"
+    return empty_list_decl_type(value, ctx)
   }
   if (node_kind(value) == "maplit" && value_list(value_field(value, "entries")).length() == 0) {
     let pin = value_field(value, "expected")
@@ -1442,13 +1481,15 @@ fn build_ctx(ir: Any) -> Ctx {
       vcases = vcases.set(name, sorted_key(cnames))
     }
   }
-  return { fns: fns, ca: ca, cp: cp, rbf: rbf, vcases: vcases, rfields: rfields, rn: Map.empty() }
+  var tys: Map[Str, Bool] = Map.empty()
+  for (name of value_keys(types)) { tys = tys.set(name, true) }
+  return { fns: fns, ca: ca, cp: cp, rbf: rbf, vcases: vcases, rfields: rfields, rn: Map.empty(), tys: tys }
 }
 
 // Swap in a fresh rename map (the component-capture scope for one render); the
 // modern provide-method path threads `{req -> this.req, bind -> this.bind}`.
 fn set_rn(ctx: Ctx, rn: Map[Str, Str]) -> Ctx {
-  return { fns: ctx.fns, ca: ctx.ca, cp: ctx.cp, rbf: ctx.rbf, vcases: ctx.vcases, rfields: ctx.rfields, rn: rn }
+  return { fns: ctx.fns, ca: ctx.ca, cp: ctx.cp, rbf: ctx.rbf, vcases: ctx.vcases, rfields: ctx.rfields, rn: rn, tys: ctx.tys }
 }
 
 // ============================================================ components/services

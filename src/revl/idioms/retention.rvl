@@ -1,0 +1,13 @@
+// idiom: retention
+// summary: a retention policy, and a persistence sink that takes a value held under it
+// rule: `retention NAME { until, residence, deleters }` is authority: `Retained[T, NAME]` may not reach a persistence sink past `until` (G-RETAIN), unless the policy declares a `hold`
+// rule: only an operator-trusted author may declare a policy; an untrusted author is refused it, since a deadline it writes is a deadline it can extend
+// fill: retention customer_pii {
+
+retention customer_pii {
+  until: "2099-01-01T00:00:00Z"
+  residence: "eu"
+  deleters: dpo
+}
+
+service Archive { emission[db.insert] fn keep(row: Retained[Str, customer_pii]) -> Int }
