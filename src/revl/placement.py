@@ -3415,8 +3415,10 @@ def _tier_emitter(name: str, path) -> object:
     the java and go emitters, which hold module-global render state (java's
     `_RECORD_MODE`, `_SECRET_MODE` and ui tables, go's `_V3_MODE` and
     `_COMP_NEEDS_*` flags), and each build has always taken a fresh module of
-    them. A cached module would share that state between builds and between
-    threads. If a build step for a stateless tier is ever added, take it from
+    them, so two builds on two threads never touch the same globals. The shared
+    loader's module is safe to reuse one emit after another, since each
+    `emit()` restores its state on exit, but not from two threads at once. If a
+    build step for a stateless tier is ever added, take it from
     `backend_emit_module` instead."""
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)

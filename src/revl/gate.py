@@ -380,7 +380,17 @@ def _emit_for_tier(ir: dict, tier: str) -> str:
     loader shares, so what the gate emits is real reference emitter output.
 
     A tier limit raised by the emitter leaves as `TierRefusal`; anything else it
-    raises is a fault and propagates unchanged (issue #1406)."""
+    raises is a fault and propagates unchanged (issue #1406).
+
+    The module is shared (issue #2204), so the gate now reuses the java and go
+    emitter modules, which hold module-global render state, where it used to
+    exec a fresh one per call. Sequential reuse is safe because each `emit()`
+    restores or re-initialises that state (java and rust save and restore it
+    in a `finally`, go resets it on the way out and on entry, python sets it
+    on entry), which the tests alternate programs over every tier to check.
+    Two threads calling `compile_to`
+    concurrently would still race on those module globals; a caller that
+    compiles from several threads must serialise the emit."""
     from .placement import backend_emit_module  # noqa: PLC0415 - off the compile graph
     from .refusal import refusals  # noqa: PLC0415
     # issue #2204: the one cached loader, so this is the module bundle and the

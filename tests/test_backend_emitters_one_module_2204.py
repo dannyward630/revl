@@ -16,6 +16,7 @@ one tier gets the same module; and loading them leaves the bare name and
 from __future__ import annotations
 
 import ast
+import copy
 import importlib.machinery
 import importlib.util
 import sys
@@ -157,6 +158,20 @@ component CounterSvc provides counter: Counter {
 }
 """
 
+#: An async function whose body a test can corrupt into a refusal.
+ASYNC_FN = """
+extern emission async fn aop(x: Str) -> Str = @py { return x }
+  = @ts { return x }
+fn caller(x: Str) -> Str {
+  let a = aop(x)
+  return a
+}
+service ARun { emission async fn go(x: Str) -> Str }
+component Agent provides arun: ARun {
+  provide arun { async fn go(x) = emit caller(x) }
+}
+"""
+
 #: gate tier spelling -> backend directory, for the tiers that refuse REFUSED
 REFUSING = (("py", "python"), ("ts", "typescript"), ("rust", "rust"),
             ("java", "java"), ("go", "go"))
@@ -206,19 +221,63 @@ def test_gate_does_not_exec_the_emitter_again_per_call(tier, directory, monkeypa
     assert gate._emit_for_tier(ir, tier) == gate._emit_for_tier(ir, tier)
 
 
-@pytest.mark.parametrize("tier,directory", REFUSING + (("wasm", "wasm"),))
-def test_gate_shared_module_emits_what_a_fresh_one_does(tier, directory):
-    """The gate used to take a fresh module per call. The java and go
-    emitters hold module-global render state, so this pins that a reused one
-    emits the same bytes as a fresh one, call after call."""
-    ir = compile_source(PLAIN, "plain.rvl")
+def _fresh_emitter(directory: str):
     path = backends_root() / directory / "emit.py"
     spec = importlib.util.spec_from_file_location(f"fresh_{directory}_emit", path)
     fresh = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fresh)
-    want = fresh.emit(ir)
-    for _ in range(3):
-        assert gate._emit_for_tier(ir, tier) == want
+    return fresh
+
+
+def _outcome(call):
+    """What an emit did, as a comparable value: its output, or its refusal."""
+    try:
+        return ("ok", call())
+    except gate.TierRefusal as refusal:
+        return ("refused", str(refusal))
+    except Exception as refusal:  # noqa: BLE001 - the fresh module's own EmitError
+        return ("refused", str(refusal))
+
+
+@pytest.mark.parametrize("tier,directory", REFUSING + (("wasm", "wasm"),))
+def test_gate_shared_module_emits_what_a_fresh_one_does(tier, directory):
+    """The gate used to take a fresh module per call. The java and go
+    emitters hold module-global render state, so this alternates a refused and
+    a plain program over the shared module and compares every call with a
+    module that never saw the other program. State one program left behind
+    would change the next one's bytes."""
+    programs = {"refused": compile_source(REFUSED, "agent.rvl"),
+                "plain": compile_source(PLAIN, "plain.rvl")}
+    want = {name: _outcome(lambda ir=ir: _fresh_emitter(directory).emit(ir))
+            for name, ir in programs.items()}
+    assert want["plain"][0] == "ok"
+    for name in ("refused", "plain", "refused", "plain"):
+        got = _outcome(lambda ir=programs[name]: gate._emit_for_tier(ir, tier))
+        assert got == want[name], f"{tier}: {name} program differs after the one before it"
+
+
+def test_a_refusal_mid_function_does_not_leak_the_py_colour_into_the_next_emit():
+    """`_emit_functions` set `_PY_IN_ASYNC` and `_PY_AWAIT_LOCALS` per function
+    and cleared them only on the normal exit, so an `EmitError` inside an async
+    function's body left them set for the next `emit` on the same module. That
+    module is now shared. No program changes its bytes through the leaked flag
+    today (a component body does not read it), so the state itself is what is
+    asserted, with the bytes of the following emit checked as well."""
+    ir = compile_source(ASYNC_FN, "a.rvl")
+    bad = copy.deepcopy(ir)
+    caller = next(f for f in bad["functions"] if f["name"] == "caller")
+    assert caller.get("async") is True
+    caller["body"][-1]["expr"] = {"kind": "bogus"}
+    plain = compile_source(PLAIN, "plain.rvl")
+
+    module = _fresh_emitter("python")
+    with pytest.raises(module.EmitError, match="unsupported expression kind"):
+        module.emit(bad)
+    assert module._PY_IN_ASYNC is False
+    assert module._PY_IN_ARROW is False
+    assert module._PY_AWAIT_LOCALS == set()
+    assert module.emit(plain) == _fresh_emitter("python").emit(plain)
+    assert module.emit(ir) == _fresh_emitter("python").emit(ir)
 
 
 def test_the_stateful_loaders_stay_fresh():
