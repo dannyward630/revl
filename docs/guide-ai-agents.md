@@ -371,11 +371,16 @@ Run `revl mcp serve --print-config` from your project to have the config block
 written for you: it names an absolute interpreter that imports both revl and
 cordis (the runtime venv `setup.sh` builds, else the interpreter running the
 command), the `-P -m revl mcp serve` invocation and a `--root` for the current
-directory (repeat `--root DIR` to name others), then exits without serving. It
-exits 1 and names the fix when no interpreter can import both, and `revl
-doctor` reports the same answer on its `mcp client config` row. Paste the
-output under your client's server list; the manual recipes below are for the
-cases it does not cover (a console script, a `PYTHONPATH` checkout).
+directory, then exits without serving. The check ignores the PYTHONPATH of the
+shell that ran it, because the client will not have it; a source checkout that
+only works with a `PYTHONPATH` gets exactly that value in an `env` key. Serve
+flags you add (`--root DIR`, `--grant`, `--operator-profile`, `--all-tools` and
+so on) are carried into the block with their paths made absolute; flags that
+open a listener (`--http`, `--tls-*`) are refused by name, since a stdio config
+cannot carry them. It exits 1 and names the fix when no interpreter qualifies,
+and `revl doctor` reports the same answer on its `mcp client config` row. Paste
+the output under your client's server list; the manual recipes below are for the
+cases it does not cover (a console script).
 
 If revl is installed in a virtualenv (a wheel, or `sh backends/python/setup.sh`
 in a checkout, which installs revl and the pinned cordis-py editable), the

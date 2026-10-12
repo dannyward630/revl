@@ -40,6 +40,7 @@ from pathlib import Path
 
 from .._paths import backends_root, venv_python as _venv_python
 from . import remedy
+from .print_config import PROBE
 
 #: Verbs that need a live composition, which only the runtime can boot.
 RUNTIME_VERBS = frozenset({
@@ -100,7 +101,7 @@ def venv_has_cordis(python: Path) -> bool:
         return False
     try:
         probe = subprocess.run(
-            [str(python), "-P", "-c", "import cordis, revl"],
+            [str(python), *PROBE],
             capture_output=True, timeout=30, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return False

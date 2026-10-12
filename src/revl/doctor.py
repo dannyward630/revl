@@ -513,18 +513,24 @@ def check_mcp_runtime(prober: Prober, backends_dir: Path) -> Check:
 def check_mcp_client_config(prober: Prober, backends_dir: Path) -> Check:
     """Whether an MCP client can be pointed at `revl mcp serve` (issue #2281):
     some interpreter has to import both revl and cordis, and
-    `revl mcp serve --print-config` prints a block naming it. The candidates are
-    the ones that command tries, probed the same way."""
+    `revl mcp serve --print-config` prints a block naming it. Same candidates,
+    same probe (no inherited PYTHONPATH) and same source-checkout fallback as
+    that command, so the two cannot disagree."""
     from .mcp import print_config  # noqa: PLC0415 - lazy
 
     options = print_config.candidates(backends_dir / "python")
-    for python in options:
-        if prober.run([str(python), *print_config.PROBE]).ok:
-            return Check("mcp client config", OK, None,
-                         f"`revl mcp serve --print-config` names {python}, "
-                         "which imports revl and cordis")
+    found = print_config.resolve(
+        options, lambda argv: prober.run(argv).ok,
+        checkout_pythonpath(prober, backends_dir))
+    if found is not None:
+        python, env = found
+        how = (f", with `env` PYTHONPATH={env['PYTHONPATH']}" if env else "")
+        return Check("mcp client config", OK, None,
+                     f"`revl mcp serve --print-config` names {python}, which "
+                     f"imports revl and cordis{how}")
     return Check("mcp client config", WARN, None,
-                 "no interpreter imports both revl and cordis (tried "
+                 "no interpreter imports both revl and cordis without this "
+                 f"shell's PYTHONPATH (tried "
                  f"{', '.join(str(p) for p in options)}), so "
                  "`revl mcp serve --print-config` has nothing to name. Fix: sh "
                  f"{backends_dir / 'python' / 'setup.sh'}")
