@@ -898,12 +898,16 @@ def _reject_running_service_name_folds(services: list, running: dict,
     leaves the composition holding `KVStore` and `Kvstore`, the pair a single
     compile refuses. `source_of` gives the file a declaration came from."""
     held: dict[str, str] = {}
-    for name in running or {}:
+    for name in running:
         if isinstance(name, str):
             held.setdefault(component_name_fold(name), name)
     for svc in services:
+        # an exact name is a redeclaration, even in a composition that already
+        # holds a second spelling of it
+        if svc.name in running:
+            continue
         stays = held.get(component_name_fold(svc.name))
-        if stays is None or stays == svc.name:
+        if stays is None:
             continue
         where = (source_of(svc) if source_of is not None else None) or filename
         raise RevlError(
