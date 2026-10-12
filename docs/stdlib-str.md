@@ -53,7 +53,8 @@ fault.
 | `dedent(text)` | `Str -> Str` | **byte-exact** to Python `textwrap.dedent` |
 | `str_newline()` | `-> Str` | the portable newline, a one-char string `U+000A` |
 | `str_tab()` | `-> Str` | a one-char string `U+0009` (horizontal tab) |
-| `str_char(code)` | `Int -> Str` | reverse of `charCodeAt`: a one-char string for `code`; covers `U+0009`/`U+000A` and printable ASCII `U+0020..U+007E`, else `""` |
+| `str_char(code)` | `Int -> Str` | reverse of `charCodeAt`: a one-char string for any Unicode scalar value `code` (control characters such as CR and NUL included), else `""` |
+| `str_crlf()` | `-> Str` | CR LF (`U+000D U+000A`), the line end IMAP, SMTP and RFC 5322 require |
 
 `is_space` is exported because it is the reusable character predicate the strip
 functions share; `is_word_ch` / `is_alpha_us` / `is_sp_tab` / `ascii_printable` /
@@ -80,25 +81,26 @@ except the double quote, which is spliced in from a backtick), and for `9`/`10`
 it returns the backtick helpers, so `str_char(code).charCodeAt(0) == code` and
 `str_char(10) == str_newline()`.
 
-There is no `chr` / `fromCharCode` on the base `Str` surface, so a code point
-**outside** `U+0009`/`U+000A` and printable ASCII `U+0020..U+007E` has no
-pure-revl spelling; `str_char` returns `""` for it. A wider range would need a
-blessed per-tier primitive, which no self-host stage yet requires. The file
-carries the literal newline and tab bytes, so it is pinned `stdlib/str.rvl
--text` in `.gitattributes` to keep the newline byte from being rewritten to
-CRLF (which would make `str_newline()` two chars). The idiom (and its
-round-trips against `charCodeAt`) is pinned in `tests/test_str_stdlib.py`.
+Every other code point (CR, NUL and the other control characters, and
+everything above `U+007E`) goes through the `Int.to_char()` builtin
+(docs/stdlib-2.0.md §Int.to_char, issue #2285), the per-tier primitive this
+section used to defer. So for every Unicode scalar value `code`,
+`str_char(code).charCodeAt(0) == code` and the result has length 1; a negative
+value, a surrogate or anything above `U+10FFFF` returns `""`. The file carries
+the literal newline and tab bytes, so it is pinned `stdlib/str.rvl -text` in
+`.gitattributes` to keep the newline byte from being rewritten to CRLF (which
+would make `str_newline()` two chars). The idiom (and its round-trips against
+`charCodeAt`) is pinned in `tests/test_str_stdlib.py`, and the cross-tier run
+in `tests/test_2285_str_char_control_cross_tier.py`.
 
-**Carriage return (`U+000D`) is intentionally absent.** The toolchain reads
-source in universal-newline mode (`parse_file` → `open(path)`), so a literal CR
-byte written into source is folded to LF *before the lexer runs* — a lone CR has
-no pure-revl spelling at all, and `str_char(13)` returns `""`. Emitting a real
-CR would need a blessed per-tier `chr` / `fromCharCode` primitive; that is
-deferred until a stage actually needs one rather than faked here.
+**Carriage return (`U+000D`) has no literal spelling.** The toolchain reads
+source in universal-newline mode (`parse_file` -> `open(path)`), so a literal
+CR byte written into source is folded to LF *before the lexer runs*. Spell it
+`str_char(13)` (or `13.to_char()`); a CRLF line end is `str_crlf()`.
 
 **Idiom for a one-off control char without the helper:** the same backtick
-template — `` `<newline>` `` for a real newline, or `str_char(code)` for any
-supported code point — is the portable spelling; never re-add a `@py chr(...)`
+template (`` `<newline>` ``) for a real newline, or `str_char(code)` for any
+code point, is the portable spelling; never re-add a `@py chr(...)`
 extern.
 
 ## `dedent` — byte-exact to `textwrap.dedent`

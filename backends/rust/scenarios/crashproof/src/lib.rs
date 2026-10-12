@@ -303,20 +303,33 @@ const REVL_WAL_GUARANTEE: &str = "the WAL records each committed effect's step i
 /// flushed + fsync'd (`sync_all`) before the call that wrote it returns —
 /// the write-ahead discipline the py tier uses, so a record a caller saw
 /// acknowledged is on disk before the effect it describes is allowed to
-/// matter. Mirrors the go tier's `revlWAL`.
+/// matter. Mirrors the go tier's `revlWAL`. A failed write or fsync is
+/// fatal (issue #2345): the process stops instead of running on with a
+/// record that never became durable. `REVL_WAL_ALLOW_UNSYNCED=1` is the
+/// explicit opt-out for a target that cannot fsync; it is stamped into the
+/// log itself.
 struct RevlWal {
     file: std::fs::File,
     seq: u64,
     seqs: Vec<u64>,
+    unsynced: bool,
 }
 
 impl RevlWal {
+    /// Append one record and fsync it. Any failure panics; only the visible
+    /// `REVL_WAL_ALLOW_UNSYNCED` opt-out lets a failed fsync through.
     fn write(&mut self, rec: &serde_json::Value) {
         use std::io::Write;
-        if let Ok(mut line) = serde_json::to_string(rec) {
-            line.push('\n');
-            let _ = self.file.write_all(line.as_bytes());
-            let _ = self.file.sync_all(); // fsync per record
+        let mut line = serde_json::to_string(rec)
+            .unwrap_or_else(|e| panic!("revl: write-ahead log record could not be encoded: {e}"));
+        line.push('\n');
+        if let Err(e) = self.file.write_all(line.as_bytes()) {
+            panic!("revl: write-ahead log write failed: {e}");
+        }
+        if let Err(e) = self.file.sync_all() {
+            if !self.unsynced {
+                panic!("revl: write-ahead log fsync failed: {e}");
+            }
         }
     }
 }
@@ -338,13 +351,22 @@ fn revl_wal_sink() -> Option<&'static std::sync::Mutex<RevlWal>> {
                 .create(true).write(true).append(true).open(&path)
             {
                 Ok(f) => f,
-                Err(_) => return None,
+                Err(e) => panic!("revl: cannot open the write-ahead log REVL_WAL: {e}"),
             };
-            let mut wal = RevlWal { file, seq: 0, seqs: Vec::new() };
-            wal.write(&serde_json::json!({
+            let unsynced = std::env::var("REVL_WAL_ALLOW_UNSYNCED").ok().as_deref() == Some("1");
+            let mut wal = RevlWal { file, seq: 0, seqs: Vec::new(), unsynced };
+            let mut header = serde_json::json!({
                 "record": "header", "walVersion": 1, "generation": 1,
                 "guarantee": REVL_WAL_GUARANTEE,
-            }));
+            });
+            if unsynced {
+                eprintln!("warning: REVL_WAL_ALLOW_UNSYNCED=1 disables the WAL fsync guarantee");
+                header["durability"] = serde_json::json!("unsynced-opt-out");
+            }
+            wal.write(&header);
+            if unsynced {
+                wal.write(&serde_json::json!({ "record": "durability-opt-out", "fromSeq": 0 }));
+            }
             Some(std::sync::Mutex::new(wal))
         })
         .as_ref()

@@ -2459,7 +2459,7 @@ fn builtin_return_type(node: Value, ctx_: Ctx__m1) -> String {
     if (((((((((m == "length") || (m == "charCodeAt")) || (m == "codepoint_at")) || (m == "indexOf")) || (m == "div_trunc")) || (m == "div_floor")) || (m == "div_euclid")) || (m == "mod")) || (m == "size")) {
         return String::from("Int");
     }
-    if (((((m == "charAt") || (m == "join")) || (m == "repeat")) || (m == "str")) || (m == "to_str")) {
+    if ((((((m == "charAt") || (m == "join")) || (m == "repeat")) || (m == "str")) || (m == "to_str")) || (m == "to_char")) {
         return String::from("Str");
     }
     if (((((((m == "startsWith") || (m == "endsWith")) || (m == "has")) || (m == "is_alnum")) || (m == "is_digit")) || (m == "is_alpha")) || (m == "is_space")) {
@@ -3729,6 +3729,9 @@ fn render_builtin(node: Value, ctx_: Ctx__m1) -> String {
     }
     if (method == "to_str") {
         return format!("({}).to_string()", target);
+    }
+    if (method == "to_char") {
+        return format!("{{ let _cp: i64 = {}; if _cp < 0 || _cp > 0x10FFFF {{ String::new() }} else {{ char::from_u32(_cp as u32).map(|c| c.to_string()).unwrap_or_default() }} }}", target);
     }
     if (method == "length") {
         return format!("{}.revl_length()", target);
@@ -6108,7 +6111,7 @@ fn map_value_expr_type(node: Value, var_types: std::collections::HashMap<String,
         if (((((method == "length") || (method == "charCodeAt")) || (method == "codepoint_at")) || (method == "indexOf")) || (method == "to_int")) {
             return String::from("Int");
         }
-        if (((((method == "charAt") || (method == "join")) || (method == "repeat")) || (method == "to_str")) || (method == "slice")) {
+        if ((((((method == "charAt") || (method == "join")) || (method == "repeat")) || (method == "to_str")) || (method == "to_char")) || (method == "slice")) {
             return String::from("Str");
         }
         if (method == "split") {
@@ -19565,7 +19568,7 @@ fn tk_bsig_family(m: &str, th: String) -> String {
     if (((((((((((m == "charAt") || (m == "charCodeAt")) || (m == "codepoint_at")) || (m == "split")) || (m == "repeat")) || (m == "startsWith")) || (m == "endsWith")) || (m == "is_alnum")) || (m == "is_digit")) || (m == "is_alpha")) || (m == "is_space")) {
         return String::from("Str");
     }
-    if (((((((((m == "div_trunc") || (m == "div_floor")) || (m == "div_euclid")) || (m == "mod")) || (m == "to_int32")) || (m == "checked_div_trunc")) || (m == "checked_div_floor")) || (m == "checked_div_euclid")) || (m == "checked_mod")) {
+    if ((((((((((m == "div_trunc") || (m == "div_floor")) || (m == "div_euclid")) || (m == "mod")) || (m == "to_int32")) || (m == "to_char")) || (m == "checked_div_trunc")) || (m == "checked_div_floor")) || (m == "checked_div_euclid")) || (m == "checked_mod")) {
         return String::from("Int");
     }
     if (((((m == "set") || (m == "lookup")) || (m == "has")) || (m == "size")) || (m == "remove")) {
@@ -20143,7 +20146,7 @@ fn tk_no_call() -> CallN {
 }
 
 fn tk_stdlib_surface() -> String {
-    return ((((String::from("charAt, charCodeAt, checked_div_euclid, checked_div_floor, ").revl_concat("checked_div_trunc, checked_mod, codepoint_at, concat, div_euclid, ")).revl_concat("div_floor, div_trunc, endsWith, field, has, indexOf, is_alnum, ")).revl_concat("is_alpha, is_digit, is_space, join, keys, length, list, lookup, ")).revl_concat("mod, push, remove, repeat, set, size, slice, split, startsWith, ")).revl_concat("str, to_int, to_int32, to_str");
+    return ((((String::from("charAt, charCodeAt, checked_div_euclid, checked_div_floor, ").revl_concat("checked_div_trunc, checked_mod, codepoint_at, concat, div_euclid, ")).revl_concat("div_floor, div_trunc, endsWith, field, has, indexOf, is_alnum, ")).revl_concat("is_alpha, is_digit, is_space, join, keys, length, list, lookup, ")).revl_concat("mod, push, remove, repeat, set, size, slice, split, startsWith, ")).revl_concat("str, to_char, to_int, to_int32, to_str");
 }
 
 fn tk_divides_by(m: &str) -> bool {
@@ -28314,7 +28317,7 @@ fn struct_field(t: &str, name: &str) -> String {
 }
 
 fn is_builtin_method(m: &str) -> bool {
-    return (((((((((((((((((((((((((((((((((((((m == "length") || (m == "push")) || (m == "slice")) || (m == "charAt")) || (m == "charCodeAt")) || (m == "codepoint_at")) || (m == "indexOf")) || (m == "concat")) || (m == "split")) || (m == "join")) || (m == "repeat")) || (m == "startsWith")) || (m == "endsWith")) || (m == "is_alnum")) || (m == "is_digit")) || (m == "is_alpha")) || (m == "is_space")) || (m == "div_trunc")) || (m == "div_floor")) || (m == "div_euclid")) || (m == "mod")) || (m == "to_int")) || (m == "to_int32")) || (m == "checked_div_trunc")) || (m == "checked_div_floor")) || (m == "checked_div_euclid")) || (m == "checked_mod")) || (m == "set")) || (m == "lookup")) || (m == "has")) || (m == "size")) || (m == "keys")) || (m == "remove")) || (m == "to_str")) || (m == "field")) || (m == "str")) || (m == "list"));
+    return ((((((((((((((((((((((((((((((((((((((m == "length") || (m == "push")) || (m == "slice")) || (m == "charAt")) || (m == "charCodeAt")) || (m == "codepoint_at")) || (m == "indexOf")) || (m == "concat")) || (m == "split")) || (m == "join")) || (m == "repeat")) || (m == "startsWith")) || (m == "endsWith")) || (m == "is_alnum")) || (m == "is_digit")) || (m == "is_alpha")) || (m == "is_space")) || (m == "div_trunc")) || (m == "div_floor")) || (m == "div_euclid")) || (m == "mod")) || (m == "to_int")) || (m == "to_int32")) || (m == "checked_div_trunc")) || (m == "checked_div_floor")) || (m == "checked_div_euclid")) || (m == "checked_mod")) || (m == "set")) || (m == "lookup")) || (m == "has")) || (m == "size")) || (m == "keys")) || (m == "remove")) || (m == "to_str")) || (m == "to_char")) || (m == "field")) || (m == "str")) || (m == "list"));
 }
 
 fn is_host_root(n: &str) -> bool {
@@ -28371,6 +28374,9 @@ fn builtin_ret(method: &str, recvTy: String) -> String {
         return String::from("Int32");
     }
     if (method == "to_str") {
+        return String::from("Str");
+    }
+    if (method == "to_char") {
         return String::from("Str");
     }
     if (method == "size") {
@@ -33143,7 +33149,11 @@ pub fn str_char(code: i64) -> String {
         let t = ascii_printable();
         return t.revl_slice((code).checked_sub(32i64).expect("revl: Int overflow"), ((code).checked_sub(32i64).expect("revl: Int overflow")).checked_add(1i64).expect("revl: Int overflow"));
     }
-    return String::from("");
+    return { let _cp: i64 = code; if _cp < 0 || _cp > 0x10FFFF { String::new() } else { char::from_u32(_cp as u32).map(|c| c.to_string()).unwrap_or_default() } };
+}
+
+pub fn str_crlf() -> String {
+    return str_char(13i64).revl_concat(&str_newline());
 }
 
 pub fn dedent(text: String) -> String {

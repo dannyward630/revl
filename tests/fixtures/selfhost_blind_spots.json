@@ -309,12 +309,13 @@
       "Internal pre-lowered WAT node injected by _ComponentEmitter._to_v3/_delegate, not a frontend source construct. Pure modules render source expressions directly and never enter this component bridge.": [
         "kind=__wat"
       ],
-      "Interpolation and indexOf/join/split demand helper bodies absent from the selfhost preamble and are explicit oracle deferrals. Component format is the older $0-template encoding rewritten to interp; ordinary binary Str concatenation is covered.": [
+      "Interpolation and indexOf/join/split/to_char demand helper bodies absent from the selfhost preamble and are explicit oracle deferrals. Component format is the older $0-template encoding rewritten to interp; ordinary binary Str concatenation is covered.": [
         "kind=format",
         "kind=interp",
         "method=indexOf",
         "method=join",
-        "method=split"
+        "method=split",
+        "method=to_char"
       ],
       "Legacy component reference spelling consumed by _ComponentEmitter; canonical pure source references lower to kind=var. This syntax-census mismatch does not mean variable reads are unsupported.": [
         "kind=name"
