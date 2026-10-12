@@ -617,6 +617,40 @@ def test_the_manifest_admission_arm_withholds_a_name_folded_onto_a_running_compo
         compile_source(candidate("Kvstore"), "incoming.rvl", manifest=running)
 
 
+def test_the_manifest_admission_arm_withholds_a_service_folded_onto_a_running_service(consumer):
+    """Issue #2334: the reference refuses a hot-swap that adds `service Kvstore`
+    to a composition declaring `service KVStore`, so the crate must not certify
+    it. The wire's `!services` block enumerates every running service, so this
+    comparison is exhaustive. A service under a name that stays apart is the
+    positive control."""
+    from revl.compiler import compile_source
+    from revl.manifest import manifest_wire
+    running = compile_source(
+        "service KVStore {\n  fn get(key: Str) -> Str\n}\n"
+        "component A provides a: KVStore {\n  provide a {\n"
+        "    fn get(key) = key\n  }\n}\n", "running.rvl")
+    wire = manifest_wire(running)
+
+    def candidate(name: str) -> str:
+        return (f"service {name} {{\n  fn put(key: Str) -> Str\n}}\n"
+                f"component B provides b: {name} {{\n  provide b {{\n"
+                "    fn put(key) = key\n  }\n}\n")
+
+    folded, underscored, apart = _crate_verdicts(
+        consumer, [candidate("Kvstore"), candidate("KV_Store"), candidate("Cache")],
+        "--admission-into", wire)
+    assert apart["admitted"] is True, (
+        f"the control must be certified into the composition: {apart}")
+    for verdict in (folded, underscored):
+        assert verdict["admitted"] is False, (
+            "the crate certified a service folded onto the running `KVStore`, "
+            f"which the reference refuses: {verdict}")
+    compile_source(candidate("Cache"), "incoming.rvl", manifest=running)
+    for name in ("Kvstore", "KV_Store"):
+        with pytest.raises(Exception, match="collides with running service `KVStore`"):
+            compile_source(candidate(name), "incoming.rvl", manifest=running)
+
+
 @pytest.mark.xfail(strict=True, reason=(
     "known false admission, open as a follow-up: the manifest wire does not "
     "name a running component with no rows, so the crate cannot withhold a "
