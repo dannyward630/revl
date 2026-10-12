@@ -258,10 +258,10 @@ type StmtOut = { lines: List[Str], counter: Int }
 // `empty_lists` (issue #273) is the body-local `[]`-binding annotation table
 // `empty_list_types` computes; it rides on ACx because a `let` can sit at any
 // depth of the statement tree `v3_stmt` walks.
-type ACx = { in_async: Bool, in_arrow: Bool, ops: List[Str], async_names: List[Str], async_locals: List[Str], empty_lists: Map[Str, Str], routes: List[Str], test_mode: Bool, comps: List[Any] }
+type ACx = { in_async: Bool, in_arrow: Bool, ops: List[Str], async_names: List[Str], async_locals: List[Str], empty_lists: Map[Str, Str], routes: List[Str], req_keys: Map[Str, Str], test_mode: Bool, comps: List[Any] }
 
 // The sync, non-component context: the pure fn/test pass and every sync body.
-fn sync_acx() -> ACx { return { in_async: false, in_arrow: false, ops: [], async_names: [], async_locals: [], empty_lists: Map.empty(), routes: [], test_mode: false, comps: [] } }
+fn sync_acx() -> ACx { return { in_async: false, in_arrow: false, ops: [], async_names: [], async_locals: [], empty_lists: Map.empty(), routes: [], req_keys: Map.empty(), test_mode: false, comps: [] } }
 
 // The `"<reqKey>#<method>"` await-seed key.
 fn async_op_key(req_key: Str, method: Str) -> Str {
@@ -965,7 +965,7 @@ fn render_arrow(node: Any, counter: Int, acx: ACx) -> Rendered {
   // stays out of the arrow (its Promise flattens). `async_names`/`async_locals`
   // are inherited (the reference's `with_scope` leaves them untouched), so an
   // async callable invoked inside an async arrow is still awaited.
-  let body_acx = { in_async: is_async, in_arrow: true, ops: acx.ops, async_names: acx.async_names, async_locals: acx.async_locals, empty_lists: acx.empty_lists, routes: acx.routes, test_mode: acx.test_mode, comps: acx.comps }
+  let body_acx = { in_async: is_async, in_arrow: true, ops: acx.ops, async_names: acx.async_names, async_locals: acx.async_locals, empty_lists: acx.empty_lists, routes: acx.routes, req_keys: acx.req_keys, test_mode: acx.test_mode, comps: acx.comps }
   let br = expr(value_field(node, "body"), counter, body_acx)
   // Item 435(b): the `async` followed the DECLARED type, so `(msgs) =>
   // model.complete(msgs)` rendered `async (msgs: any) =>
@@ -1272,11 +1272,16 @@ fn expr_inner(node: Any, counter: Int, acx: ACx) -> Rendered {
     // re-resolves a live per-realm worker on every call (failover). The proxy
     // is a local `apply()` built; a provide method's `<key>.<op>(…)` closes
     // over it.
-    if (list_contains(acx.routes, rname)) {
-      return { text: "_revl_route_".concat(ident(rname)), counter: counter }
+    // issue #2384: a `req` names its requirement by the BINDING (the last
+    // segment of a namespaced key); `req_keys` maps it back to the wiring key,
+    // whose host spelling (`host_key`) is the member and the router name.
+    var rkey = rname
+    if (acx.req_keys.has(rname)) { rkey = map_get(acx.req_keys, rname) }
+    if (list_contains(acx.routes, rkey)) {
+      return { text: "_revl_route_".concat(ident(host_key(rkey))), counter: counter }
     }
     // Committed-view access: resolved through the fiber's snapshot (R3).
-    return { text: "ctx.".concat(ident(rname)), counter: counter }
+    return { text: "ctx.".concat(ident(host_key(rkey))), counter: counter }
   }
   // ---- slice-3 expr kinds ----
   // `fn` (`_fn_call`): a call to a top-level `fn`/`extern`, the component
@@ -1901,7 +1906,7 @@ fn emit_functions(functions: List[Any], async_names: List[Str]) -> List[Str] {
     let sync_base = sync_acx()
     var body_acx = { sync_base | empty_lists = elt }
     if (value_bool(value_field(fnode, "async"))) {
-      body_acx = { in_async: true, in_arrow: false, ops: [], async_names: async_names, async_locals: locals, empty_lists: elt, routes: [], test_mode: false, comps: [] }
+      body_acx = { in_async: true, in_arrow: false, ops: [], async_names: async_names, async_locals: locals, empty_lists: elt, routes: [], req_keys: Map.empty(), test_mode: false, comps: [] }
       out = out.push(`export async function ${name}(${params}): Promise<${returns}> {`)
     } else {
       out = out.push(`export function ${name}(${params}): ${returns} {`)
@@ -2774,7 +2779,7 @@ fn method_control(step: Any, level: Int, counter: Int, acx: ACx, frame_var: Str,
 // bind the body; the param TYPES come from the service declaration (arity must
 // agree). An operation the service declares `async` lowers to an `async` method
 // whose body renders in an async context (the await-seed's `ops`, item 219).
-fn provide_impl(step: Any, services: Any, ops: List[Str], routes: List[Str], known_types: List[Str], async_names: List[Str], comps: List[Any], comp_name: Str, units: List[Str], frame_var: Str, level: Int, counter: Int) -> StmtOut {
+fn provide_impl(step: Any, services: Any, ops: List[Str], routes: List[Str], req_keys: Map[Str, Str], known_types: List[Str], async_names: List[Str], comps: List[Any], comp_name: Str, units: List[Str], frame_var: Str, level: Int, counter: Int) -> StmtOut {
   let pad = ind(level)
   let svc_name = value_str(value_field(step, "service"))
   let declared = value_field(value_field(services, svc_name), "methods")
@@ -2811,10 +2816,10 @@ fn provide_impl(step: Any, services: Any, ops: List[Str], routes: List[Str], kno
     let is_async = value_bool(value_field(spec, "async"))
     var prefix = ""
     let sync_base = sync_acx()
-    var body_acx = { sync_base | routes = routes, comps = comps }
+    var body_acx = { sync_base | routes = routes, req_keys = req_keys, comps = comps }
     if (is_async) {
       prefix = "async "
-      body_acx = { in_async: true, in_arrow: false, ops: ops, async_names: async_names, async_locals: [], empty_lists: Map.empty(), routes: routes, test_mode: false, comps: comps }
+      body_acx = { in_async: true, in_arrow: false, ops: ops, async_names: async_names, async_locals: [], empty_lists: Map.empty(), routes: routes, req_keys: req_keys, test_mode: false, comps: comps }
     }
     out = out.push(`${pad}${prefix}${name}(${sig_parts.join(", ")}) {`)
     // A param the service declared `Secret[T]` is a declared DISCLOSURE
@@ -2873,16 +2878,16 @@ fn crossing_key_name(target: Any) -> Str {
 // this component's RAW name (for a compensation entry's `site`); `frame_var` is
 // the emitted `Frame` local (`$revl_frame`, "" when the component needs none) —
 // a compensation entry registers through it (item 243 Slice 2b).
-fn component_step(step: Any, services: Any, ops: List[Str], routes: List[Str], known_types: List[Str], async_names: List[Str], comps: List[Any], comp_name: Str, units: List[Str], frame_var: Str, level: Int, counter: Int) -> StmtOut {
+fn component_step(step: Any, services: Any, ops: List[Str], routes: List[Str], req_keys: Map[Str, Str], known_types: List[Str], async_names: List[Str], comps: List[Any], comp_name: Str, units: List[Str], frame_var: Str, level: Int, counter: Int) -> StmtOut {
   let pad = ind(level)
   let sync_base = sync_acx()
-  let a = { sync_base | routes = routes, comps = comps }
+  let a = { sync_base | routes = routes, req_keys = req_keys, comps = comps }
   let kind = value_str(value_field(step, "step"))
   if (kind == "let-effect" || kind == "effect") {
     let awaited = value_bool(value_field(step, "async"))
     var acquire_acx = a
     if (awaited && kind == "let-effect") {
-      acquire_acx = { in_async: true, in_arrow: false, ops: ops, async_names: async_names, async_locals: [], empty_lists: Map.empty(), routes: routes, test_mode: false, comps: comps }
+      acquire_acx = { in_async: true, in_arrow: false, ops: ops, async_names: async_names, async_locals: [], empty_lists: Map.empty(), routes: routes, req_keys: req_keys, test_mode: false, comps: comps }
     }
     let ar = expr(value_field(step, "acquire"), counter, acquire_acx)
     var out = []
@@ -2935,8 +2940,8 @@ fn component_step(step: Any, services: Any, ops: List[Str], routes: List[Str], k
   }
   if (kind == "provide") {
     let name = value_str(value_field(step, "name"))
-    var out = [`${pad}yield ctx.provide(${json_dumps(name)}, {`]
-    let pr = provide_impl(step, services, ops, routes, known_types, async_names, comps, comp_name, units, frame_var, level + 1, counter)
+    var out = [`${pad}yield ctx.provide(${json_dumps(host_key(name))}, {`]
+    let pr = provide_impl(step, services, ops, routes, req_keys, known_types, async_names, comps, comp_name, units, frame_var, level + 1, counter)
     out = out.concat(pr.lines)
     out = out.push(`${pad}} satisfies ${ident(value_str(value_field(step, "service")))})`)
     return { lines: out, counter: pr.counter }
@@ -2946,7 +2951,7 @@ fn component_step(step: Any, services: Any, ops: List[Str], routes: List[Str], k
     var out = [`${pad}if (${cr.text}) {`]
     var c = cr.counter
     for (s of value_list(value_field(step, "then"))) {
-      let r = component_step(s, services, ops, routes, known_types, async_names, comps, comp_name, units, frame_var, level + 1, c)
+      let r = component_step(s, services, ops, routes, req_keys, known_types, async_names, comps, comp_name, units, frame_var, level + 1, c)
       out = out.concat(r.lines)
       c = r.counter
     }
@@ -2954,7 +2959,7 @@ fn component_step(step: Any, services: Any, ops: List[Str], routes: List[Str], k
     if (els.length() > 0) {
       out = out.push(`${pad}} else {`)
       for (s of els) {
-        let r = component_step(s, services, ops, routes, known_types, async_names, comps, comp_name, units, frame_var, level + 1, c)
+        let r = component_step(s, services, ops, routes, req_keys, known_types, async_names, comps, comp_name, units, frame_var, level + 1, c)
         out = out.concat(r.lines)
         c = r.counter
       }
@@ -2994,7 +2999,7 @@ fn component_step(step: Any, services: Any, ops: List[Str], routes: List[Str], k
     out = out.push(`${pad}  if (host.Stream.isClosed(${item})) break`)
     if (gate != "") { out = out.push(`${pad}  if (!${gate}.admit(${item}, ${json_dumps(where)})) continue`) }
     for (inner of value_list(value_field(step, "body"))) {
-      let r = component_step(inner, services, ops, routes, known_types, async_names, comps, comp_name, units, frame_var, level + 1, c)
+      let r = component_step(inner, services, ops, routes, req_keys, known_types, async_names, comps, comp_name, units, frame_var, level + 1, c)
       out = out.concat(r.lines)
       c = r.counter
     }
@@ -3273,20 +3278,20 @@ fn component_lines(comp: Any, services: Any, known_types: List[Str], async_names
   if (value_keys(icept).length() > 0) {
     var inj_parts = []
     for (k of req_keys) {
-      inj_parts = inj_parts.push(`${json_dumps(k)}: ${json_dumps(value_field(icept, k))}`)
+      inj_parts = inj_parts.push(`${json_dumps(host_key(k))}: ${json_dumps(value_field(icept, k))}`)
     }
     out = out.push(`  inject: {${inj_parts.join(", ")}},`)
   } else {
     var inject_parts = []
     for (k of req_keys) {
-      inject_parts = inject_parts.push(json_dumps(k))
+      inject_parts = inject_parts.push(json_dumps(host_key(k)))
     }
     out = out.push(`  inject: [${inject_parts.join(", ")}],`)
   }
   let provide_keys = value_keys(value_field(comp, "provides"))
   if (provide_keys.length() > 0) {
     var pk = []
-    for (k of provide_keys) { pk = pk.push(json_dumps(k)) }
+    for (k of provide_keys) { pk = pk.push(json_dumps(host_key(k))) }
     out = out.push(`  provide: [${pk.join(", ")}],`)
   }
   // item 131: an async body colors `apply` `async` (and `await`s its
@@ -3356,7 +3361,7 @@ fn component_lines(comp: Any, services: Any, known_types: List[Str], async_names
     let strat = value_field(route, "strategy")
     var strategy = "undefined"
     if (!value_is_null(strat) && value_str(strat) != "") { strategy = json_dumps(strat) }
-    out = out.push(`    const _revl_route_${ident(k)} = revlRouter(ctx, ${json_dumps(k)}, [${realm_parts.join(", ")}], ${strategy})`)
+    out = out.push(`    const _revl_route_${ident(host_key(k))} = revlRouter(ctx, ${json_dumps(host_key(k))}, [${realm_parts.join(", ")}], ${strategy})`)
   }
   // One generator per body (LIFO teardown). An async body compiles to an async
   // generator (v1/A1) and its `ctx.effect(...)` is `await`ed inside the `async
@@ -3380,7 +3385,7 @@ fn component_lines(comp: Any, services: Any, known_types: List[Str], async_names
   let ops = async_ops_of(value_field(comp, "requires"), services)
   var c = counter
   for (step of body) {
-    let r = component_step(step, services, ops, route_keys, known_types, async_names, comps, raw_name, units, frame_var, 3, c)
+    let r = component_step(step, services, ops, route_keys, req_bindings(comp), known_types, async_names, comps, raw_name, units, frame_var, 3, c)
     out = out.concat(r.lines)
     c = r.counter
   }
@@ -3459,7 +3464,7 @@ fn context_augmentation(components: List[Any]) -> List[Str] {
   var out = ["declare module 'cordis' {", "  interface Context {"]
   var i = 0
   for (k of keys) {
-    out = out.push(`    ${k}: ${svcs[i]}`)
+    out = out.push(`    ${host_key(k)}: ${svcs[i]}`)
     i += 1
   }
   out = out.push("  }")
@@ -4387,7 +4392,7 @@ fn lifecycle_step(step: Any, services: Any, provided: Any, counter: Int, acx: AC
     }
     var await_kw = ""
     if (value_bool(value_field(method, "async"))) { await_kw = "await " }
-    let call = `root.${ident(key)}.${mname}(${args.join(", ")})`
+    let call = `root.${ident(host_key(key))}.${mname}(${args.join(", ")})`
     let bind = value_field(step, "bind")
     var line = `  ${await_kw}${call}`
     if (!value_is_null(bind)) { line = `  const ${ident(value_str(bind))} = ${await_kw}${call}` }
@@ -4530,6 +4535,20 @@ fn host_key(key: Str) -> Str {
   var parts = []
   for (part of key.split("::")) { parts = parts.push(part.split("_").join("_u")) }
   return parts.join("__")
+}
+
+// `_key_binding` / `req_keys`: a `req` IR node names a requirement by its
+// BINDING, the trailing segment of a (possibly namespaced) key. This maps each
+// binding of a component back to its wiring key (issue #2384).
+fn key_binding(key: Str) -> Str {
+  let parts = key.split("::")
+  return parts[parts.length() - 1]
+}
+
+fn req_bindings(comp: Any) -> Map[Str, Str] {
+  var out: Map[Str, Str] = Map.empty()
+  for (k of value_keys(value_field(comp, "requires"))) { out = out.set(key_binding(k), k) }
+  return out
 }
 
 fn host_key_collision_markers(ir: Any) -> List[Str] {
@@ -4725,12 +4744,12 @@ test "the await-seed awaits a req-keyed async op only in an async, non-arrow bod
   let call = { kind: "call", target: { kind: "req", name: "store" }, method: "get",
                args: [{ kind: "name", id: "k" }] }
   let ops = [async_op_key("store", "get")]
-  assert expr(call, 0, { in_async: true, in_arrow: false, ops: ops, async_names: [], async_locals: [], empty_lists: Map.empty(), routes: [], test_mode: false, comps: [] }).text
+  assert expr(call, 0, { in_async: true, in_arrow: false, ops: ops, async_names: [], async_locals: [], empty_lists: Map.empty(), routes: [], req_keys: Map.empty(), test_mode: false, comps: [] }).text
     == "(await ctx.store.get(k))"
   assert expr(call, 0, sync_acx()).text == "ctx.store.get(k)"
-  assert expr(call, 0, { in_async: true, in_arrow: true, ops: ops, async_names: [], async_locals: [], empty_lists: Map.empty(), routes: [], test_mode: false, comps: [] }).text
+  assert expr(call, 0, { in_async: true, in_arrow: true, ops: ops, async_names: [], async_locals: [], empty_lists: Map.empty(), routes: [], req_keys: Map.empty(), test_mode: false, comps: [] }).text
     == "ctx.store.get(k)"
-  assert expr(call, 0, { in_async: true, in_arrow: false, ops: [], async_names: [], async_locals: [], empty_lists: Map.empty(), routes: [], test_mode: false, comps: [] }).text
+  assert expr(call, 0, { in_async: true, in_arrow: false, ops: [], async_names: [], async_locals: [], empty_lists: Map.empty(), routes: [], req_keys: Map.empty(), test_mode: false, comps: [] }).text
     == "ctx.store.get(k)"
 }
 

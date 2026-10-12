@@ -380,6 +380,118 @@ def test_selfhosted_ts_emitter_is_byte_identical(emitted, reference, rel):
     )
 
 
+# Issue #2384: a namespaced provision key with no collision. The reference
+# spells `acme::greeter` as the host identifier `acme__greeter` (issue #1914's
+# `_host_key`) at every place a key becomes a host name: the context
+# augmentation, the inject and provide lists, `ctx.provide`, the `req` member
+# (named by its binding, the last segment), the router proxy and a lifecycle
+# test's `root.<key>` call. The port carried the qualified key verbatim, so
+# each document below emitted `acme::greeter` where the reference emits
+# `acme__greeter`, with no marker. `unqualified` is the positive control: the
+# same wiring without namespacing, byte-equal before and after.
+NAMESPACED_KEYS = {
+    "provide_require_lifecycle": """service Greeter { fn hello(name: Str) -> Str }
+service Client { fn greet(name: Str) -> Str }
+
+component AcmeGreeter provides acme::greeter: Greeter {
+  provide acme::greeter { fn hello(name) = "acme " + name }
+}
+
+component GlobexGreeter provides globex::my_greeter: Greeter {
+  provide globex::my_greeter { fn hello(name) = "globex " + name }
+}
+
+component AcmeClient requires acme::greeter: Greeter provides acme::client: Client {
+  provide acme::client { fn greet(name) = greeter.hello(name) }
+}
+
+component GlobexClient requires globex::my_greeter: Greeter provides globex_client: Client {
+  provide globex_client { fn greet(name) = my_greeter.hello(name) }
+}
+
+lifecycle test "each namespace answers for itself" {
+  load AcmeGreeter
+  load GlobexGreeter
+  load AcmeClient
+  load GlobexClient
+  let a = call acme::client.greet("x")
+  let g = call globex_client.greet("x")
+  assert a == "acme x"
+  assert g == "globex x"
+  unload GlobexClient
+  unload AcmeClient
+  unload GlobexGreeter
+  unload AcmeGreeter
+  assert no_residue
+}
+""",
+    "routed": """service Worker { fn call(request: Int) -> Int }
+service Front { fn ask(q: Int) -> Int }
+
+component W1 provides acme::worker: Worker {
+  isolate acme::worker in realm("w1")
+  provide acme::worker { fn call(request) = request + 1 }
+}
+
+component W2 provides acme::worker: Worker {
+  isolate acme::worker in realm("w2")
+  provide acme::worker { fn call(request) = request + 2 }
+}
+
+component Router requires acme::worker: Worker provides front: Front {
+  isolate acme::worker in realms("w1", "w2") strategy(least_loaded)
+  provide front { fn ask(q) = worker.call(q) }
+}
+""",
+    "intercept": """fn zero() -> Int { return 0 }
+
+service Db { fn q() -> Int }
+service Api { fn run() -> Int }
+
+component App requires acme::db: Db provides api: Api {
+  intercept acme::db with { tag: "primary", tier: 2 }
+  provide api { fn run() = db.q() }
+}
+""",
+}
+
+UNQUALIFIED_CONTROL = """service Greeter { fn hello(name: Str) -> Str }
+service Client { fn greet(name: Str) -> Str }
+
+component AcmeGreeter provides greeter: Greeter {
+  provide greeter { fn hello(name) = "acme " + name }
+}
+
+component AcmeClient requires greeter: Greeter provides client: Client {
+  provide client { fn greet(name) = greeter.hello(name) }
+}
+
+lifecycle test "an unqualified key answers" {
+  load AcmeGreeter
+  load AcmeClient
+  let a = call client.greet("x")
+  assert a == "acme x"
+  unload AcmeClient
+  unload AcmeGreeter
+  assert no_residue
+}
+"""
+
+
+@pytest.mark.parametrize("case", [*sorted(NAMESPACED_KEYS), "unqualified"])
+def test_a_namespaced_key_is_mangled_as_the_reference_mangles_it(
+        emitted, reference, tmp_path, case):
+    """The port's output for a namespaced key equals the reference bytes."""
+    source = NAMESPACED_KEYS.get(case, UNQUALIFIED_CONTROL)
+    path = tmp_path / f"{case}.rvl"
+    path.write_text(source)
+    ir = compile_files([str(path)])
+    want = reference.emit(ir)
+    if case != "unqualified":
+        assert "acme__" in want  # the reference mangled it
+    assert emitted["emit_ts_src"](ir) == want
+
+
 def test_selfhosted_ts_emitter_output_header_and_helpers(emitted):
     """Beyond byte-identity, pin the scaffold shape the slice is responsible for:
     the generated-header comments, the runtime import, and the gated helpers a

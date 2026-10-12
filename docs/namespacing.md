@@ -159,10 +159,13 @@ not build; there is no tier left that silently writes an unusable identifier.
 
 ### Self-host ports
 
-`selfhost/emit_*.rvl` mirror the reference emitters byte for byte, and the ports
-do not mangle a provision key: a qualified key reaches an emit port as the
-joined `ns::local` spelling and is written out as one. Porting the mangling (and
-the collision refusal) into the six ports is owed as its own item.
+`selfhost/emit_*.rvl` mirror the reference emitters byte for byte. A qualified
+key reaches an emit port as the joined `ns::local` spelling. The ts port
+(`selfhost/emit_ts.rvl`) applies the same `host_key` mangling as the reference
+at each place a key becomes a host name, and maps a `req` binding back to its
+qualified key, so a namespaced document with no collision emits the reference
+bytes (issue #2384, `tests/test_selfhost_emit_ts.py`). Porting the mangling into
+the other ports is owed as its own item.
 
 The **parse** half is ported. `selfhost/lower.rvl` and `selfhost/checker.rvl`
 read a provision key through the same reconstruction the reference's
