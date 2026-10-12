@@ -2714,6 +2714,63 @@ _ISSUE_2399_COMPILED = {
 }
 
 
+_P = "type P[A, B] = { a: A, b: B }\n"
+_G = "fn g(b: Box[Int]) -> Int {\n  return b.v\n}\n"
+
+
+def _prop_params(params):
+    return "prop test \"p\" (" + params + ") {\n  assert true\n}\n"
+
+
+_ISSUE_2399_REFUSED.update({
+    # a nested or argument-position generic record is instantiated too
+    "generic_record_nested_mismatch": (
+        _BOX + "fn f() -> Int {\n  let b: Box[Box[Int]] = { v: { v: \"s\" } }\n  return 1\n}\n"),
+    "generic_record_argument_mismatch": (
+        _BOX + _G + "fn f() -> Int {\n  return g({ v: \"s\" })\n}\n"),
+    # an explicit type parameter list no longer hides a fn body
+    "arm_binder_of_explicit_type_parameter": (
+        "fn f[T](o: T) -> Int {\n"
+        "  return match o { Some(x) => { let k = x\n 0 }, _ => 0 }\n}\n"),
+    "let_mismatch_in_explicit_generic_fn": (
+        "fn f[T](o: T) -> Int {\n  let m: Int = \"s\"\n  return 1\n}\n"),
+    # `_check_generatable` over each prop test parameter
+    "prop_param_alias": "type M = Int\n" + _prop_params("n: M"),
+    "prop_param_map": _prop_params("m: Map[Str, Int]"),
+    "prop_param_result": _prop_params("r: Result[Int, Str]"),
+    "prop_param_list_of_undeclared": _prop_params("xs: List[Foo]"),
+    "prop_param_second": _prop_params("n: Int, m: Map[Str, Int]"),
+    "prop_param_record_field": "type R = { a: Int, m: Map[Str, Int] }\n" + _prop_params("r: R"),
+    "prop_param_record_cycle": "type R = { s: S }\ntype S = { r: R }\n" + _prop_params("r: R"),
+    "prop_param_variant_payload": "type Sh = Circle(Map[Str, Int]) | Pt\n" + _prop_params("s: Sh"),
+    "prop_param_bare_generic_record": _BOX + _prop_params("b: Box"),
+    "prop_param_applied_generic_record": _BOX + _prop_params("b: Box[Int]"),
+})
+
+_ISSUE_2399_COMPILED.update({
+    "generic_record_nested_in_test": _BOX + _test_doc("  let b: Box[Box[Int]] = { v: { v: 1 } }"),
+    "generic_record_nested_in_prop": _BOX + _prop_doc("  let b: Box[Box[Int]] = { v: { v: n } }"),
+    "generic_record_nested_in_fn": (
+        _BOX + "fn f(n: Int) -> Int {\n  let b: Box[Box[Int]] = { v: { v: n } }\n  return n\n}\n"),
+    "generic_record_argument_in_test": _BOX + _G + "test \"t\" {\n  assert g({ v: 1 }) == 1\n}\n",
+    "generic_record_argument_in_prop": _BOX + _G + _prop_doc("  let k = g({ v: n })"),
+    "generic_record_argument_in_fn": _BOX + _G + "fn f() -> Int {\n  return g({ v: 1 })\n}\n",
+    "generic_record_two_params_in_test": _P + _test_doc("  let p: P[Int, Str] = { a: 1, b: \"s\" }"),
+    "generic_record_two_params_in_prop": _P + _prop_doc("  let p: P[Int, Str] = { a: n, b: \"s\" }"),
+    "generic_record_two_params_nested": (
+        _P + _BOX + "fn f() -> Int {\n  let p: P[Box[Int], Str] = { a: { v: 1 }, b: \"s\" }\n"
+        "  return 1\n}\n"),
+    "explicit_generic_fn": (
+        "fn first[T](xs: List[T], d: T) -> T {\n  if (xs.length() == 0) { return d }\n"
+        "  return xs[0]\n}\nfn g() -> Int {\n  return first([1], 0)\n}\n"),
+    "prop_param_generatable": _prop_params("o: Opt[List[Int]], f: Float, b: Bool, s: Str"),
+    "prop_param_record": "type R = { a: Int, b: List[Str] }\n" + _prop_params("r: R"),
+    "prop_param_variant": "type Sh = Circle(Int) | Pt\n" + _prop_params("s: Sh"),
+    "prop_param_recursive_variant": "type L = Cons(L) | Nil\n" + _prop_params("l: L"),
+    "prop_param_empty_record": "type E = {}\n" + _prop_params("e: E"),
+})
+
+
 @pytest.mark.parametrize("name", sorted(_ISSUE_2399_COMPILED))
 def test_the_review_controls_of_issue_2399_compile_on_both_sides(compile_rvl, admit, name):
     text = _ISSUE_2399_COMPILED[name]

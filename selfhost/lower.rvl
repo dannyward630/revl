@@ -7158,6 +7158,74 @@ fn grec_shape(t: Str, env: List[Bind]) -> Str {
   return out == "" ? "" : "{".concat(out).concat("}")
 }
 
+// Every applied generic record inside `t` replaced by its instantiated shape,
+// at any depth, so the field-wise rule meets `Box[Box[Int]]` as
+// `{v: {v: Int}}`, the way `compatible` resolves a nominal at each level.
+// "" where one of them cannot be instantiated here.
+fn grec_expand(t: Str, env: List[Bind], depth: Int) -> Str {
+  if (depth > 8) { return "" }
+  let s = ty_trim(t)
+  if (s == "" || tk_is_fn_ty(s)) { return s }
+  if (tk_is_struct(s)) {
+    let inner = ty_trim(s.slice(1, s.length() - 1))
+    if (inner == "") { return "{}" }
+    let fs = tk_split_depth(inner)
+    var out = ""
+    var i = 0
+    while (i < fs.length()) {
+      let ci = fs[i].indexOf(":")
+      if (ci == 0 - 1) { return "" }
+      let ft = grec_expand(fs[i].slice(ci + 1, fs[i].length()), env, depth + 1)
+      if (ft == "") { return "" }
+      out = out.concat(i == 0 ? "" : ", ").concat(ty_trim(fs[i].slice(0, ci)))
+        .concat(": ").concat(ft)
+      i += 1
+    }
+    return "{".concat(out).concat("}")
+  }
+  if (tk_generic_record(s, env)) {
+    let gs = grec_shape(s, env)
+    return gs == "" ? "" : grec_expand(gs, env, depth + 1)
+  }
+  let args = type_args(s)
+  if (args.length() == 0) { return s }
+  var xs: List[Str] = []
+  var j = 0
+  while (j < args.length()) {
+    let a = grec_expand(args[j], env, depth + 1)
+    if (a == "") { return "" }
+    xs = xs.push(a)
+    j += 1
+  }
+  return ty_render(parse_head(s), xs)
+}
+
+// Whether `t` names a declared generic record applied to arguments.
+fn grec_mentioned(t: Str, env: List[Bind]) -> Bool {
+  if (t.indexOf("[") == 0 - 1) { return false }
+  var k = 0
+  while (k < env.length()) {
+    let n = env[k].name
+    if (n.slice(0, 5) == "grec " && t.indexOf(n.slice(5, n.length()).concat("[")) != 0 - 1) {
+      return true
+    }
+    k += 1
+  }
+  return false
+}
+
+// `tk_compatible` with the declared generic records instantiated on both
+// sides. A pairing this walk cannot instantiate is left to the reference.
+fn tk_compat_env(expected: Str, actual: Str, env: List[Bind]) -> Bool {
+  if (!grec_mentioned(expected, env) && !grec_mentioned(actual, env)) {
+    return tk_compatible(expected, actual)
+  }
+  let ee = grec_expand(expected, env, 0)
+  let ae = grec_expand(actual, env, 0)
+  if (ee == "" || ae == "") { return true }
+  return tk_compatible(ee, ae)
+}
+
 fn ct_record_shape(pt: Str, actual: Str, env: List[Bind]) -> Str {
   if (actual.indexOf("{") == 0 - 1) { return pt }
   // a container parameter (`Opt[Row]`, `List[Row]`): every record named in it
@@ -13795,15 +13863,8 @@ fn tk_check_flat(e: Expr, expected: Str, env: List[Bind], where_: Str) -> TInf {
   let r = tk_infer(e, env)
   if (r.v != "") { return r }
   if (r.ty == "") { return r }
-  // issue #2399: a record shape meeting an applied generic record is checked
-  // against its instantiated fields; one this walk cannot instantiate is left
-  // to the reference
-  if (tk_is_struct(r.ty) && tk_generic_record(expected, env)) {
-    let gs = grec_shape(expected, env)
-    if (gs != "" && !tk_compatible(gs, r.ty)) { return tk_mismatch(where_, expected, r.ty) }
-    return tk_ok(expected)
-  }
-  if (!tk_compatible(expected, r.ty)) {
+  // issue #2399: a generic record is checked against its instantiated fields
+  if (!tk_compat_env(expected, r.ty, env)) {
     return tk_mismatch(where_, expected, r.ty)
   }
   return tk_ok(expected)
@@ -14976,19 +15037,20 @@ fn tk_named(c: CallN, env: List[Bind], argTys: List[Str]) -> TCall {
         .concat(" given")))
   }
   if (tenv_get(env, sig_key("sigg", n)) != "1") {
-    let m = tk_mono_args(ps, argTys, 0, n)
+    let m = tk_mono_args(ps, argTys, 0, n, env)
     if (m.v != "") { return tk_hit(m) }
     return tk_hit(tk_ok(tk_call_result(ret)))
   }
   return tk_hit(tk_generic_args(ps, argTys, 0, [], n, ret))
 }
 
-fn tk_mono_args(ps: List[Str], argTys: List[Str], i: Int, n: Str) -> TInf {
+fn tk_mono_args(ps: List[Str], argTys: List[Str], i: Int, n: Str,
+                env: List[Bind]) -> TInf {
   if (i >= ps.length() || i >= argTys.length()) { return tk_ok("") }
-  if (ps[i] != "" && argTys[i] != "" && !tk_compatible(ps[i], argTys[i])) {
+  if (ps[i] != "" && argTys[i] != "" && !tk_compat_env(ps[i], argTys[i], env)) {
     return tk_mismatch(tk_arg_where(i, n), ps[i], argTys[i])
   }
-  return tk_mono_args(ps, argTys, i + 1, n)
+  return tk_mono_args(ps, argTys, i + 1, n, env)
 }
 
 fn tk_arg_where(i: Int, n: Str) -> Str {
@@ -16577,8 +16639,12 @@ fn fb_no_span() -> FbSpan {
 }
 
 fn fb_span(ts: List[Token], i: Int) -> FbSpan {
-  if (!atk(ts, i + 2, "(")) { return fb_no_span() }
-  let ps = params_at(ts, i + 3)
+  // issue #2399: an explicit type parameter list (`fn f[T](o: T)`) is stepped
+  // over, so a generic fn's body is checked like any other; `fb_function`
+  // reads the list itself (`explicit_tparams`)
+  let p0 = fn_params_i(ts, i)
+  if (!atk(ts, p0 - 1, "(")) { return fb_no_span() }
+  let ps = params_at(ts, p0)
   var reti = ps.i
   var ret = ""
   var retDecl = ""
@@ -16870,6 +16936,10 @@ fn tb_refusal_at(ts: List[Token], i: Int, gtys: List[Bind], al: Map[Str, Str],
       if (contains(seen, nm)) {
         return mk_verd(tb_dup_msg(kind, nm), tkc(ts, i + 1).line)
       }
+      if (prop) {
+        let pv = tb_prop_params(wf_params_from(ts, i + 4, false, []), 0, nm, gtys, al)
+        if (pv.v != "") { return pv }
+      }
       if (prop && tenv_get(gtys, tb_names_only()) != "1") {
         let pe = close_paren(ts, i + 3)
         let v = tb_body(ts, pe + 1, qe - 1, params_at(ts, i + 4).ps, gtys, al)
@@ -16910,6 +16980,104 @@ fn tb_refusal_at(ts: List[Token], i: Int, gtys: List[Bind], al: Map[Str, Str],
     return tb_refusal_at(ts, p_component(ts, i, empty_prog()).i, gtys, al, prop, seen)
   }
   return tb_refusal_at(ts, skip_line(ts, i), gtys, al, prop, seen)
+}
+
+// Each prop test parameter in order: `check_type_wellformed`, then
+// `_check_generatable`, both at the parameter's line. The written spelling is
+// what the reference reads, so an alias is not erased here.
+fn tb_prop_params(ss: List[WfSite], k: Int, nm: Str, env: List[Bind],
+                  al: Map[Str, Str]) -> Verd {
+  if (k >= ss.length()) { return no_verd() }
+  let w = wf_site_verd(ss[k])
+  if (w.v != "") { return w }
+  let g = tb_gen(ss[k].ty, nm, env, al, [], [])
+  if (g != "") { return mk_verd(g, ss[k].line) }
+  return tb_prop_params(ss, k + 1, nm, env, al)
+}
+
+fn tb_gen_prims() -> List[Str] { return ["Int", "Int32", "Bool", "Str", "Float", "F64", "Num"] }
+
+// `_check_generatable`: "" when the generator can derive a value of `t`, else
+// the refusal. A primitive, an `Opt`/`List` of one, a declared record whose
+// fields are generatable (and that does not contain itself), or a declared
+// ADT whose payloads are. Where this walk cannot read the declaration (a
+// structural or function type, a payload it did not record) it says nothing.
+fn tb_gen(t: Str, prop: Str, env: List[Bind], al: Map[Str, Str],
+          rstack: List[Str], vseen: List[Str]) -> Str {
+  let s = ty_trim(t)
+  if (s == "" || s.indexOf("{") != 0 - 1 || s.indexOf("(") != 0 - 1) { return "" }
+  let head = parse_head(s)
+  let args = type_args(s)
+  if (args.length() == 0 && contains(tb_gen_prims(), head)) { return "" }
+  if ((head == "Opt" || head == "List") && args.length() == 1) {
+    return tb_gen(args[0], prop, env, al, rstack, vseen)
+  }
+  if (args.length() == 0) {
+    let rf = tb_gen_fields(head, env)
+    if (rf != "") {
+      if (contains(rstack, head)) {
+        return tagged("TEST", "prop test `".concat(prop).concat("`: record type `")
+          .concat(head).concat("` contains itself (").concat(rstack.push(head).join(" -> "))
+          .concat(") and cannot be generated"))
+      }
+      return tb_gen_each(rf.split("\n"), 0, prop, env, al, rstack.push(head), vseen)
+    }
+    let cs = tenv_get(env, "cases ".concat(head))
+    if (cs != "") {
+      if (contains(vseen, head)) { return "" }
+      return tb_gen_cases(cs.split(","), 0, head, prop, env, al, vseen.push(head))
+    }
+    // a declared type this walk does not read the shape of (an empty record)
+    if (tenv_get(env, "decl ".concat(head)) == "1" && !al.has(head)) { return "" }
+  }
+  return tagged("TEST", "prop test `".concat(prop).concat("`: parameter type `")
+    .concat(s).concat("` cannot be generated"))
+}
+
+// A record's field types, newline-joined in declaration order: the `field`
+// rows of a plain record, or the `gfld` rows of a generic one written bare.
+// "" when `h` is not a record this walk read.
+fn tb_gen_fields(h: Str, env: List[Bind]) -> Str {
+  var pfx = "field ".concat(h).concat(".")
+  if (tenv_get(env, "grec ".concat(h)) != "") {
+    if (tenv_get(env, "gpar ".concat(h)) == "") { return "" }
+    pfx = "gfld ".concat(h).concat(".")
+  }
+  var seen: List[Str] = []
+  var out: List[Str] = []
+  var k = 0
+  while (k < env.length()) {
+    let n = env[k].name
+    if (n.slice(0, pfx.length()) == pfx && !contains(seen, n)) {
+      seen = seen.push(n)
+      out = out.push(tenv_get(env, n))
+    }
+    k += 1
+  }
+  return out.join("\n")
+}
+
+fn tb_gen_each(fs: List[Str], k: Int, prop: Str, env: List[Bind], al: Map[Str, Str],
+               rstack: List[Str], vseen: List[Str]) -> Str {
+  if (k >= fs.length()) { return "" }
+  let r = tb_gen(fs[k], prop, env, al, rstack, vseen)
+  if (r != "") { return r }
+  return tb_gen_each(fs, k + 1, prop, env, al, rstack, vseen)
+}
+
+// The ADT's case payloads; the record stack is not carried across the ADT.
+fn tb_gen_cases(cs: List[Str], k: Int, adt: Str, prop: Str, env: List[Bind],
+                al: Map[Str, Str], vseen: List[Str]) -> Str {
+  if (k >= cs.length()) { return "" }
+  let c = ty_trim(cs[k])
+  // a case this walk did not record under this ADT: say nothing
+  if (tenv_get(env, "case ".concat(c)) != adt) { return "" }
+  let pl = tenv_get(env, "payload ".concat(c))
+  if (pl != "") {
+    let r = tb_gen(pl, prop, env, al, [], vseen)
+    if (r != "") { return r }
+  }
+  return tb_gen_cases(cs, k + 1, adt, prop, env, al, vseen)
 }
 
 // Where an `extern` ends for this walk. `p_extern` steps over its host bodies
@@ -17164,8 +17332,9 @@ fn csh_function(ts: List[Token], i: Int, sp: FbSpan, u: CshU) -> Verd {
   let amb = csh_inter(csh_called(ts, sp.lo, sp.hi), u.all)
   if (amb.length() == 0) { return no_verd() }
   if (!csh_arrow_free(ts, i, sp.hi)) { return no_verd() }
-  let pend = params_at(ts, i + 3).i
-  let seed = csh_params(ts, i + 3, pend, sp.ps, 0, tkc(ts, i).line,
+  let p0 = fn_params_i(ts, i)
+  let pend = params_at(ts, p0).i
+  let seed = csh_params(ts, p0, pend, sp.ps, 0, tkc(ts, i).line,
                         { bs: [], ok: true })
   let bs = csh_binders(fb_scan(ts, sp.lo, sp.hi, Map.empty()), 0, seed)
   if (!bs.ok) { return no_verd() }
