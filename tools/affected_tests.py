@@ -1414,6 +1414,16 @@ def select(changed, root) -> dict:
             pytest_nodes |= named_by
             reasons.append(f"{f} (named by {len(named_by)} test(s))")
 
+        # --- the backend-job corpus (issue #2333) -------------------------- #
+        # tests/test_ci_backend_gate.py scans the text of every root test a
+        # `backend-*` job runs and of the modules those import. It runs on a
+        # pull request only when something selects it, so a change to one of
+        # those files that breaks a corpus guard went red on main instead.
+        in_ci_corpus = f in ci_backend_corpus_inputs(root)
+        if in_ci_corpus:
+            pytest_nodes.add("tests/test_ci_backend_gate.py")
+            reasons.append(f"{f} (read by the backend-job corpus)")
+
         # --- structural: always FULL --------------------------------------- #
         if f == "Makefile":
             return _full("Makefile changed -> full")
@@ -2137,21 +2147,36 @@ def ci_backend_corpus(root: Path) -> str:
 _IMPORT_NAME = re.compile(r"^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
 
 
-def _ci_backend_root_tests(root: Path, jobs: str) -> list:
-    """The text of every root test file a backend job step runs, and of the
-    tests/ and tools/ modules those import, transitively."""
+def _ci_backend_root_test_paths(root: Path, jobs: str) -> list:
+    """Every root test file a backend job step runs, and every tests/ and
+    tools/ module those import, transitively, as existing paths."""
     todo = [root / p for p in re.findall(r"tests/[A-Za-z0-9_]+\.py", jobs)]
-    seen, out = set(), []
+    seen = set()
     while todo:
         path = todo.pop()
         if path in seen or not path.is_file():
             continue
         seen.add(path)
         text = path.read_text(encoding="utf-8")
-        out.append(text)
         for name in _IMPORT_NAME.findall(text):
             todo += [root / "tests" / f"{name}.py", root / "tools" / f"{name}.py"]
-    return out
+    return sorted(seen)
+
+
+def _ci_backend_root_tests(root: Path, jobs: str) -> list:
+    """The text of every root test file a backend job step runs, and of the
+    tests/ and tools/ modules those import, transitively."""
+    return [p.read_text(encoding="utf-8")
+            for p in _ci_backend_root_test_paths(root, jobs)]
+
+
+def ci_backend_corpus_inputs(root: Path) -> frozenset:
+    """The repo-relative tests/ and tools/ files `ci_backend_corpus` reads.
+    tests/test_ci_backend_gate.py scans that text, so a change to any of these
+    files can turn it red (issue #2333): `select` re-runs it for each."""
+    jobs = _ci_backend_job_text(root)
+    return frozenset(p.relative_to(root).as_posix()
+                     for p in _ci_backend_root_test_paths(root, jobs))
 
 
 def _ci_backend_job_text(root: Path) -> str:
