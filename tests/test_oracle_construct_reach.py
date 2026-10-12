@@ -410,18 +410,20 @@ def test_the_triage_report_names_every_entry_and_its_source(data, capsys):
 
 
 def test_the_gate_census_unreached_tags_are_elicitable(data, census):
-    """The five `gate_census` dispositions are dispositions of a MEASURED fact
+    """The six `gate_census` dispositions are dispositions of a MEASURED fact
     and not of an absence, which is the difference between this ledger and a
     list of things nobody looked at.
 
     The row's corpus is `_census_documents`, which is documents only; the
     census's `ACCEPTED_PROGRAMS` / `REJECTED_PROGRAMS` / `ADMISSION_PROGRAMS`
     are strings in `tests/test_selfhost_lower.py` and are excluded there by
-    construction. So four of the five tags read UNREACHED while the census's own
+    construction. So four of the six tags read UNREACHED while the census's own
     gate issues them the moment it is handed those programs -- which is what
-    this test does, over the tables themselves. HOST-ARITY is the fifth and the
-    one still owed a document: no table carries it, so it is driven here by the
-    program `tests/test_selfhost_lower.py` already pins its sentence for."""
+    this test does, over the tables themselves. HOST-ARITY and FOLD are the
+    two still owed a document: no table carries either, so each is driven here
+    by a program of its own (HOST-ARITY's is the one
+    `tests/test_selfhost_lower.py` already pins its sentence for; FOLD's is a
+    pair of component names that differ only in letter case)."""
     tool = _tool()
     oracle = load_by_path(
         "selfhost_lower_programs",
@@ -445,8 +447,20 @@ def test_the_gate_census_unreached_tags_are_elicitable(data, census):
         census, [(where, 'fn f() { let p = Pool.open("dsn") }\n')])
     assert set(arity) == {"HOST-ARITY"}, arity
 
+    assert "FOLD" not in reached, (
+        "FOLD is elicited by an in-memory table now. The ledger entry is still "
+        "a gap -- no corpus DOCUMENT draws it -- but the disposition says no "
+        "table carries it, so correct that line")
+    folded = tool._census_reach(census, [(where, (
+        "service Store {\n  fn get(key: Str) -> Str\n}\n\n"
+        "component KVStore provides a: Store {\n  provide a {\n"
+        "    fn get(key) = key\n  }\n}\n\n"
+        "component KvStore provides b: Store {\n  provide b {\n"
+        "    fn get(key) = key\n  }\n}\n"))])
+    assert set(folded) == {"FOLD"}, folded
+
     # and the entry is still a gap, which is why it is in the ledger at all.
-    assert {"BOOT", "HANDOFF", "HOST-ARITY", "ROUTE", "SPAWN"} == \
+    assert {"BOOT", "FOLD", "HANDOFF", "HOST-ARITY", "ROUTE", "SPAWN"} == \
         set(data["gate_census"]["unreached"])
 
 

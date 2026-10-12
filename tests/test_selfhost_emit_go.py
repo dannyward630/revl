@@ -23,13 +23,20 @@ built-in Opt/Result values and their ``match``, optional chaining, the item 434
 string builders and code-point scan, the item 445 destructive rebind, and the
 in-file ``test`` blocks.
 
+Since issue #2260 the port also carries the reference's LIVE stc-go module
+(``_emit``'s own path) for a v3 document of services and provide-only
+components with nothing top-level, over the combined path's component
+renderer.
+
 Deliberately OUT, each answered with a named ``<<UNSUPPORTED-...>>`` marker:
-the go LIVE-COMPONENT world (an ir_version 1/2 document, a component with no
-top-level declarations, an observable component beside declarations, a
+the rest of the go LIVE-COMPONENT world (an ir_version 1/2 document, a
+component with an activation step or a signature past the slice, an
+observable component beside declarations past the combined slice, a
 ``lifecycle test``), ``fault test`` blocks (the reference refuses them), the
 item 388 colour-erased extern clone, and an extern body whose line breaks
-Python ``splitlines()`` reads differently. Functional record-update is a
-reference refusal.
+Python ``splitlines()`` reads differently. Functional record-update, an extern
+with no ``@go`` body and a call to a ``deferred`` emission are reference
+refusals, each named by the port (issue #2316).
 """
 
 import importlib.util
@@ -154,6 +161,22 @@ CORPUS = [
     "../emit_java_corpus/comp_realm_intercept.rvl",
     "../emit_ts_corpus/realm_intercept.rvl",
     "../emit_ts_corpus/realm_isolate.rvl",
+    # issue #2260: the LIVE stc-go path (`_emit`), a document of services and
+    # provide-only components with nothing top-level. Its own banner, the
+    # fixed-order import block and `_emit`'s preamble order, over the same
+    # component renderer as the combined path.
+    "comp_live_provide.rvl",
+    # ... and a Str literal that spells a helper call sets no `_COMP_NEEDS_*`
+    # flag on either path: imports and preambles follow what was rendered
+    "comp_live_literal_helpers.rvl",
+    "comp_combined_literal_helpers.rvl",
+    # ... and a method body's Int32 arithmetic writes the I32 helpers on the
+    # live path too (issue #2262)
+    "comp_live_int32_arith.rvl",
+    "../emit_ts_corpus/services_methods.rvl",
+    "../emit_ts_corpus/services_async.rvl",
+    "../emit_py_corpus/provide_returns.rvl",
+    "../emit_java_corpus/legacy_void.rvl",
     # ... and declared records and variants in provide bodies: record literals
     # typed by their field set, field reads, case construction, a `match` over
     # a declared variant (the type switch), and `.length` on a Str or a List
@@ -191,7 +214,8 @@ CORPUS = [
     "comp_to_char.rvl",  # Int.to_char in a provide body (issue #2285)
 ]
 
-# The combined-path documents, which import stc-go and are built against it.
+# The combined-path and live-path documents, which import stc-go and are built
+# against it.
 COMBINED_CORPUS = CORPUS[CORPUS.index("comp_provide_pure.rvl"):]
 
 
@@ -579,6 +603,75 @@ def test_the_combined_corpus_builds_against_stc_go(emitted, rel):
     assert status == validate.OK, detail
 
 
+def test_a_components_only_document_takes_the_live_path(emitted, reference,
+                                                      tmp_path):
+    """Issue #2260: a v3 document with components and nothing top-level is the
+    reference's live stc-go module, and the port renders that module now
+    instead of the pure tier's banner and a marker per component."""
+    path = tmp_path / "live.rvl"
+    path.write_text("service S { fn g(n: Int) -> Str }\n"
+                    "component C provides s: S { provide s { fn g(n) = n.to_str() } }\n")
+    ir = compile_files([str(path)])
+    assert ir["ir_version"] == 3
+    want, got = reference.emit(ir), emitted["emit_go_src"](ir)
+    assert "targeting github.com/0xdenny218/stc-go" in got
+    assert "pure typed-core tier" not in got and "<<UNSUPPORTED" not in got
+    assert got == want
+
+
+def test_a_live_body_past_the_slice_is_still_named(emitted, reference, tmp_path):
+    """The live path's boundary: a component signature that takes a Result
+    makes the reference carry its sealed Result preamble, which this port does
+    not, so the document gets one marker per component rather than a module
+    missing that preamble. The banner is the live tier's, not the pure one's:
+    the answer names the module the reference renders."""
+    path = tmp_path / "live_result.rvl"
+    path.write_text("service S { fn f(r: Result[Int, Str]) -> Int\n fn g(n: Int) -> Str }\n"
+                    "component C provides s: S { provide s { fn f(r) = 1\n fn g(n) = n.to_str() } }\n")
+    ir = compile_files([str(path)])
+    assert ir["ir_version"] == 3
+    want, got = reference.emit(ir), emitted["emit_go_src"](ir)
+    assert_boundary_witness(want, got, "isRevlResult()", "<<UNSUPPORTED-COMPONENT:C>>")
+    assert got.splitlines()[:3] == want.splitlines()[:3]
+    assert "pure typed-core tier" not in got
+
+
+@pytest.mark.parametrize("source", [
+    pytest.param("service S { fn g(n: Int) -> Str }\n"
+                 "component C provides acme::s: S { provide acme::s { fn g(n) = n.to_str() } }\n",
+                 id="namespaced-key"),
+    pytest.param("service S { fn g(n: Int) -> Str }\n"
+                 "component C provides a_b: S, a__b: S {\n"
+                 "  provide a_b { fn g(n) = n.to_str() }\n  provide a__b { fn g(n) = n.to_str() }\n}\n",
+                 id="colliding-keys"),
+    pytest.param("fn one() -> Int = 1\n\nservice S { fn g(n: Int) -> Str }\n"
+                 "component C provides acme::s: S { provide acme::s { fn g(n) = n.to_str() } }\n",
+                 id="namespaced-key-beside-fn"),
+    pytest.param("fn one() -> Int = 1\n\nservice S { fn g(n: Int) -> Str }\n"
+                 "component C provides a_b: S, a__b: S {\n"
+                 "  provide a_b { fn g(n) = n.to_str() }\n  provide a__b { fn g(n) = n.to_str() }\n}\n",
+                 id="colliding-keys-beside-fn"),
+])
+def test_a_key_the_reference_mangles_is_named_on_either_component_path(emitted, reference,
+                                                                       tmp_path, source):
+    """The reference mangles a namespaced key (`_key_ident`) and refuses two keys
+    that land on one Go identifier (`_check_host_keys`). The port does neither,
+    so it names the component rather than writing `_keyAcme::s` or a duplicate
+    key var into a module that would not build. The `beside-fn` cases take the
+    combined path (a top-level fn beside the component), the others the live
+    one."""
+    path = tmp_path / "keys.rvl"
+    path.write_text(source)
+    ir = compile_files([str(path)])
+    assert ir["ir_version"] == 3
+    if "::" not in source:
+        with pytest.raises(reference.EmitError, match="both mangle to the Go identifier"):
+            reference.emit(ir)
+    got = emitted["emit_go_src"](ir)
+    assert "<<UNSUPPORTED-COMPONENT:C>>" in got
+    assert "::" not in got.split("<<", 1)[0]
+
+
 def test_an_incidental_component_on_the_pure_path_is_not_marked(emitted, reference,
                                                                 tmp_path):
     """The boundary of the rule above, so it is not read as wider than it is.
@@ -820,6 +913,82 @@ def test_a_fault_test_the_reference_refuses_is_named_here_too(emitted, reference
     got = emitted["emit_go_src"](ir)
     assert "<<UNSUPPORTED-FAULT-TEST:probe>>" in got
     assert "<<UNSUPPORTED-COMPONENT:P>>" in got
+
+
+@pytest.mark.parametrize("name, banner", [
+    # nothing top-level: the live stc-go tier's banner (issue #2260)
+    ("fault_test_section.rvl", "// revl -> cordis-go, targeting github.com/0xdenny218/stc-go."),
+    # a `fn` beside it: the pure typed-core tier, which renders the `fn`
+    ("fault_test_beside_fn.rvl", "// revl -> cordis-go (ir_version 3, pure typed-core tier): ordinary Go."),
+])
+def test_a_refused_fault_test_is_named_on_both_port_paths(emitted, reference, name, banner):
+    """Each refusal document reaches one half of the port: a document with
+    nothing top-level takes the live path, one with a `fn` the pure tier. Both
+    name the section and the component under the banner of the tier they took."""
+    ir = compile_files([str(ROOT / "tests" / "fixtures" / "emit_go_refusals" / name)])
+    with pytest.raises(reference.EmitError, match="fault tests do not lower"):
+        reference.emit(ir)
+    got = emitted["emit_go_src"](ir)
+    assert got.splitlines()[1] == banner
+    assert "<<UNSUPPORTED-FAULT-TEST:probe>>" in got
+    assert "<<UNSUPPORTED-COMPONENT:P>>" in got
+
+
+# issue #2316: documents the reference refuses for the whole tier, which the
+# port used to answer with Go carrying no `<<UNSUPPORTED` marker. An extern with
+# no `@go` body is named where the extern would be; a CALL to a `deferred`
+# emission is named once per component and call, on whichever path it takes.
+NO_GO_BODY_REFUSALS = [
+    ("examples/evolve_loop.rvl", "host_propose"),
+    ("examples/placement/gate_provider.rvl", "host_gate_admit"),
+    ("tests/fixtures/model_reach_crossing/ok_extern_block_value.rvl", "run_tool"),
+    ("tests/fixtures/model_reach_crossing/ok_extern_no_block.rvl", "run_tool"),
+    ("tests/fixtures/model_reach_crossing/ok_helper_no_block.rvl", "run_tool"),
+    ("tests/fixtures/service_typed_params/ok_param_no_approval.rvl", "charge"),
+]
+DEFERRED_EMISSION_REFUSALS = [
+    "tests/fixtures/deferred_reach/ok_emit_step.rvl",
+    "tests/fixtures/deferred_reach/ok_emit_tail.rvl",
+    "tests/fixtures/deferred_reach/ok_plain_value_in_fn_body.rvl",
+] + [f"tests/fixtures/emit_{tier}_refusals/deferred_emission_call.rvl"
+     for tier in ("go", "java", "rust", "ts", "wasm")]
+
+
+@pytest.mark.parametrize("rel, extern", NO_GO_BODY_REFUSALS,
+                         ids=[rel for rel, _ in NO_GO_BODY_REFUSALS])
+def test_an_extern_with_no_go_body_is_a_named_refusal(emitted, reference, rel, extern):
+    ir = compile_files([str(ROOT / rel)])
+    with pytest.raises(reference.EmitError,
+                       match=f"extern `{extern}` has no @go body"):
+        reference.emit(ir)
+    got = emitted["emit_go_src"](ir)
+    assert f"<<UNSUPPORTED-EXTERN-NO-GO-BODY:{extern}>>" in got
+
+
+@pytest.mark.parametrize("rel", DEFERRED_EMISSION_REFUSALS)
+def test_a_called_deferred_emission_is_a_named_refusal(emitted, reference, rel):
+    ir = compile_files([str(ROOT / rel)])
+    with pytest.raises(reference.EmitError,
+                       match="Agent: `deferred` emission `deliver` needs a session owner"):
+        reference.emit(ir)
+    got = emitted["emit_go_src"](ir)
+    assert "<<UNSUPPORTED-DEFERRED-EMISSION:Agent.deliver>>" in got
+    # the component that makes the call is not rendered as if it ran
+    assert "<<UNSUPPORTED-COMPONENT:Agent>>" in got
+
+
+def test_a_declared_but_uncalled_deferred_emission_is_not_named(emitted, reference,
+                                                                tmp_path):
+    """The refusal is call-site keyed on the reference: the same extern with
+    nothing calling it emits, and the port agrees byte for byte."""
+    src = (ROOT / "tests" / "fixtures" / "emit_go_refusals"
+           / "deferred_emission_call.rvl").read_text()
+    doc = tmp_path / "uncalled.rvl"
+    doc.write_text(src.replace("{ emit deliver(sink, msg) }", "{ return }"))
+    ir = compile_files([str(doc)])
+    got = emitted["emit_go_src"](ir)
+    assert "<<UNSUPPORTED" not in got
+    assert got == reference.emit(ir)
 
 
 # item 560 / issue #1914: the one key pair the injective mangling cannot split

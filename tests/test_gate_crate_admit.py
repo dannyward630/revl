@@ -617,30 +617,86 @@ def test_the_manifest_admission_arm_withholds_a_name_folded_onto_a_running_compo
         compile_source(candidate("Kvstore"), "incoming.rvl", manifest=running)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "known false admission, open as a follow-up: the manifest wire does not "
-    "name a running component with no rows, so the crate cannot withhold a "
-    "candidate whose name folds onto it"))
-def test_the_manifest_admission_arm_withholds_a_name_folded_onto_a_rowless_running_component(consumer):
-    """The reference refuses `LONE` into a composition keeping `component Lone
-    {}` (issue #2276). `Lone` provides and requires nothing, so the wire has no
-    row for it and the crate certifies `LONE`. Strict: when the wire names such a
-    component and the crate withholds this, the xfail turns red."""
+def test_the_manifest_admission_arm_withholds_a_service_folded_onto_a_running_service(consumer):
+    """Issue #2334: the reference refuses a hot-swap that adds `service Kvstore`
+    to a composition declaring `service KVStore`, so the crate must not certify
+    it. The wire's `!services` block enumerates every running service, so this
+    comparison is exhaustive. A service under a name that stays apart is the
+    positive control."""
+    from revl.compiler import compile_source
+    from revl.manifest import manifest_wire
+    running = compile_source(
+        "service KVStore {\n  fn get(key: Str) -> Str\n}\n"
+        "component A provides a: KVStore {\n  provide a {\n"
+        "    fn get(key) = key\n  }\n}\n", "running.rvl")
+    wire = manifest_wire(running)
+
+    def candidate(name: str) -> str:
+        return (f"service {name} {{\n  fn put(key: Str) -> Str\n}}\n"
+                f"component B provides b: {name} {{\n  provide b {{\n"
+                "    fn put(key) = key\n  }\n}\n")
+
+    folded, underscored, apart = _crate_verdicts(
+        consumer, [candidate("Kvstore"), candidate("KV_Store"), candidate("Cache")],
+        "--admission-into", wire)
+    assert apart["admitted"] is True, (
+        f"the control must be certified into the composition: {apart}")
+    for verdict in (folded, underscored):
+        assert verdict["admitted"] is False, (
+            "the crate certified a service folded onto the running `KVStore`, "
+            f"which the reference refuses: {verdict}")
+    compile_source(candidate("Cache"), "incoming.rvl", manifest=running)
+    for name in ("Kvstore", "KV_Store"):
+        with pytest.raises(Exception, match="collides with running service `KVStore`"):
+            compile_source(candidate(name), "incoming.rvl", manifest=running)
+
+
+@pytest.mark.parametrize("running_name, incoming_name", [
+    ("Lone", "LONE"), ("Noop", "NOOP"), ("No_op", "Noop")])
+def test_the_manifest_admission_arm_refuses_a_name_folded_onto_a_rowless_running_component(
+        consumer, running_name, incoming_name):
+    """Issue #2289: the reference refuses `NOOP` into a composition keeping
+    `component Noop {}` (issue #2276). `Noop` provides and requires nothing, and
+    the wire used to carry no row for it, so the crate certified `NOOP`. The
+    wire now names it with a presence row, and the crate refuses the hot-swap
+    with the reference's own sentence."""
     from revl.compiler import compile_source
     from revl.manifest import manifest_wire
     running = compile_source(
         "service Store {\n  fn get(key: Str) -> Str\n}\n"
         "component KVStore provides a: Store {\n  provide a {\n"
-        "    fn get(key) = key\n  }\n}\ncomponent Lone {\n}\n", "running.rvl")
+        "    fn get(key) = key\n  }\n}\n"
+        f"component {running_name} {{\n}}\n", "running.rvl")
     wire = manifest_wire(running)
-    candidate = ("service Local {\n  fn get(key: Str) -> Str\n}\n"
-                 "component LONE provides b: Local {\n  provide b {\n"
-                 "    fn get(key) = key\n  }\n}\n")
-    with pytest.raises(Exception, match="collides with running component `Lone`"):
-        compile_source(candidate, "incoming.rvl", manifest=running)
-    (verdict,) = _crate_verdicts(consumer, [candidate], "--admission-into", wire)
-    assert verdict["admitted"] is False, (
-        f"the crate certified `LONE` beside a running `Lone` on {wire!r}: {verdict}")
+    assert running_name in wire.split(";"), wire
+
+    def candidate(name: str) -> str:
+        return ("service Local {\n  fn get(key: Str) -> Str\n}\n"
+                f"component {name} provides b: Local {{\n  provide b {{\n"
+                "    fn get(key) = key\n  }\n}\n")
+
+    with pytest.raises(RevlError) as raised:
+        compile_source(candidate(incoming_name), "incoming.rvl", manifest=running)
+    assert f"collides with running component `{running_name}`" in raised.value.message
+    compile_source(candidate(running_name), "incoming.rvl", manifest=running)
+    compile_source(candidate("Cache"), "incoming.rvl", manifest=running)
+
+    folded, same, apart = _crate_verdicts(
+        consumer, [candidate(incoming_name), candidate(running_name),
+                   candidate("Cache")],
+        "--admission-into", wire)
+    assert folded["admitted"] is False, (
+        f"the crate certified `{incoming_name}` beside a running "
+        f"`{running_name}` on {wire!r}: {folded}")
+    assert folded["verdict"] == "refused", folded
+    assert folded["message"] == raised.value.message, (
+        "the crate must refuse with the reference's sentence:\n"
+        f"  crate:     {folded['message']!r}\n"
+        f"  reference: {raised.value.message!r}")
+    # the same name replaces a component that hands off nothing and strands
+    # nothing, and the reference admits it; so is a name that stays apart
+    assert same["admitted"] is True, same
+    assert apart["admitted"] is True, apart
 
 
 def test_every_refusal_the_crate_issues_is_a_real_reference_refusal(agreement):

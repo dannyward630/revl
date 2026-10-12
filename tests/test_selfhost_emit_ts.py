@@ -558,3 +558,97 @@ def test_a_host_identifier_collision_is_refused_by_name(reference):
     with pytest.raises(reference.EmitError,
                        match="both spell the host identifier"):
         reference.emit(ir)
+
+
+# issue #2353: documents the reference refuses for the whole tier, which the
+# port used to answer with output carrying no `<<UNSUPPORTED` marker. An extern
+# with no `@ts` body is named where the extern would be; a CALL to a
+# `deferred` emission is named once per component and call.
+NO_TS_BODY_REFUSALS = [
+    ("examples/evolve_loop.rvl", "host_propose"),
+    ("examples/placement/gate_provider.rvl", "host_gate_admit"),
+    ("tests/fixtures/model_reach_crossing/ok_extern_block_value.rvl", "run_tool"),
+    ("tests/fixtures/model_reach_crossing/ok_extern_no_block.rvl", "run_tool"),
+    ("tests/fixtures/model_reach_crossing/ok_helper_no_block.rvl", "run_tool"),
+    ("tests/fixtures/service_typed_params/ok_param_no_approval.rvl", "charge"),
+    ("tests/fixtures/emit_wasm_refusals/ui_transaction_unit.rvl", "read_pane"),
+]
+DEFERRED_EMISSION_REFUSALS = [
+    "tests/fixtures/deferred_reach/ok_emit_step.rvl",
+    "tests/fixtures/deferred_reach/ok_emit_tail.rvl",
+    "tests/fixtures/deferred_reach/ok_plain_value_in_fn_body.rvl",
+] + [f"tests/fixtures/emit_{t}_refusals/deferred_emission_call.rvl"
+     for t in ("go", "java", "rust", "ts", "wasm")]
+
+
+@pytest.mark.parametrize("rel, extern", NO_TS_BODY_REFUSALS,
+                         ids=[rel for rel, _ in NO_TS_BODY_REFUSALS])
+def test_an_extern_with_no_ts_body_is_a_named_refusal(emitted, reference, rel, extern):
+    ir = compile_files([str(ROOT / rel)])
+    with pytest.raises(reference.EmitError,
+                       match=f"extern `{extern}` has no @ts body"):
+        reference.emit(ir)
+    got = emitted["emit_ts_src"](ir)
+    assert f"<<UNSUPPORTED-EXTERN-NO-TS-BODY:{extern}>>" in got
+
+
+@pytest.mark.parametrize("rel", DEFERRED_EMISSION_REFUSALS)
+def test_a_called_deferred_emission_is_a_named_refusal(emitted, reference, rel):
+    ir = compile_files([str(ROOT / rel)])
+    with pytest.raises(reference.EmitError,
+                       match="Agent: `deferred` emission `deliver` needs a session owner"):
+        reference.emit(ir)
+    assert "<<UNSUPPORTED-DEFERRED-EMISSION:Agent.deliver>>" in emitted["emit_ts_src"](ir)
+
+
+def test_a_declared_but_uncalled_deferred_emission_is_not_named(emitted, reference,
+                                                                tmp_path):
+    """The refusal is call-site keyed on the reference: the same extern with
+    nothing calling it emits, and the port agrees byte for byte."""
+    src = (ROOT / "tests" / "fixtures" / "emit_ts_refusals"
+           / "deferred_emission_call.rvl").read_text()
+    doc = tmp_path / "uncalled.rvl"
+    doc.write_text(src.replace("{ emit deliver(sink, msg) }", "{ return }"))
+    ir = compile_files([str(doc)])
+    got = emitted["emit_ts_src"](ir)
+    assert "<<UNSUPPORTED" not in got
+    assert got == reference.emit(ir)
+
+
+# issue #2367: the remaining reference refusals this port answered without an
+# `<<UNSUPPORTED` marker. A `validated` crossing is named by declaration, a
+# namespaced key whose host spelling another key already holds by key, and a
+# required `Stream[T]` coeffect by its requirement.
+REFUSAL_FIXTURES = ROOT / "tests" / "fixtures"
+NAMED_REFUSALS = [
+    *[(f"emit_{t}_refusals/validated_emission_operation.rvl",
+       "needs the response-validation", "<<UNSUPPORTED-VALIDATED:Model.complete>>")
+      for t in ("go", "java", "rust", "ts", "wasm")],
+    *[(f"emit_{t}_refusals/host_identifier_collision.rvl",
+       "both spell the", "<<UNSUPPORTED-HOST-KEY-COLLISION:acme::greeter>>")
+      for t in ("go", "java", "py", "rust", "ts")],
+    ("emit_rust_refusals/required_stream_coeffect.rvl",
+     "a required `Stream\\[T\\]` coeffect", "<<UNSUPPORTED-REQUIRED-STREAM:Fulfiller.feed>>"),
+]
+
+
+@pytest.mark.parametrize("rel, refusal, marker", NAMED_REFUSALS,
+                         ids=[rel for rel, _, _ in NAMED_REFUSALS])
+def test_a_reference_refusal_is_named_by_the_port(emitted, reference, rel, refusal, marker):
+    ir = compile_files([str(REFUSAL_FIXTURES / rel)])
+    with pytest.raises(reference.EmitError, match=refusal):
+        reference.emit(ir)
+    assert marker in emitted["emit_ts_src"](ir)
+
+
+def test_an_unvalidated_operation_is_not_named(emitted, reference, tmp_path):
+    """The document without `validated` emits on the reference, and the port
+    agrees byte for byte: the modifier alone carries the refusal."""
+    src = (REFUSAL_FIXTURES / "emit_ts_refusals"
+           / "validated_emission_operation.rvl").read_text()
+    doc = tmp_path / "unvalidated.rvl"
+    doc.write_text(src.replace("emission validated fn", "emission fn"))
+    ir = compile_files([str(doc)])
+    got = emitted["emit_ts_src"](ir)
+    assert "<<UNSUPPORTED" not in got
+    assert got == reference.emit(ir)

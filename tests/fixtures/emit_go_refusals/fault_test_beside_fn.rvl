@@ -1,0 +1,18 @@
+// A `fault test` section beside a top-level `fn`. The go reference REFUSES the
+// whole document by name, as it does `fault_test_section.rvl`: fault tests run
+// on the python reference tier only (docs/fault-tests.md).
+//
+// The two documents reach different halves of the port. That one has nothing
+// top-level, so the port takes its live stc-go path and names the section
+// there (issue #2260). This one carries a `fn`, so the port renders the pure
+// typed-core tier and names the section from `emit_module`.
+fn one() -> Int { return 1 }
+service Ping { fn ping() -> Int }
+component P provides p: Ping {
+  let scratch = effect Map.new() undo scratch.drop()
+  provide p { fn ping() = one() }
+}
+fault test "probe" for P {
+  fail at step 1
+  assert no residue
+}

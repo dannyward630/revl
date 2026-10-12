@@ -304,19 +304,44 @@ public final class Components {
             return;
         }
         synchronized (revlWalLock) {
+            long start = -1;
+            try {
+                start = revlWalChannel.size();
+            } catch (java.io.IOException size) {
+                start = -1;
+            }
             try {
                 revlWalOut.write((json + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
                 revlWalOut.flush();
             } catch (java.io.IOException write) {
+                revlWalCut(start);
                 throw new java.io.UncheckedIOException("revl: write-ahead log write failed", write);
             }
             try {
                 revlWalChannel.force(true);
             } catch (java.io.IOException sync) {
                 if (!revlWalUnsynced) {
+                    revlWalCut(start);
                     throw new java.io.UncheckedIOException("revl: write-ahead log fsync failed", sync);
                 }
             }
+        }
+    }
+
+    // revlWalCut drops a record whose write or fsync failed (issue #2345), as the
+    // py WriteAheadLog and the wasm drain do, so recovery reads it as absent, then
+    // fsyncs the cut so a power loss cannot bring it back. Best effort: the caller
+    // throws either way, and on a target that refused the record's fsync this
+    // fsync fails too.
+    private static void revlWalCut(long start) {
+        if (start < 0) {
+            return;
+        }
+        try {
+            revlWalChannel.truncate(start);
+            revlWalChannel.force(true);
+        } catch (java.io.IOException cut) {
+            // the record stays, unsynced; the run still stops on the caller's throw
         }
     }
 
@@ -338,6 +363,52 @@ public final class Components {
                     + ",\"origin\":" + call
                     + ",\"witness\":null,\"idempotency\":null}");
         }
+    }
+
+    // revlRecordEmissionStart journals one host-extern emission BEFORE its body
+    // runs (issue #2345), the record the py tier writes for the same crossing
+    // (backends/python/replay.py, Timeline.record_emission): an `effect` of kind
+    // `emission`, one-way, no inverse. Fsync'd before it returns, and a failed fsync
+    // throws, so the host body never runs unless its start record is on disk.
+    // Returns the record's seq, or -1 when REVL_WAL is unset.
+    public static int revlRecordEmissionStart(String key, String method, String service) {
+        if (revlWalOut == null) {
+            return -1;
+        }
+        synchronized (revlWalLock) {
+            int seq = revlWalSeq++;
+            String label = revlWalStr(key.equals(method) ? key : key + "." + method);
+            revlWalWrite("{\"record\":\"effect\",\"seq\":" + seq
+                    + ",\"component\":null,\"stepIndex\":null,\"kind\":\"emission\",\"label\":" + label
+                    + ",\"site\":null,\"source\":null,\"origin\":{}"
+                    + ",\"boundary\":{\"class\":\"emission\",\"referent\":\"process-crossing\""
+                    + ",\"compensated\":false,\"detail\":{\"key\":" + revlWalStr(key)
+                    + ",\"method\":" + revlWalStr(method)
+                    + ",\"service\":" + (service == null ? "null" : revlWalStr(service)) + ",\"args\":[]}}"
+                    + ",\"inverse\":{\"reconstructible\":false,"
+                    + "\"reason\":\"an emission is a one-way crossing; it has no inverse\"}}");
+            return seq;
+        }
+    }
+
+    // revlRecordEmissionOutcome settles a journalled emission once its body
+    // returned. A body that throws is settled by revlRecordEmissionFailed instead.
+    public static void revlRecordEmissionOutcome(int seq, String outcome) {
+        if (revlWalOut == null || seq < 0) {
+            return;
+        }
+        revlWalWrite("{\"record\":" + revlWalStr(outcome) + ",\"seq\":" + seq + "}");
+    }
+
+    // revlRecordEmissionFailed writes `emission-failed` for a body that threw, as
+    // the py tier's _call_within does. Only the exception's type is kept: this tier
+    // has no redaction funnel for its message.
+    public static void revlRecordEmissionFailed(int seq, Throwable error) {
+        if (revlWalOut == null || seq < 0) {
+            return;
+        }
+        revlWalWrite("{\"record\":\"emission-failed\",\"seq\":" + seq
+                + ",\"error\":{\"type\":" + revlWalStr(error.getClass().getSimpleName().isEmpty() ? error.getClass().getName() : error.getClass().getSimpleName()) + "}}");
     }
 
     // revlRecordDischarge writes the commit-path proof that every recorded
