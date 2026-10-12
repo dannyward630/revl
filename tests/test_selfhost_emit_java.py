@@ -65,7 +65,7 @@ Covered subset (what emits byte-identical):
     under the A8 self-revert ``try/catch`` returning ``fx``. Routed to only when a
     component ``needs_modern`` AND falls in the supported subset (every body step a
     ``provide``, every method step ``return``/``effect``/``emit``); anything else
-    stays a loud ``<<DEFER-component-nonsimple>>``.
+    stays a loud ``<<UNSUPPORTED-component-nonsimple>>``.
 
   * slice 4 (item 235) — REALM placements on the modern path: an ``isolate <key>
     in realm("..")`` opens the ``apply()`` body with ``ctx = ctx.isolate(<Svc>.class,
@@ -91,15 +91,15 @@ Covered subset (what emits byte-identical):
 Deliberately OUT (excluded from the corpus, deferred to Java Path B slice 6+):
   * spawn/instances (``_v3_spawn``/``instance-get``/``RevlSpawnHandle``), timers,
     routers, and the ``Pool`` host runtime (a ``Pool`` acquisition surfaces a loud
-    ``<<DEFER-host-stub:Pool>>``); ``setup`` blocks on effect steps, method-body
+    ``<<UNSUPPORTED-host-stub:Pool>>``); ``setup`` blocks on effect steps, method-body
     ``let``/``assign``/``await``/arrow bindings, and body-level ``while``/``for``/
     ``let_pattern`` (a component outside the supported subset surfaces a loud
-    ``<<DEFER-component-nonsimple>>``);
+    ``<<UNSUPPORTED-component-nonsimple>>``);
   * the built-in Result surface (``Ok``/``Err`` ctor
     and ``match``, ``_emit_result_type``, ``_emit_checked_div_helpers``) and the
     ``revlDivFloor``/``revlDivEuclid``/``revlMod`` int-arith block, so the
     ``checked_*`` and ``div_floor``/``div_euclid``/``mod`` builtin methods stay
-    behind loud ``<<DEFER-checked-div:..>>`` / ``<<DEFER-int-arith:..>>``
+    behind loud ``<<UNSUPPORTED-checked-div:..>>`` / ``<<UNSUPPORTED-int-arith:..>>``
     markers;
   * functional record-update ``{r | f = e}`` (the Java reference itself RAISES on
     ``record_update`` — a structural exclusion);
@@ -279,7 +279,7 @@ CORPUS = [
     # recorded unported in `selfhost_blind_spots.json`). Its `act` method also
     # carries a `let`, and the component renderer here admits only
     # `return`/`effect`/`emit` method steps (`body_step_supported`), so the
-    # component is refused with `<<DEFER-component-nonsimple:Agent>>`. Adding
+    # component is refused with `<<UNSUPPORTED-component-nonsimple:Agent>>`. Adding
     # the document would make this oracle red, so the UI transaction unit stays
     # unported on this tier and `class=emission` stays a recorded unported gap.
     "to_char.rvl",  # Int.to_char, the primitive behind str_char (issue #2285)
@@ -374,7 +374,7 @@ def test_fn_type_param_refused(emitted, reference):
     lowers (in the frontend) to a `list_*` free function with a function-value
     parameter, and a declared function type is not representable on this tier.
     The reference RAISES EmitError; a pure self-host emitter fn cannot `fail`, so
-    it refuses within the subset with a loud `<<DEFER-fn-type>>` marker instead of
+    it refuses within the subset with a loud `<<UNSUPPORTED-fn-type>>` marker instead of
     silently emitting a mis-typed signature. Both refuse the same construct, so
     tests/fixtures/emit_*_corpus/transforms.rvl stays OUT of the byte-identity
     CORPUS above (the reference would raise there) and is checked only here."""
@@ -382,7 +382,7 @@ def test_fn_type_param_refused(emitted, reference):
     with pytest.raises(reference.EmitError, match="function type"):
         reference.emit(ir)
     got = emitted["emit_java_src"](ir)
-    assert "<<DEFER-fn-type>>" in got
+    assert "<<UNSUPPORTED-fn-type>>" in got
 
 
 def test_null_intercept_metadata_activates_on_jvm(reference, tmp_path):
@@ -429,20 +429,20 @@ public final class Harness {
     "rel, reference_fragment, port_fragment",
     [
         ("backends/java/scenarios/instance_accessor.rvl",
-         "static final class RevlSpawnHandle", "<<DEFER-component-nonsimple:Supervisor>>"),
+         "static final class RevlSpawnHandle", "<<UNSUPPORTED-component-nonsimple:Supervisor>>"),
         ("backends/go/scenarios/router.rvl",
-         "class RevlRouter", "<<DEFER-component-nonsimple:Router>>"),
+         "class RevlRouter", "<<UNSUPPORTED-component-nonsimple:Router>>"),
         ("bench/results/baseline-deepseek-v4-pro/02-pg-pool/v1/attempt-1.rvl",
-         "class Pool", "<<DEFER-host-stub:Pool>>"),
+         "class Pool", "<<UNSUPPORTED-host-stub:Pool>>"),
         ("backends/go/testdata/result_ctor_302.rvl",
-         "new RevlResult.Ok<>", "<<DEFER-result-ctor:Ok>>"),
+         "new RevlResult.Ok<>", "<<UNSUPPORTED-result-ctor:Ok>>"),
         ("tests/fixtures/emit_py_corpus/control.rvl",
          "revlLength(", "<<UNSUPPORTED-EXPR:arrow>>"),
         # The stdlib half of this document now agrees byte-for-byte (see
         # emit_java_corpus/stdlib_builtins.rvl); what still diverges is its
         # `Pool` host runtime.
         ("backends/java/scenarios/runtime_values.rvl",
-         "class Pool", "<<DEFER-host-stub:Pool>>"),
+         "class Pool", "<<UNSUPPORTED-host-stub:Pool>>"),
         ("tests/fixtures/emit_py_corpus/floats.rvl",
          "private static String revlFtoa(double x)", None),
         ("bench/codegen/java/cases/extern_config/case.rvl",
@@ -570,7 +570,7 @@ def test_the_stream_surface_is_named_not_dropped(emitted, reference):
     want = reference.emit(ir)
     got = emitted["emit_java_src"](ir)
     assert_boundary_witness(want, got, "Stream.subscribe(",
-                            "<<DEFER-component-nonsimple:")
+                            "<<UNSUPPORTED-component-nonsimple:")
 
 
 # item 560 / issue #1914: the one key pair the injective mangling cannot split
@@ -591,3 +591,24 @@ def test_a_host_identifier_collision_is_refused_by_name(reference):
     with pytest.raises(reference.EmitError,
                        match="both lower to the Java identifier"):
         reference.emit(ir)
+
+
+# issue #2383: each reference refusal the class body cannot carry is named by
+# the port, in the spelling the rust and ts ports use.
+JAVA_NAMED_REFUSALS = [
+    ("emit_java_refusals/deferred_emission_call.rvl",
+     "<<UNSUPPORTED-DEFERRED-EMISSION:Agent.deliver>>"),
+    ("emit_java_refusals/validated_emission_operation.rvl",
+     "<<UNSUPPORTED-VALIDATED:Model.complete>>"),
+    ("emit_java_refusals/required_stream_coeffect.rvl",
+     "<<UNSUPPORTED-REQUIRED-STREAM:Fulfiller.feed>>"),
+]
+
+
+@pytest.mark.parametrize("rel,marker", JAVA_NAMED_REFUSALS,
+                         ids=[r.split("/")[1] for r, _ in JAVA_NAMED_REFUSALS])
+def test_a_java_reference_refusal_is_named_by_the_port(emitted, reference, rel, marker):
+    ir = compile_files([str(ROOT / "tests" / "fixtures" / rel)])
+    with pytest.raises(reference.EmitError):
+        reference.emit(ir)
+    assert marker in emitted["emit_java_src"](ir)

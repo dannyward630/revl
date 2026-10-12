@@ -2606,3 +2606,222 @@ def test_the_type_and_expression_rules_refuse_nothing_the_reference_reads(compil
     parse_text(text, "x.rvl")
     scan = compile_rvl["stmt_parse_scan"](compile_rvl["lex_src"](text))
     assert scan["v"] == ""
+
+
+# Issue #2399: the reference lowers `test` and `prop test` bodies through the
+# statement rules a `fn` body goes through, and `_lift_block_arm` refuses a
+# block arm it cannot lift. The self-host checked neither, so it emitted these
+# documents. Each one is refused by the reference at type-check or lowering,
+# and the self-host now refuses it with the reference's own message.
+def _test_doc(body):
+    return ("fn d(n: Int) -> Int {\n  return n * 2\n}\n"
+            "test \"d\" {\n" + body + "\n  assert true\n}\n")
+
+
+def _prop_doc(body):
+    return "prop test \"p\" (n: Int) {\n" + body + "\n  assert true\n}\n"
+
+
+_ISSUE_2399_REFUSED = {
+    "test_body_empty_map": _test_doc("  let m: Map[Str, Int] = {}"),
+    "arm_reads_untyped_binder": (
+        "fn f(o: Option[List[Int]]) -> Int {\n"
+        "  return match o { Some(xs) => { let k = xs.length\n k }, None => 0 }\n}\n"),
+    "test_body_empty_list_as_map": _test_doc("  let m: Map[Str, Int] = []"),
+    "test_body_empty_record_as_list": _test_doc("  let m: List[Int] = {}"),
+    "test_body_var_empty_map": _test_doc("  var m: Map[Str, Int] = {}"),
+    "test_body_argument_empty_map": (
+        "fn g(m: Map[Str, Int]) -> Int {\n  return 1\n}\n"
+        "test \"t\" {\n  assert g({}) == 1\n}\n"),
+    "test_body_let_mismatch": _test_doc("  let m: Int = \"s\""),
+    "second_test_refuses": (
+        "test \"a\" {\n  assert true\n}\n"
+        "test \"b\" {\n  let m: Int = \"s\"\n  assert true\n}\n"),
+    "prop_body_empty_map": _prop_doc("  let m: Map[Str, Int] = {}"),
+    "prop_body_let_mismatch": _prop_doc("  let m: Str = n"),
+    "test_body_block_arm": (
+        "test \"t\" {\n  let o: Opt[Int] = Some(1)\n"
+        "  let v = match o { Some(x) => { let k = x\n k }, None => 0 }\n"
+        "  assert v == 1\n}\n"),
+    "prop_body_block_arm": _prop_doc(
+        "  let v = match Some(n) { Some(x) => { let k = x\n k }, None => 0 }"),
+    "duplicate_test": "test \"t\" {\n  assert true\n}\ntest \"t\" {\n  assert true\n}\n",
+    "duplicate_prop_test": _prop_doc("") + _prop_doc(""),
+    "arm_reads_untyped_let": (
+        "extern pure fn g() = @py { return 1 }\n"
+        "fn f(n: Int) -> Int {\n  let a = g()\n"
+        "  let v = match Some(n) { Some(x) => { let k = a\n x }, None => 0 }\n"
+        "  return v\n}\n"),
+    "arm_reads_outer_untyped_binder": (
+        "fn f(o: Option[Int], p: Opt[Int]) -> Int {\n"
+        "  return match o { Some(x) => match p { Some(y) => { let k = x\n k + y }, "
+        "None => 0 }, None => 0 }\n}\n"),
+    "arm_binder_of_undeclared_type": (
+        "fn f(o: Maybe[Int]) -> Int {\n"
+        "  return match o { Some(x) => { let k = x\n k }, None => 0 }\n}\n"),
+}
+
+_BOX = "type Box[T] = { v: T }\n"
+_EXTERN = "extern pure fn g() = @py { return [1] }\n"
+
+_ISSUE_2399_REFUSED.update({
+    # an arm binder is typed only where `_arm_payload_type` types it
+    "arm_opt_matched_with_ok": (
+        "fn f(o: Opt[Int]) -> Int {\n"
+        "  return match o { Ok(x) => { let k = x\n k }, _ => 0 }\n}\n"),
+    "arm_result_matched_with_some": (
+        "fn f(o: Result[Int, Str]) -> Int {\n"
+        "  return match o { Some(x) => { let k = x\n k }, _ => 0 }\n}\n"),
+    "arm_binder_of_applied_declared_generic": (
+        "type Option[T] = Some(T) | None\nfn f(o: Option[Int]) -> Int {\n"
+        "  return match o { Some(x) => { let k = x\n k }, None => 0 }\n}\n"),
+    # a test written right after an extern is still checked
+    "test_body_host_method_after_extern": (
+        _EXTERN + "test \"t\" {\n  let a = g()\n  let n = a.length()\n  assert true\n}\n"),
+    "prop_body_host_method_after_extern": (
+        _EXTERN + "prop test \"p\" (n: Int) {\n  let a = g()\n"
+        "  let k = a.length()\n  assert true\n}\n"),
+    "test_body_let_mismatch_after_extern": (
+        _EXTERN + "test \"t\" {\n  let m: Int = \"s\"\n  assert true\n}\n"),
+    "duplicate_test_after_extern": (
+        _EXTERN + "test \"t\" {\n  assert true\n}\ntest \"t\" {\n  assert true\n}\n"),
+    # an alias leaves prop bodies undecided, not their names
+    "duplicate_prop_test_with_an_alias": "type M = Int\n" + _prop_doc("") + _prop_doc(""),
+    # the instantiated fields still refuse a record that does not fit
+    "generic_record_field_mismatch_in_test": _BOX + _test_doc("  let b: Box[Int] = { v: \"s\" }"),
+    "generic_record_field_mismatch_in_fn": (
+        _BOX + "fn f(n: Int) -> Int {\n  let b: Box[Int] = { v: \"s\" }\n  return n\n}\n"),
+    "generic_record_wrong_field": (
+        _BOX + "fn f(n: Int) -> Int {\n  let b: Box[Int] = { w: n }\n  return n\n}\n"),
+})
+
+# A record literal bound to an applied generic record, which the reference
+# checks against the instantiated fields, and the arm binders it types. The
+# self-host must neither refuse these at admission nor when it compiles them.
+_ISSUE_2399_COMPILED = {
+    "generic_record_in_test": _BOX + _test_doc("  let b: Box[Int] = { v: 1 }"),
+    "generic_record_in_prop": _BOX + _prop_doc("  let b: Box[Int] = { v: n }"),
+    "generic_record_in_fn": (
+        _BOX + "fn f(n: Int) -> Int {\n  let b: Box[Int] = { v: n }\n  return b.v\n}\n"),
+    "generic_record_two_params": (
+        "type P[A, B] = { a: A, b: B }\nfn f(n: Int) -> Int {\n"
+        "  let p: P[Int, Str] = { a: n, b: \"s\" }\n  return p.a\n}\n"),
+    "generic_record_nested_argument": (
+        _BOX + "fn f(n: Int) -> Int {\n  let b: Box[List[Int]] = { v: [n] }\n  return n\n}\n"),
+    "arm_result_ok_and_err": (
+        "fn f(o: Result[Int, Str]) -> Int {\n"
+        "  return match o { Ok(x) => { let k = x\n k }, Err(e) => { let m = e\n 0 } }\n}\n"),
+}
+
+
+_P = "type P[A, B] = { a: A, b: B }\n"
+_G = "fn g(b: Box[Int]) -> Int {\n  return b.v\n}\n"
+
+
+def _prop_params(params):
+    return "prop test \"p\" (" + params + ") {\n  assert true\n}\n"
+
+
+_ISSUE_2399_REFUSED.update({
+    # a nested or argument-position generic record is instantiated too
+    "generic_record_nested_mismatch": (
+        _BOX + "fn f() -> Int {\n  let b: Box[Box[Int]] = { v: { v: \"s\" } }\n  return 1\n}\n"),
+    "generic_record_argument_mismatch": (
+        _BOX + _G + "fn f() -> Int {\n  return g({ v: \"s\" })\n}\n"),
+    # an explicit type parameter list no longer hides a fn body
+    "arm_binder_of_explicit_type_parameter": (
+        "fn f[T](o: T) -> Int {\n"
+        "  return match o { Some(x) => { let k = x\n 0 }, _ => 0 }\n}\n"),
+    "let_mismatch_in_explicit_generic_fn": (
+        "fn f[T](o: T) -> Int {\n  let m: Int = \"s\"\n  return 1\n}\n"),
+    # `_check_generatable` over each prop test parameter
+    "prop_param_alias": "type M = Int\n" + _prop_params("n: M"),
+    "prop_param_map": _prop_params("m: Map[Str, Int]"),
+    "prop_param_result": _prop_params("r: Result[Int, Str]"),
+    "prop_param_list_of_undeclared": _prop_params("xs: List[Foo]"),
+    "prop_param_second": _prop_params("n: Int, m: Map[Str, Int]"),
+    "prop_param_record_field": "type R = { a: Int, m: Map[Str, Int] }\n" + _prop_params("r: R"),
+    "prop_param_record_cycle": "type R = { s: S }\ntype S = { r: R }\n" + _prop_params("r: R"),
+    "prop_param_variant_payload": "type Sh = Circle(Map[Str, Int]) | Pt\n" + _prop_params("s: Sh"),
+    "prop_param_bare_generic_record": _BOX + _prop_params("b: Box"),
+    "prop_param_applied_generic_record": _BOX + _prop_params("b: Box[Int]"),
+})
+
+_ISSUE_2399_COMPILED.update({
+    "generic_record_nested_in_test": _BOX + _test_doc("  let b: Box[Box[Int]] = { v: { v: 1 } }"),
+    "generic_record_nested_in_prop": _BOX + _prop_doc("  let b: Box[Box[Int]] = { v: { v: n } }"),
+    "generic_record_nested_in_fn": (
+        _BOX + "fn f(n: Int) -> Int {\n  let b: Box[Box[Int]] = { v: { v: n } }\n  return n\n}\n"),
+    "generic_record_argument_in_test": _BOX + _G + "test \"t\" {\n  assert g({ v: 1 }) == 1\n}\n",
+    "generic_record_argument_in_prop": _BOX + _G + _prop_doc("  let k = g({ v: n })"),
+    "generic_record_argument_in_fn": _BOX + _G + "fn f() -> Int {\n  return g({ v: 1 })\n}\n",
+    "generic_record_two_params_in_test": _P + _test_doc("  let p: P[Int, Str] = { a: 1, b: \"s\" }"),
+    "generic_record_two_params_in_prop": _P + _prop_doc("  let p: P[Int, Str] = { a: n, b: \"s\" }"),
+    "generic_record_two_params_nested": (
+        _P + _BOX + "fn f() -> Int {\n  let p: P[Box[Int], Str] = { a: { v: 1 }, b: \"s\" }\n"
+        "  return 1\n}\n"),
+    "explicit_generic_fn": (
+        "fn first[T](xs: List[T], d: T) -> T {\n  if (xs.length() == 0) { return d }\n"
+        "  return xs[0]\n}\nfn g() -> Int {\n  return first([1], 0)\n}\n"),
+    "prop_param_generatable": _prop_params("o: Opt[List[Int]], f: Float, b: Bool, s: Str"),
+    "prop_param_record": "type R = { a: Int, b: List[Str] }\n" + _prop_params("r: R"),
+    "prop_param_variant": "type Sh = Circle(Int) | Pt\n" + _prop_params("s: Sh"),
+    "prop_param_recursive_variant": "type L = Cons(L) | Nil\n" + _prop_params("l: L"),
+    "prop_param_empty_record": "type E = {}\n" + _prop_params("e: E"),
+})
+
+
+@pytest.mark.parametrize("name", sorted(_ISSUE_2399_COMPILED))
+def test_the_review_controls_of_issue_2399_compile_on_both_sides(compile_rvl, admit, name):
+    text = _ISSUE_2399_COMPILED[name]
+    assert _reference_refusal(text) == ""
+    assert admit(text) == ""
+    got = compile_rvl["compile_to_at"](text, "py", "x.rvl")
+    assert not got.startswith("REFUSED|"), got[:160]
+
+
+# Documents the reference compiles, each next to one of the rules above: the
+# gate must not refuse any of them.
+_ISSUE_2399_ADMITTED = {
+    "test_body_empty_list": _test_doc("  let m: List[Int] = []"),
+    "test_body_untyped_empty_record": _test_doc("  let m = {}"),
+    "two_tests": "test \"a\" {\n  assert true\n}\ntest \"b\" {\n  assert 1 == 1\n}\n",
+    "prop_body": _prop_doc("  let k: Int = n + 1"),
+    "arm_typed_binder": (
+        "fn f(o: Opt[List[Int]]) -> Int {\n"
+        "  return match o { Some(xs) => { let k = xs.length\n k }, None => 0 }\n}\n"),
+    "arm_does_not_read_binder": (
+        "fn f(o: Option[List[Int]]) -> Int {\n"
+        "  return match o { Some(xs) => { let k = 1\n k }, None => 0 }\n}\n"),
+    "expression_arm_reads_binder": (
+        "fn f(o: Option[List[Int]]) -> Int {\n"
+        "  return match o { Some(xs) => xs.length, None => 0 }\n}\n"),
+    "arm_binder_of_declared_variant": (
+        "type Sh = Circle(Int) | Pt\nfn f(s: Sh) -> Int {\n"
+        "  return match s { Circle(r) => { let k = r\n k }, Pt => 0 }\n}\n"),
+    "arm_rebinds_untyped_name": (
+        "fn f(o: Option[Int]) -> Int {\n"
+        "  return match o { Some(x) => { let x2 = 1\n x2 }, None => 0 }\n}\n"),
+}
+
+
+def _reference_refusal(text):
+    return _reference_message(lambda: compile_source(text, "x.rvl"))
+
+
+@pytest.mark.parametrize("tier", ["py", "go", "java", "rust"])
+@pytest.mark.parametrize("name", sorted(_ISSUE_2399_REFUSED))
+def test_the_self_host_refuses_what_the_reference_checker_refuses(compile_rvl, name, tier):
+    text = _ISSUE_2399_REFUSED[name]
+    want = _reference_refusal(text)
+    assert want != ""
+    got = compile_rvl["compile_to_at"](text, tier, "x.rvl")
+    assert got.startswith("REFUSED|"), got[:120]
+    assert got.split("|", 2)[2] == want
+
+
+@pytest.mark.parametrize("name", sorted(_ISSUE_2399_ADMITTED))
+def test_the_checker_rules_of_issue_2399_admit_what_the_reference_compiles(admit, name):
+    text = _ISSUE_2399_ADMITTED[name]
+    assert _reference_refusal(text) == ""
+    assert admit(text) == ""

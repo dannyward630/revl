@@ -7123,6 +7123,109 @@ fn tk_generic_record(pt: Str, env: List[Bind]) -> Bool {
   return b > 0 && tenv_get(env, "grec ".concat(pt.slice(0, b))) != ""
 }
 
+// `nominal_record_fields` for an applied generic record: `Box[Int]` against
+// `type Box[T] = { v: T }` is `{v: Int}`. "" where the arity disagrees, the
+// parameters were not read, or a field type is a shape `tk_subst` does not
+// rewrite (a record or a function type).
+fn grec_shape(t: Str, env: List[Bind]) -> Str {
+  let b = t.indexOf("[")
+  if (b <= 0) { return "" }
+  let nm = t.slice(0, b)
+  let pr = tenv_get(env, "gpar ".concat(nm))
+  if (pr == "") { return "" }
+  let ps = pr.split(",")
+  let args = type_args(t)
+  if (args.length() != ps.length()) { return "" }
+  var sub: List[Bind] = []
+  var i = 0
+  while (i < ps.length()) {
+    sub = sub.push({ name: ps[i], ty: ty_trim(args[i]) })
+    i += 1
+  }
+  let pfx = "gfld ".concat(nm).concat(".")
+  var out = ""
+  var k = 0
+  while (k < env.length()) {
+    let n = env[k].name
+    if (n.slice(0, pfx.length()) == pfx) {
+      let ft = env[k].ty
+      if (ft.indexOf("{") != 0 - 1 || ft.indexOf("(") != 0 - 1) { return "" }
+      out = out.concat(out == "" ? "" : ", ").concat(n.slice(pfx.length(), n.length()))
+        .concat(": ").concat(tk_subst(ft, sub))
+    }
+    k += 1
+  }
+  return out == "" ? "" : "{".concat(out).concat("}")
+}
+
+// Every applied generic record inside `t` replaced by its instantiated shape,
+// at any depth, so the field-wise rule meets `Box[Box[Int]]` as
+// `{v: {v: Int}}`, the way `compatible` resolves a nominal at each level.
+// "" where one of them cannot be instantiated here.
+fn grec_expand(t: Str, env: List[Bind], depth: Int) -> Str {
+  if (depth > 8) { return "" }
+  let s = ty_trim(t)
+  if (s == "" || tk_is_fn_ty(s)) { return s }
+  if (tk_is_struct(s)) {
+    let inner = ty_trim(s.slice(1, s.length() - 1))
+    if (inner == "") { return "{}" }
+    let fs = tk_split_depth(inner)
+    var out = ""
+    var i = 0
+    while (i < fs.length()) {
+      let ci = fs[i].indexOf(":")
+      if (ci == 0 - 1) { return "" }
+      let ft = grec_expand(fs[i].slice(ci + 1, fs[i].length()), env, depth + 1)
+      if (ft == "") { return "" }
+      out = out.concat(i == 0 ? "" : ", ").concat(ty_trim(fs[i].slice(0, ci)))
+        .concat(": ").concat(ft)
+      i += 1
+    }
+    return "{".concat(out).concat("}")
+  }
+  if (tk_generic_record(s, env)) {
+    let gs = grec_shape(s, env)
+    return gs == "" ? "" : grec_expand(gs, env, depth + 1)
+  }
+  let args = type_args(s)
+  if (args.length() == 0) { return s }
+  var xs: List[Str] = []
+  var j = 0
+  while (j < args.length()) {
+    let a = grec_expand(args[j], env, depth + 1)
+    if (a == "") { return "" }
+    xs = xs.push(a)
+    j += 1
+  }
+  return ty_render(parse_head(s), xs)
+}
+
+// Whether `t` names a declared generic record applied to arguments.
+fn grec_mentioned(t: Str, env: List[Bind]) -> Bool {
+  if (t.indexOf("[") == 0 - 1) { return false }
+  var k = 0
+  while (k < env.length()) {
+    let n = env[k].name
+    if (n.slice(0, 5) == "grec " && t.indexOf(n.slice(5, n.length()).concat("[")) != 0 - 1) {
+      return true
+    }
+    k += 1
+  }
+  return false
+}
+
+// `tk_compatible` with the declared generic records instantiated on both
+// sides. A pairing this walk cannot instantiate is left to the reference.
+fn tk_compat_env(expected: Str, actual: Str, env: List[Bind]) -> Bool {
+  if (!grec_mentioned(expected, env) && !grec_mentioned(actual, env)) {
+    return tk_compatible(expected, actual)
+  }
+  let ee = grec_expand(expected, env, 0)
+  let ae = grec_expand(actual, env, 0)
+  if (ee == "" || ae == "") { return true }
+  return tk_compatible(ee, ae)
+}
+
 fn ct_record_shape(pt: Str, actual: Str, env: List[Bind]) -> Str {
   if (actual.indexOf("{") == 0 - 1) { return pt }
   // a container parameter (`Opt[Row]`, `List[Row]`): every record named in it
@@ -13760,7 +13863,8 @@ fn tk_check_flat(e: Expr, expected: Str, env: List[Bind], where_: Str) -> TInf {
   let r = tk_infer(e, env)
   if (r.v != "") { return r }
   if (r.ty == "") { return r }
-  if (!tk_compatible(expected, r.ty)) {
+  // issue #2399: a generic record is checked against its instantiated fields
+  if (!tk_compat_env(expected, r.ty, env)) {
     return tk_mismatch(where_, expected, r.ty)
   }
   return tk_ok(expected)
@@ -14933,19 +15037,20 @@ fn tk_named(c: CallN, env: List[Bind], argTys: List[Str]) -> TCall {
         .concat(" given")))
   }
   if (tenv_get(env, sig_key("sigg", n)) != "1") {
-    let m = tk_mono_args(ps, argTys, 0, n)
+    let m = tk_mono_args(ps, argTys, 0, n, env)
     if (m.v != "") { return tk_hit(m) }
     return tk_hit(tk_ok(tk_call_result(ret)))
   }
   return tk_hit(tk_generic_args(ps, argTys, 0, [], n, ret))
 }
 
-fn tk_mono_args(ps: List[Str], argTys: List[Str], i: Int, n: Str) -> TInf {
+fn tk_mono_args(ps: List[Str], argTys: List[Str], i: Int, n: Str,
+                env: List[Bind]) -> TInf {
   if (i >= ps.length() || i >= argTys.length()) { return tk_ok("") }
-  if (ps[i] != "" && argTys[i] != "" && !tk_compatible(ps[i], argTys[i])) {
+  if (ps[i] != "" && argTys[i] != "" && !tk_compat_env(ps[i], argTys[i], env)) {
     return tk_mismatch(tk_arg_where(i, n), ps[i], argTys[i])
   }
-  return tk_mono_args(ps, argTys, i + 1, n)
+  return tk_mono_args(ps, argTys, i + 1, n, env)
 }
 
 fn tk_arg_where(i: Int, n: Str) -> Str {
@@ -15579,6 +15684,10 @@ fn tk_low(e: Expr, env: List[Bind]) -> Str {
     Lst(l)      => tk_low_items(l.items, 0, env),
     If(f)       => tk_low3(f.cond, f.then_, f.els, env),
     Templ(t)    => tk_low_parts(t.parts, 0, env),
+    // issue #2399: below these the walk carries only the block-arm rules
+    Match(_)    => ba_walk(e, env, []),
+    Arrow(_)    => ba_walk(e, env, []),
+    OptCall(_)  => ba_walk(e, env, []),
     _           => "",
   }
 }
@@ -15642,6 +15751,257 @@ fn tk_low_parts(ps: List[PartN], i: Int, env: List[Bind]) -> Str {
   let r = ps[i].kind == "e" ? tk_low(ps[i].e, env) : ""
   if (r != "") { return r }
   return tk_low_parts(ps, i + 1, env)
+}
+
+// ============================================ block-bodied match arms (#2399)
+//
+// `_lift_block_arm` (src/revl/lower.py), the lowering of a `=> { …; expr }`
+// arm. It refuses in two ways, and the walk above had neither:
+//   * with no lift sink installed, which is every body but a module `fn`'s (a
+//     `test` and a `prop test` are lowered after `_lower_fns` drains it), any
+//     block arm is "not lowerable here";
+//   * in a module `fn`, every enclosing name the block reads becomes a typed
+//     parameter of the lifted helper, so a captured name the reference holds no
+//     type for is "whose type is not known here".
+// The second is only decided where the reference's ignorance is PROVABLE: a
+// `let` whose initialiser calls a declaration that returns nothing (the `unk`
+// row), and an arm binder whose scrutinee is a name with a WRITTEN type that
+// `_arm_payload_type` cannot read a payload out of (`Option[T]`, an undeclared
+// nominal, a scalar). Every other capture is left on the frontier. `ov` holds
+// the names bound inside the expression so far, "u" for one the reference
+// cannot type and "t" for any other, latest last.
+fn ba_ctx_test() -> Str { return "ctx test" }
+fn ba_dty(n: Str) -> Str { return "dty ".concat(n) }
+
+fn ba_unlowerable_msg() -> Str {
+  return tagged("TYPE", "a block-bodied match arm (`=> { … ; expr }`) is not lowerable here")
+}
+
+fn ba_unknown_msg(n: Str) -> Str {
+  return tagged("TYPE", "a match block arm reads `".concat(n)
+    .concat("`, whose type is not known here"))
+}
+
+// Whether the reference has a payload type for `pat` over a scrutinee declared
+// `ty`: `_variant_case_payload`, `model_answer.arm_payload`, then the builtin
+// `Opt`/`Result` heads. `_variant_case_payload` is keyed by the scrutinee's
+// whole spelling, so a declared type answers only when it is written with no
+// type arguments. A provided type answers yes, which is the silent direction.
+fn ba_payload_known(ty: Str, pat: Str, env: List[Bind]) -> Bool {
+  let head = parse_head(ty)
+  if (head == "") { return true }
+  let args = type_args(ty)
+  if (tenv_get(env, "decl ".concat(head)) == "1" && args.length() == 0) { return true }
+  if (head == "Answer" || head == "Aggregate" || head == "DissentEntry") { return true }
+  if (head == "Opt") { return pat == "Some" && args.length() > 0 }
+  if (head == "Result") { return args.length() == 2 && (pat == "Ok" || pat == "Err") }
+  return false
+}
+
+fn ba_ov_get(ov: List[Bind], n: Str) -> Str { return tenv_get(ov, n) }
+
+// Whether the arm binder of `pat` over `scrut` is one the reference binds with
+// no type. Only a scrutinee that is a plain name with a written type, and no
+// `use` in the text (an import can carry a type this text does not declare).
+fn ba_binder_untyped(scrut: Expr, pat: Str, env: List[Bind], ov: List[Bind]) -> Bool {
+  if (tenv_get(env, "g1 on") != "1") { return false }
+  let n = match scrut { Var(v) => v, _ => "", }
+  if (n == "" || ba_ov_get(ov, n) != "") { return false }
+  let ty = tenv_get(env, ba_dty(n))
+  if (ty == "") { return false }
+  return !ba_payload_known(ty, pat, env)
+}
+
+fn ba_in_scope(n: Str, env: List[Bind], ov: List[Bind]) -> Bool {
+  return ba_ov_get(ov, n) != "" || tenv_get(env, nr_bnd(n)) == "1"
+}
+
+fn ba_untyped(n: Str, env: List[Bind], ov: List[Bind]) -> Bool {
+  let o = ba_ov_get(ov, n)
+  if (o != "") { return o == "u" }
+  return tenv_get(env, "unk ".concat(n)) == "1"
+}
+
+// `_collect_arm_names`: every name the subtree reads, and every name a block
+// `let` inside it binds.
+fn ba_reads(e: Expr, acc: List[Str]) -> List[Str] {
+  return match e {
+    Var(n)      => union_into(acc, [n]),
+    Bin(b)      => ba_reads(b.r, ba_reads(b.l, acc)),
+    Un(u)       => ba_reads(u.e, acc),
+    Emit(u)     => ba_reads(u.e, acc),
+    Call(c)     => ba_reads_all(c.args, 0, ba_reads(c.target, acc)),
+    Field(f)    => ba_reads(f.target, acc),
+    OptField(f) => ba_reads(f.target, acc),
+    OptCall(c)  => ba_reads_all(c.args, 0, ba_reads(c.target, acc)),
+    Index(x)    => ba_reads(x.idx, ba_reads(x.target, acc)),
+    If(x)       => ba_reads(x.els, ba_reads(x.then_, ba_reads(x.cond, acc))),
+    Rec(r)      => ba_reads_inits(r.fields, 0, acc),
+    RecUpd(r)   => ba_reads_inits(r.upds, 0, ba_reads(r.base, acc)),
+    Lst(l)      => ba_reads_all(l.items, 0, acc),
+    Arrow(a)    => ba_reads(a.body, acc),
+    Match(m)    => ba_reads_arms(m.arms, 0, ba_reads(m.scrut, acc)),
+    Templ(t)    => ba_reads_parts(t.parts, 0, acc),
+    _           => acc,
+  }
+}
+
+fn ba_reads_all(xs: List[Expr], i: Int, acc: List[Str]) -> List[Str] {
+  if (i >= xs.length()) { return acc }
+  return ba_reads_all(xs, i + 1, ba_reads(xs[i], acc))
+}
+
+fn ba_reads_inits(xs: List[InitN], i: Int, acc: List[Str]) -> List[Str] {
+  if (i >= xs.length()) { return acc }
+  return ba_reads_inits(xs, i + 1, ba_reads(xs[i].value, acc))
+}
+
+fn ba_reads_parts(xs: List[PartN], i: Int, acc: List[Str]) -> List[Str] {
+  if (i >= xs.length()) { return acc }
+  return ba_reads_parts(xs, i + 1, xs[i].kind == "e" ? ba_reads(xs[i].e, acc) : acc)
+}
+
+fn ba_reads_arms(xs: List[ArmN], i: Int, acc: List[Str]) -> List[Str] {
+  if (i >= xs.length()) { return acc }
+  return ba_reads_arms(xs, i + 1, ba_reads_arm(xs[i], acc))
+}
+
+fn ba_reads_arm(a: ArmN, acc: List[Str]) -> List[Str] {
+  if (!a.isBlk) { return ba_reads(a.body, acc) }
+  var out = acc
+  var k = 0
+  while (k < a.blk.length()) { out = ba_reads(a.blk[k].value, out)  k += 1 }
+  return ba_reads(a.blkTail, out)
+}
+
+// The block `let` names anywhere under an arm, nested block arms included.
+fn ba_lets(e: Expr, acc: List[Str]) -> List[Str] {
+  return match e {
+    Bin(b)      => ba_lets(b.r, ba_lets(b.l, acc)),
+    Un(u)       => ba_lets(u.e, acc),
+    Call(c)     => ba_lets_all(c.args, 0, ba_lets(c.target, acc)),
+    Field(f)    => ba_lets(f.target, acc),
+    OptCall(c)  => ba_lets_all(c.args, 0, ba_lets(c.target, acc)),
+    Index(x)    => ba_lets(x.idx, ba_lets(x.target, acc)),
+    If(x)       => ba_lets(x.els, ba_lets(x.then_, ba_lets(x.cond, acc))),
+    Lst(l)      => ba_lets_all(l.items, 0, acc),
+    Arrow(a)    => ba_lets(a.body, acc),
+    Match(m)    => ba_lets_arms(m.arms, 0, ba_lets(m.scrut, acc)),
+    _           => acc,
+  }
+}
+
+fn ba_lets_all(xs: List[Expr], i: Int, acc: List[Str]) -> List[Str] {
+  if (i >= xs.length()) { return acc }
+  return ba_lets_all(xs, i + 1, ba_lets(xs[i], acc))
+}
+
+fn ba_lets_arms(xs: List[ArmN], i: Int, acc: List[Str]) -> List[Str] {
+  if (i >= xs.length()) { return acc }
+  return ba_lets_arms(xs, i + 1, ba_lets_arm(xs[i], acc))
+}
+
+fn ba_lets_arm(a: ArmN, acc: List[Str]) -> List[Str] {
+  if (!a.isBlk) { return ba_lets(a.body, acc) }
+  var out = acc
+  var k = 0
+  while (k < a.blk.length()) {
+    out = union_into(ba_lets(a.blk[k].value, out), [a.blk[k].name])
+    k += 1
+  }
+  return ba_lets(a.blkTail, out)
+}
+
+// The capture refusal for one block arm, or "": the captures in sorted order,
+// as `_lift_block_arm` types them, and the first one PROVABLY untyped.
+fn ba_capture(a: ArmN, env: List[Bind], ov: List[Bind]) -> Str {
+  let caps = sort_strs(minus_list(ba_reads_arm(a, []), ba_lets_arm(a, [])))
+  var k = 0
+  while (k < caps.length()) {
+    let n = caps[k]
+    if (ba_in_scope(n, env, ov) && ba_untyped(n, env, ov)) { return ba_unknown_msg(n) }
+    k += 1
+  }
+  return ""
+}
+
+// The walk, in the reference's lowering order: the scrutinee, then each arm.
+fn ba_walk(e: Expr, env: List[Bind], ov: List[Bind]) -> Str {
+  return match e {
+    Bin(b)      => ba_walk2(b.l, b.r, env, ov),
+    Un(u)       => ba_walk(u.e, env, ov),
+    Emit(u)     => ba_walk(u.e, env, ov),
+    Call(c)     => ba_walk_all(c.args, 0, env, ov, ba_walk(c.target, env, ov)),
+    Field(f)    => ba_walk(f.target, env, ov),
+    OptField(f) => ba_walk(f.target, env, ov),
+    OptCall(c)  => ba_walk_all(c.args, 0, env, ov, ba_walk(c.target, env, ov)),
+    Index(x)    => ba_walk2(x.target, x.idx, env, ov),
+    If(x)       => ba_walk_all([x.cond, x.then_, x.els], 0, env, ov, ""),
+    Rec(r)      => ba_walk_inits(r.fields, 0, env, ov, ""),
+    RecUpd(r)   => ba_walk_inits(r.upds, 0, env, ov, ba_walk(r.base, env, ov)),
+    Lst(l)      => ba_walk_all(l.items, 0, env, ov, ""),
+    Arrow(a)    => ba_walk(a.body, env, ba_ov_params(a.params, 0, ov)),
+    Match(m)    => ba_walk_arms(m.scrut, m.arms, 0, env, ov, ba_walk(m.scrut, env, ov)),
+    Templ(t)    => ba_walk_parts(t.parts, 0, env, ov),
+    _           => "",
+  }
+}
+
+fn ba_walk2(a: Expr, b: Expr, env: List[Bind], ov: List[Bind]) -> Str {
+  let l = ba_walk(a, env, ov)
+  if (l != "") { return l }
+  return ba_walk(b, env, ov)
+}
+
+fn ba_walk_all(xs: List[Expr], i: Int, env: List[Bind], ov: List[Bind], prior: Str) -> Str {
+  if (prior != "" || i >= xs.length()) { return prior }
+  return ba_walk_all(xs, i + 1, env, ov, ba_walk(xs[i], env, ov))
+}
+
+fn ba_walk_inits(xs: List[InitN], i: Int, env: List[Bind], ov: List[Bind], prior: Str) -> Str {
+  if (prior != "" || i >= xs.length()) { return prior }
+  return ba_walk_inits(xs, i + 1, env, ov, ba_walk(xs[i].value, env, ov))
+}
+
+fn ba_walk_parts(xs: List[PartN], i: Int, env: List[Bind], ov: List[Bind]) -> Str {
+  if (i >= xs.length()) { return "" }
+  let r = xs[i].kind == "e" ? ba_walk(xs[i].e, env, ov) : ""
+  if (r != "") { return r }
+  return ba_walk_parts(xs, i + 1, env, ov)
+}
+
+// An arrow parameter is in scope inside its body, typed from its annotation
+// or from the slot the checker resolved it against: never provably untyped.
+fn ba_ov_params(ps: List[ParamN], i: Int, ov: List[Bind]) -> List[Bind] {
+  if (i >= ps.length()) { return ov }
+  return ba_ov_params(ps, i + 1, tenv_put(ov, ps[i].name, "t"))
+}
+
+fn ba_walk_arms(scrut: Expr, arms: List[ArmN], i: Int, env: List[Bind], ov: List[Bind],
+                prior: Str) -> Str {
+  if (prior != "" || i >= arms.length()) { return prior }
+  let a = arms[i]
+  let ova = a.bind == "" ? ov
+    : tenv_put(ov, a.bind, ba_binder_untyped(scrut, a.pat, env, ov) ? "u" : "t")
+  return ba_walk_arms(scrut, arms, i + 1, env, ov, ba_walk_arm(a, env, ova))
+}
+
+fn ba_walk_arm(a: ArmN, env: List[Bind], ov: List[Bind]) -> Str {
+  if (!a.isBlk) { return ba_walk(a.body, env, ov) }
+  if (tenv_get(env, ba_ctx_test()) == "1") { return ba_unlowerable_msg() }
+  let cap = ba_capture(a, env, ov)
+  if (cap != "") { return cap }
+  // the block's own statements lower inside the lifted helper, each `let`
+  // binding its name for the ones after it
+  var inner = ov
+  var k = 0
+  while (k < a.blk.length()) {
+    let r = ba_walk(a.blk[k].value, env, inner)
+    if (r != "") { return r }
+    inner = tenv_put(inner, a.blk[k].name, "t")
+    k += 1
+  }
+  return ba_walk(a.blkTail, env, inner)
 }
 
 // ======================================= the fn-body binding discipline (G1/G6)
@@ -16019,8 +16379,10 @@ fn fb_walk(steps: List[FbStep], i: Int, scope: List[Bind], tys: List[Bind],
                                       "`let ".concat(s.name).concat(": ")
                                         .concat(tk_render(s.declTy)).concat("`"))
     if (r.v != "") { return fb_type_refuse(r.v, s.line, scope, tys) }
+    // issue #2399: the written spelling, which a match on this name reads
+    let tys0 = s.declTy == "" ? tys : tenv_put(tys, ba_dty(s.name), s.declTy)
     let bound = s.declTy == "" ? r.ty : s.declTy
-    let tys2 = bound == "" ? tys : tenv_put(tys, s.name, bound)
+    let tys2 = bound == "" ? tys0 : tenv_put(tys0, s.name, bound)
     // a binding the REFERENCE also has no type for (docs/design/457 T2b): its
     // initialiser calls a declaration that returns nothing. That is the one
     // receiver the unpinned-stdlib-method refusal may fire on; a type this walk
@@ -16248,7 +16610,11 @@ fn fb_params_tys(ps: List[ParamN], i: Int, acc: List[Bind],
   // the name-resolution row is written for EVERY parameter, including one this
   // reader cannot type: a parameter is in `scope` on the reference's side
   // whatever its annotation says.
-  let b = tenv_put(acc, nr_bnd(ps[i].name), "1")
+  let b0 = tenv_put(acc, nr_bnd(ps[i].name), "1")
+  // issue #2399: the written spelling too, erased, which is the scrutinee
+  // type the reference's arm payload rule reads for a match on this name.
+  let b = ps[i].ty == "" ? b0
+    : tenv_put(b0, ba_dty(ps[i].name), alias_subst(taint_strip(ps[i].ty), al))
   return fb_params_tys(ps, i + 1,
                        ty == "" ? b : tenv_put(b, ps[i].name, ty), tps, al)
 }
@@ -16273,8 +16639,12 @@ fn fb_no_span() -> FbSpan {
 }
 
 fn fb_span(ts: List[Token], i: Int) -> FbSpan {
-  if (!atk(ts, i + 2, "(")) { return fb_no_span() }
-  let ps = params_at(ts, i + 3)
+  // issue #2399: an explicit type parameter list (`fn f[T](o: T)`) is stepped
+  // over, so a generic fn's body is checked like any other; `fb_function`
+  // reads the list itself (`explicit_tparams`)
+  let p0 = fn_params_i(ts, i)
+  if (!atk(ts, p0 - 1, "(")) { return fb_no_span() }
+  let ps = params_at(ts, p0)
   var reti = ps.i
   var ret = ""
   var retDecl = ""
@@ -16521,6 +16891,225 @@ fn fb_refusal_at(ts: List[Token], i: Int, gtys: List[Bind],
   return fb_refusal_at(ts, skip_line(ts, i), gtys, al)
 }
 
+// ------------------------------------------------ test and prop test bodies
+//
+// Issue #2399. `_lower_tests` lowers a plain `test` body through the same
+// `_lower_pure_stmt` a `fn` body goes through, with an empty scope, and
+// `_lower_prop_tests` does the same with the generated parameters in scope, so
+// the binding and type rules above apply to both. Each pass is collected
+// (`_collect`) after the link and raises on its FIRST refusal: a `duplicate
+// test` name, else the first refusing statement, in declaration order. A
+// `lifecycle test` shares the plain pass's name table, and its body is the
+// lifecycle walk's, not this one's. A prop test body keeps its annotations as
+// written (`_subst_body_annotations` erases only `test` bodies), so where the
+// text declares an alias the prop BODIES are left undecided. Their names are
+// still checked: the `tb names only` row says so.
+fn tb_names_only() -> Str { return "tb names only" }
+
+fn tb_dup_msg(kind: Str, name: Str) -> Str {
+  return tagged("TEST", "duplicate ".concat(kind).concat(" `").concat(name).concat("`"))
+}
+
+fn tb_body(ts: List[Token], lo: Int, hi: Int, ps: List[ParamN], gtys: List[Bind],
+           al: Map[Str, Str]) -> Verd {
+  let env = tenv_put(gtys, ba_ctx_test(), "1")
+  return fb_walk(fb_scan(ts, lo, hi, al), 0, fb_params_scope(ps, 0, []),
+                 fb_params_tys(ps, 0, env, [], al), "").v
+}
+
+// The plain pass (`prop` false) or the prop pass (`prop` true) from `i`.
+fn tb_refusal_at(ts: List[Token], i: Int, gtys: List[Bind], al: Map[Str, Str],
+                 prop: Bool, seen: List[Str]) -> Verd {
+  if (i >= ts.length() || atk(ts, i, "eof")) { return no_verd() }
+  let t = tkc(ts, i)
+  if (at_boot(ts, i)) { return tb_refusal_at(ts, i + 1, gtys, al, prop, seen) }
+  if (at_event(ts, i)) {
+    return tb_refusal_at(ts, event_decl_end(ts, i), gtys, al, prop, seen)
+  }
+  if (at_qual_test(ts, i)) {
+    let qe = qual_test_end(ts, i)
+    if (qe == 0 - 1) { return tb_refusal_at(ts, skip_line(ts, i), gtys, al, prop, seen) }
+    let nm = tkc(ts, i + 2).text
+    let w = t.text
+    if ((w == "lifecycle" && !prop) || (w == "prop" && prop)) {
+      let kind = prop ? "prop test" : "test"
+      if (contains(seen, nm)) {
+        return mk_verd(tb_dup_msg(kind, nm), tkc(ts, i + 1).line)
+      }
+      if (prop) {
+        let pv = tb_prop_params(wf_params_from(ts, i + 4, false, []), 0, nm, gtys, al)
+        if (pv.v != "") { return pv }
+      }
+      if (prop && tenv_get(gtys, tb_names_only()) != "1") {
+        let pe = close_paren(ts, i + 3)
+        let v = tb_body(ts, pe + 1, qe - 1, params_at(ts, i + 4).ps, gtys, al)
+        if (v.v != "") { return v }
+      }
+      return tb_refusal_at(ts, qe, gtys, al, prop, seen.push(nm))
+    }
+    return tb_refusal_at(ts, qe, gtys, al, prop, seen)
+  }
+  if (t.kind != "kw") { return tb_refusal_at(ts, skip_line(ts, i), gtys, al, prop, seen) }
+  if (at_pub_prefix(ts, i)) { return tb_refusal_at(ts, i + 1, gtys, al, prop, seen) }
+  if (t.text == "use") { return tb_refusal_at(ts, skip_line(ts, i), gtys, al, prop, seen) }
+  if (t.text == "test") {
+    let e = test_block_end(ts, i)
+    if (e == 0 - 1 || !atk(ts, i + 1, "string")) {
+      return tb_refusal_at(ts, skip_line(ts, i), gtys, al, prop, seen)
+    }
+    if (prop) { return tb_refusal_at(ts, e, gtys, al, prop, seen) }
+    let nm = tkc(ts, i + 1).text
+    if (contains(seen, nm)) { return mk_verd(tb_dup_msg("test", nm), t.line) }
+    let v = tb_body(ts, i + 3, e - 1, [], gtys, al)
+    if (v.v != "") { return v }
+    return tb_refusal_at(ts, e, gtys, al, prop, seen.push(nm))
+  }
+  if (t.text == "type") {
+    return tb_refusal_at(ts, type_decl_end(ts, i + 1), gtys, al, prop, seen)
+  }
+  if (t.text == "extern") {
+    return tb_refusal_at(ts, tb_extern_end(ts, i), gtys, al, prop, seen)
+  }
+  if (t.text == "fn") {
+    return tb_refusal_at(ts, p_fn(ts, i, empty_prog()).i, gtys, al, prop, seen)
+  }
+  if (t.text == "service") {
+    return tb_refusal_at(ts, p_service(ts, i, empty_prog()).i, gtys, al, prop, seen)
+  }
+  if (t.text == "component") {
+    return tb_refusal_at(ts, p_component(ts, i, empty_prog()).i, gtys, al, prop, seen)
+  }
+  return tb_refusal_at(ts, skip_line(ts, i), gtys, al, prop, seen)
+}
+
+// Each prop test parameter in order: `check_type_wellformed`, then
+// `_check_generatable`, both at the parameter's line. The written spelling is
+// what the reference reads, so an alias is not erased here.
+fn tb_prop_params(ss: List[WfSite], k: Int, nm: Str, env: List[Bind],
+                  al: Map[Str, Str]) -> Verd {
+  if (k >= ss.length()) { return no_verd() }
+  let w = wf_site_verd(ss[k])
+  if (w.v != "") { return w }
+  let g = tb_gen(ss[k].ty, nm, env, al, [], [])
+  if (g != "") { return mk_verd(g, ss[k].line) }
+  return tb_prop_params(ss, k + 1, nm, env, al)
+}
+
+fn tb_gen_prims() -> List[Str] { return ["Int", "Int32", "Bool", "Str", "Float", "F64", "Num"] }
+
+// `_check_generatable`: "" when the generator can derive a value of `t`, else
+// the refusal. A primitive, an `Opt`/`List` of one, a declared record whose
+// fields are generatable (and that does not contain itself), or a declared
+// ADT whose payloads are. Where this walk cannot read the declaration (a
+// structural or function type, a payload it did not record) it says nothing.
+fn tb_gen(t: Str, prop: Str, env: List[Bind], al: Map[Str, Str],
+          rstack: List[Str], vseen: List[Str]) -> Str {
+  let s = ty_trim(t)
+  if (s == "" || s.indexOf("{") != 0 - 1 || s.indexOf("(") != 0 - 1) { return "" }
+  let head = parse_head(s)
+  let args = type_args(s)
+  if (args.length() == 0 && contains(tb_gen_prims(), head)) { return "" }
+  if ((head == "Opt" || head == "List") && args.length() == 1) {
+    return tb_gen(args[0], prop, env, al, rstack, vseen)
+  }
+  if (args.length() == 0) {
+    let rf = tb_gen_fields(head, env)
+    if (rf != "") {
+      if (contains(rstack, head)) {
+        return tagged("TEST", "prop test `".concat(prop).concat("`: record type `")
+          .concat(head).concat("` contains itself (").concat(rstack.push(head).join(" -> "))
+          .concat(") and cannot be generated"))
+      }
+      return tb_gen_each(rf.split("\n"), 0, prop, env, al, rstack.push(head), vseen)
+    }
+    let cs = tenv_get(env, "cases ".concat(head))
+    if (cs != "") {
+      if (contains(vseen, head)) { return "" }
+      return tb_gen_cases(cs.split(","), 0, head, prop, env, al, vseen.push(head))
+    }
+    // a declared type this walk does not read the shape of (an empty record)
+    if (tenv_get(env, "decl ".concat(head)) == "1" && !al.has(head)) { return "" }
+  }
+  return tagged("TEST", "prop test `".concat(prop).concat("`: parameter type `")
+    .concat(s).concat("` cannot be generated"))
+}
+
+// A record's field types, newline-joined in declaration order: the `field`
+// rows of a plain record, or the `gfld` rows of a generic one written bare.
+// "" when `h` is not a record this walk read.
+fn tb_gen_fields(h: Str, env: List[Bind]) -> Str {
+  var pfx = "field ".concat(h).concat(".")
+  if (tenv_get(env, "grec ".concat(h)) != "") {
+    if (tenv_get(env, "gpar ".concat(h)) == "") { return "" }
+    pfx = "gfld ".concat(h).concat(".")
+  }
+  var seen: List[Str] = []
+  var out: List[Str] = []
+  var k = 0
+  while (k < env.length()) {
+    let n = env[k].name
+    if (n.slice(0, pfx.length()) == pfx && !contains(seen, n)) {
+      seen = seen.push(n)
+      out = out.push(tenv_get(env, n))
+    }
+    k += 1
+  }
+  return out.join("\n")
+}
+
+fn tb_gen_each(fs: List[Str], k: Int, prop: Str, env: List[Bind], al: Map[Str, Str],
+               rstack: List[Str], vseen: List[Str]) -> Str {
+  if (k >= fs.length()) { return "" }
+  let r = tb_gen(fs[k], prop, env, al, rstack, vseen)
+  if (r != "") { return r }
+  return tb_gen_each(fs, k + 1, prop, env, al, rstack, vseen)
+}
+
+// The ADT's case payloads; the record stack is not carried across the ADT.
+fn tb_gen_cases(cs: List[Str], k: Int, adt: Str, prop: Str, env: List[Bind],
+                al: Map[Str, Str], vseen: List[Str]) -> Str {
+  if (k >= cs.length()) { return "" }
+  let c = ty_trim(cs[k])
+  // a case this walk did not record under this ADT: say nothing
+  if (tenv_get(env, "case ".concat(c)) != adt) { return "" }
+  let pl = tenv_get(env, "payload ".concat(c))
+  if (pl != "") {
+    let r = tb_gen(pl, prop, env, al, [], vseen)
+    if (r != "") { return r }
+  }
+  return tb_gen_cases(cs, k + 1, adt, prop, env, al, vseen)
+}
+
+// Where an `extern` ends for this walk. `p_extern` steps over its host bodies
+// up to the next declaration head, and its stop set has no `test`, so a test
+// written right after an extern was stepped over with it.
+fn tb_extern_end(ts: List[Token], i: Int) -> Int {
+  let k = p_extern(ts, i, empty_prog()).i
+  var j = i + 1
+  while (j < k) {
+    if (atk(ts, j, "{")) {
+      let e = close_brace(ts, j)
+      j = e == 0 - 1 ? k : e
+    } else if (atw(ts, j, "test") || at_qual_test(ts, j)) {
+      return j
+    } else { j += 1 }
+  }
+  return k
+}
+
+// Both passes, in the reference's order: the plain tests, then the prop tests.
+fn test_refusals(ts: List[Token], gtys: List[Bind], al: Map[Str, Str]) -> List[Verd] {
+  var out: List[Verd] = []
+  let tv = tb_refusal_at(ts, 0, gtys, al, false, [])
+  if (tv.v != "") { out = out.push(tv) }
+  // where the text declares an alias the prop BODIES are left undecided (see
+  // the head of this section), but the name check reads no annotation
+  let pg = rp_aliases(ts).length() == 0 ? gtys : tenv_put(gtys, tb_names_only(), "1")
+  let pv = tb_refusal_at(ts, 0, pg, al, true, [])
+  if (pv.v != "") { out = out.push(pv) }
+  return out
+}
+
 // --------------------------------------- the shadowed module callable (G6/391)
 //
 // `_refuse_callable_shadowing`. A body that BINDS a name and also CALLS it,
@@ -16743,8 +17332,9 @@ fn csh_function(ts: List[Token], i: Int, sp: FbSpan, u: CshU) -> Verd {
   let amb = csh_inter(csh_called(ts, sp.lo, sp.hi), u.all)
   if (amb.length() == 0) { return no_verd() }
   if (!csh_arrow_free(ts, i, sp.hi)) { return no_verd() }
-  let pend = params_at(ts, i + 3).i
-  let seed = csh_params(ts, i + 3, pend, sp.ps, 0, tkc(ts, i).line,
+  let p0 = fn_params_i(ts, i)
+  let pend = params_at(ts, p0).i
+  let seed = csh_params(ts, p0, pend, sp.ps, 0, tkc(ts, i).line,
                         { bs: [], ok: true })
   let bs = csh_binders(fb_scan(ts, sp.lo, sp.hi, Map.empty()), 0, seed)
   if (!bs.ok) { return no_verd() }
@@ -18837,6 +19427,10 @@ fn collect_nonlink(ts: List[Token], pg: Prog, hands: List[MHand],
         .concat(join_comma(boots, 0, ""))),
       comp_line(pg.comps, boots[1], 0)))
   }
+  // issue #2399: the `test` and `prop test` passes, which the reference
+  // collects after the link. A test refusal never shares a line with a link
+  // one, so collecting it here, ahead of the link rows, orders the same.
+  refs = append_verds(refs, test_refusals(ts, nr_binds(ts, gtys), al))
   return { done: false, refs: refs }
 }
 
@@ -28077,6 +28671,31 @@ fn event_field_binds(ts: List[Token], i: Int, acc: List[Bind], al: Map[Str, Str]
   return rec_field_binds(ts, j + 1, bend - 1, nm, acc, al)
 }
 
+// Issue #2399: a generic record's parameters (`gpar <Name>`, comma-joined) and
+// its declared field types (`gfld <Name>.<field>`), the table
+// `nominal_record_fields` instantiates `Box[Int]` from. A parameter list this
+// reading cannot take whole records nothing, which leaves the record unresolved.
+fn grec_rows(ts: List[Token], i: Int, j: Int, bend: Int, nm: Str,
+             acc: List[Bind], al: Map[Str, Str]) -> List[Bind] {
+  var ps: List[Str] = []
+  var k = i + 3
+  while (k < j - 2 && atk(ts, k, "ident") && (atk(ts, k + 1, ",") || atk(ts, k + 1, "]"))) {
+    ps = ps.push(tkc(ts, k).text)
+    k += 2
+  }
+  if (ps.length() == 0 || !atk(ts, k - 1, "]") || k != j - 1) { return acc }
+  let fs = rec_field_binds(ts, j + 1, bend - 1, nm, [], al)
+  var out = acc.push({ name: "gpar ".concat(nm), ty: ps.join(",") })
+  var f = 0
+  while (f < fs.length()) {
+    // "field <Name>.<x>" becomes "gfld <Name>.<x>"
+    out = out.push({ name: "gfld ".concat(fs[f].name.slice(6, fs[f].name.length())),
+                     ty: fs[f].ty })
+    f += 1
+  }
+  return out
+}
+
 fn decl_cases(ts: List[Token], i: Int, a: CaseAcc, al: Map[Str, Str]) -> CaseStep {
   // the WHOLE declaration, not its first line. A variant is routinely written
   // over several lines (`pub type Method =` then one `| Case` per line), and a
@@ -28097,7 +28716,9 @@ fn decl_cases(ts: List[Token], i: Int, a: CaseAcc, al: Map[Str, Str]) -> CaseSte
       // issue #2362: a generic record gets no field rows, only a `grec` mark,
       // so a record literal meeting it is refused by name (`ct_args`).
       let marked = bend == 0 - 1 ? a
-        : { binds: a.binds.push({ name: "grec ".concat(nm), ty: nm }), amb: a.amb }
+        : { binds: grec_rows(ts, i, j, bend, nm,
+                             a.binds.push({ name: "grec ".concat(nm), ty: nm }), al),
+            amb: a.amb }
       return { a: marked, i: bend == 0 - 1 ? lineHi : bend }
     }
     let fields = rec_field_binds(ts, j + 1, bend - 1, nm, a.binds, al)

@@ -1760,17 +1760,20 @@ def _tool_change(arguments: dict) -> dict:
             arguments = {**arguments, "add": {
                 "source": _change.component_source(vs, spec),
                 **({"target": spec["target"]} if spec.get("target") else {})}}
-        plan = None
+        plan = cold = None
         if intent == "withdraw":
             component, _ = _change._withdraw_spec(arguments["withdraw"])
-            plan = _change.cascade_of(_change.running_ir(SESSION), component)
+            ir, cold = _withdraw_ir(arguments)
+            plan = _change.cascade_of(ir, component)
         edit_arguments = {**_change.edit_arguments(intent, arguments, plan),
                           "commit": commit}
     except _change.ChangeError as error:
         return _session_error(str(error), committed=False)
     verifier = (_change.gauntlet_verifier(SESSION)
                 if arguments.get("gauntlet") is True else None)
-    refused = (_change.cascade_refusal(arguments, plan)
+    # a cold refusal is answered before `_tool_edit`'s load gate on purpose:
+    # nothing is loaded by it, so there is nothing for that gate to decide
+    refused = (_change.cascade_refusal(arguments, plan, cold=cold)
                if intent == "withdraw" else None)
     result = refused or _tool_edit(edit_arguments, verify=verifier,
                                    caller="revl_change")
@@ -1825,6 +1828,29 @@ def _tool_knowledge(arguments: dict) -> dict:
         raise _notes.NoteError("`op` is one of add, query, confirm, retire, supersede")
     except _notes.NoteError as error:
         return _session_error(str(error))
+
+
+def _withdraw_ir(arguments: dict) -> tuple[dict | None, bool]:
+    """The IR a withdrawal is planned against, and whether it is the carried
+    composition of a cold call (issue #2225). What runs, or a held draft, when
+    there is one; otherwise the `source`/`files`/`modules` the call carries,
+    compiled the way its load will compile them. The load itself runs later,
+    inside `_tool_edit`, so planning against the session alone planned against
+    nothing: `cascade: true` was dropped and nothing stranded was refused.
+    A carried set that does not compile plans nothing; the load reports why."""
+    from . import change as _change  # noqa: PLC0415
+
+    if SESSION.loaded or _draft.pending(SESSION) is not None:
+        return _change.running_ir(SESSION), False
+    source, files, _ = _candidate_of(arguments)
+    if source is None and not files:
+        return None, False
+    sent, _, _ = _canonical.prepare(arguments)
+    source, files, modules = _candidate_of(sent)
+    try:
+        return compile_under_authoring(source, files, modules=modules), True
+    except RevlError:
+        return None, True
 
 
 def _change_working_set() -> dict:
