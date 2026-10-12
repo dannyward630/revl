@@ -2825,3 +2825,137 @@ def test_the_checker_rules_of_issue_2399_admit_what_the_reference_compiles(admit
     text = _ISSUE_2399_ADMITTED[name]
     assert _reference_refusal(text) == ""
     assert admit(text) == ""
+
+
+# Issue #2403: two applied generic records are compared by their type
+# arguments, the way `compatible` meets two same-head types elementwise. The
+# self-host read `Box[Str]` as an opaque alias and admitted all of these.
+_G2 = "fn g2(b: Box[Box[Int]]) -> Int {\n  return 1\n}\n"
+_MK = "fn mk() -> Box[Str] {\n  return { v: \"s\" }\n}\n"
+_S_LET = "  let s: Box[Str] = { v: \"s\" }\n"
+_FIRST = "fn first[T](a: T, b: T) -> T {\n  return a\n}\n"
+_L = "type L[T] = { h: T, t: Opt[L[T]] }\n"
+_IF_LIT = "if (c) { b } else { { v: \"s\" } }"
+_IF_S = "if (c) { b } else { s }"
+_MATCH_LIT = "match o { Some(n) => b, None => { v: \"s\" } }"
+
+
+def _box_fn(params, body, ret="Int"):
+    return "fn f(" + params + ") -> " + ret + " {\n" + body + "\n}\n"
+
+
+_ISSUE_2403_REFUSED = {
+    "argument": _BOX + _G + _box_fn("s: Box[Str]", "  return g(s)"),
+    "let": _BOX + _box_fn("s: Box[Str]", "  let t: Box[Int] = s\n  return 1"),
+    "return": _BOX + _box_fn("s: Box[Str]", "  return s", "Box[Int]"),
+    "nested_argument": _BOX + _G2 + _box_fn("s: Box[Box[Str]]", "  return g2(s)"),
+    "nested_let": _BOX + _box_fn("s: Box[Box[Str]]", "  let t: Box[Box[Int]] = s\n  return 1"),
+    "nested_return": _BOX + _box_fn("s: Box[Box[Str]]", "  return s", "Box[Box[Int]]"),
+    "call_result_argument": _BOX + _G + _MK + "fn f() -> Int {\n  return g(mk())\n}\n",
+    "list_argument": _BOX + (
+        "fn h(xs: List[Box[Int]]) -> Int {\n  return 1\n}\n"
+        + _box_fn("s: List[Box[Str]]", "  return h(s)")),
+    "opt_argument": _BOX + (
+        "fn h(o: Opt[Box[Int]]) -> Int {\n  return 1\n}\n"
+        + _box_fn("s: Box[Str]", "  return h(s)")),
+    "two_params_swapped": _P + (
+        "fn h(p: P[Int, Str]) -> Int {\n  return 1\n}\n"
+        + _box_fn("p: P[Str, Int]", "  return h(p)")),
+    "test_argument": _BOX + _G + "test \"t\" {\n" + _S_LET + "  assert g(s) == 1\n}\n",
+    "test_let": _BOX + "test \"t\" {\n" + _S_LET + "  let t: Box[Int] = s\n  assert true\n}\n",
+    "test_nested_let": _BOX + (
+        "test \"t\" {\n  let s: Box[Box[Str]] = { v: { v: \"s\" } }\n"
+        "  let t: Box[Box[Int]] = s\n  assert true\n}\n"),
+    "prop_argument": _BOX + _G + _prop_doc(_S_LET + "  let k = g(s)"),
+    "prop_let": _BOX + _prop_doc(_S_LET + "  let t: Box[Int] = s"),
+    # the same comparison at the other positions that meet two types
+    "equality": _BOX + _box_fn("b: Box[Int], c: Box[Str]", "  return b == c", "Bool"),
+    "builtin_argument": _BOX + _box_fn(
+        "xs: List[Box[Int]], b: Box[Str]", "  let ys = xs.push(b)\n  return ys.length()"),
+    "generic_fn_argument": _BOX + _FIRST + _box_fn(
+        "b: Box[Int], c: Box[Str]", "  let r = first(b, c)\n  return 1"),
+    "function_value_argument": _BOX + _box_fn(
+        "c: Box[Str]", "  let k = (x: Box[Int]) => x.v\n  return k(c)"),
+    "list_element": _BOX + _box_fn(
+        "b: Box[Str]", "  let xs: List[Box[Int]] = [b]\n  return xs.length()"),
+    # each branch of an `if` and each `match` arm against the expectation, and
+    # the ternary rule where no expectation is given
+    "if_let": _BOX + _box_fn("c: Bool, b: Box[Int]", "  let r: Box[Int] = " + _IF_LIT + "\n  return 1"),
+    "if_let_records": _BOX + _box_fn(
+        "c: Bool, b: Box[Int], s: Box[Str]", "  let r: Box[Int] = " + _IF_S + "\n  return 1"),
+    "if_return": _BOX + _box_fn("c: Bool, b: Box[Int]", "  return " + _IF_LIT, "Box[Int]"),
+    "if_argument": _BOX + _G + _box_fn("c: Bool, b: Box[Int]", "  return g(" + _IF_LIT + ")"),
+    "if_untyped_let": _BOX + _box_fn(
+        "c: Bool, b: Box[Int], s: Box[Str]", "  let r = " + _IF_S + "\n  return 1"),
+    "if_in_test": _BOX + "test \"t\" {\n  let b: Box[Int] = { v: 1 }\n" + _S_LET
+                  + "  let r = if (true) { b } else { s }\n  assert true\n}\n",
+    "match_let": _BOX + _box_fn(
+        "o: Opt[Int], b: Box[Int]", "  let r: Box[Int] = " + _MATCH_LIT + "\n  return 1"),
+    "match_let_records": _BOX + _box_fn(
+        "o: Opt[Int], b: Box[Int], s: Box[Str]",
+        "  let r: Box[Int] = match o { Some(n) => b, None => s }\n  return 1"),
+    # a recursive generic record is compared by type argument, never expanded
+    "recursive_record": _L + (
+        "fn h(l: L[Int]) -> Int {\n  return 1\n}\n" + _box_fn("l: L[Str]", "  return h(l)")),
+}
+
+_ISSUE_2403_COMPILED = {
+    "argument": _BOX + _G + _box_fn("s: Box[Int]", "  return g(s)"),
+    "let_and_field": _BOX + _box_fn("s: Box[Int]", "  let t: Box[Int] = s\n  return t.v"),
+    "return": _BOX + _box_fn("s: Box[Int]", "  return s", "Box[Int]"),
+    "nested_argument": _BOX + _G2 + _box_fn("s: Box[Box[Int]]", "  return g2(s)"),
+    "nested_field": _BOX + _box_fn("s: Box[Box[Int]]", "  return s.v.v"),
+    "widening_argument": _BOX + (
+        "fn h(b: Box[Float]) -> Int {\n  return 1\n}\n"
+        + _box_fn("s: Box[Int]", "  return h(s)")),
+    "list_argument": _BOX + (
+        "fn h(xs: List[Box[Int]]) -> Int {\n  return xs.length()\n}\n"
+        + _box_fn("s: List[Box[Int]]", "  return h(s)")),
+    "two_params": _P + (
+        "fn h(p: P[Int, Str]) -> Int {\n  return p.a\n}\n"
+        + _box_fn("p: P[Int, Str]", "  return h(p)")),
+    "test_argument": _BOX + _G + "test \"t\" {\n  let s: Box[Int] = { v: 1 }\n"
+                     "  assert g(s) == 1\n}\n",
+    "prop_argument": _BOX + _G + _prop_doc("  let s: Box[Int] = { v: n }\n  let k = g(s)"),
+    # a record literal still meets an applied generic record field-wise
+    "equality_with_literal": _BOX + _box_fn("b: Box[Int]", "  return b == { v: 1 }", "Bool"),
+    "builtin_argument_literal": _BOX + _box_fn(
+        "xs: List[Box[Int]]", "  let ys = xs.push({ v: 1 })\n  return ys.length()"),
+    "generic_fn_literal": _BOX + _FIRST + _box_fn(
+        "b: Box[Int]", "  let r = first(b, { v: 1 })\n  return r.v"),
+    "function_value_literal": _BOX + _box_fn(
+        "b: Box[Int]", "  let k = (x: Box[Int]) => x.v\n  return k({ v: 1 })"),
+    "return_literal": _BOX + _box_fn("", "  return { v: 1 }", "Box[Int]"),
+    "if_join": _BOX + _box_fn(
+        "c: Bool, b: Box[Int]", "  let r = if (c) { b } else { { v: 1 } }\n  return r", "Box[Int]"),
+    "recursive_record": _L + (
+        "fn h(l: L[Int]) -> Int {\n  return 1\n}\n" + _box_fn("l: L[Int]", "  return h(l)")),
+    "if_argument_literal": _BOX + _G + _box_fn(
+        "c: Bool, b: Box[Int]", "  return g(if (c) { b } else { { v: 1 } })"),
+    "if_widening": _BOX + _box_fn(
+        "c: Bool, b: Box[Int], d: Box[Float]", "  let r = if (c) { b } else { d }\n  return 1"),
+    "match_argument": _BOX + _G + _box_fn("o: Opt[Int], b: Box[Int]", "  return g(" + _MATCH_LIT + ")"),
+    "match_let_literal": _BOX + _box_fn(
+        "o: Opt[Int], b: Box[Int]",
+        "  let r: Box[Int] = match o { Some(n) => b, None => { v: 1 } }\n  return r.v"),
+}
+
+
+@pytest.mark.parametrize("tier", ["py", "go", "java", "rust"])
+@pytest.mark.parametrize("name", sorted(_ISSUE_2403_REFUSED))
+def test_two_applied_generic_records_are_compared_by_type_argument(compile_rvl, name, tier):
+    text = _ISSUE_2403_REFUSED[name]
+    want = _reference_refusal(text)
+    assert want != ""
+    got = compile_rvl["compile_to_at"](text, tier, "x.rvl")
+    assert got.startswith("REFUSED|"), got[:120]
+    assert got.split("|", 2)[2] == want
+
+
+@pytest.mark.parametrize("name", sorted(_ISSUE_2403_COMPILED))
+def test_matching_generic_record_arguments_compile_on_both_sides(compile_rvl, admit, name):
+    text = _ISSUE_2403_COMPILED[name]
+    assert _reference_refusal(text) == ""
+    assert admit(text) == ""
+    got = compile_rvl["compile_to_at"](text, "py", "x.rvl")
+    assert not got.startswith("REFUSED|"), got[:160]

@@ -13512,12 +13512,22 @@ fn tk_compat_env(expected: String, actual: String, env: &[Bind]) -> bool {
     if ((!grec_mentioned(&expected, env)) && (!grec_mentioned(&actual, env))) {
         return tk_compatible(expected.clone(), actual.clone());
     }
+    if ((!tk_mentions_struct(&expected)) && (!tk_mentions_struct(&actual))) {
+        return tk_compatible(expected.clone(), actual.clone());
+    }
     let ee = grec_expand(&expected, env, 0i64);
     let ae = grec_expand(&actual, env, 0i64);
     if ((ee == "") || (ae == "")) {
         return true;
     }
+    if (ty_has_opaque(ee.clone(), env) || ty_has_opaque(ae.clone(), env)) {
+        return true;
+    }
     return tk_compatible(ee.clone(), ae.clone());
+}
+
+fn tk_mentions_struct(t: &str) -> bool {
+    return (t.revl_index_of("{") != (0i64).checked_sub(1i64).expect("revl: Int overflow"));
 }
 
 fn ct_record_shape(pt: String, actual: &str, env: &[Bind]) -> String {
@@ -13883,7 +13893,7 @@ fn ct_stmt_req_ret(e: Expr, cx: Ctx__m2) -> String {
 fn ct_return_req(e: Expr, ret: String, cx: Ctx__m2, env: &[Bind], where__: &str) -> String {
     let rt = tk_solid(ct_stmt_req_ret(e.clone(), cx.clone()), env);
     let want = tk_solid(ret.clone(), env);
-    if (((rt == "") || (want == "")) || tk_compatible(want.clone(), rt.clone())) {
+    if (((rt == "") || (want == "")) || tk_compat_env(want.clone(), rt.clone(), env)) {
         return String::from("");
     }
     return tk_mismatch(where__, ret.clone(), rt.clone()).v;
@@ -18933,9 +18943,17 @@ fn ty_has_opaque(t: String, env: &[Bind]) -> bool {
         if ty_any_opaque(&args, 0i64, env) {
             return true;
         }
-        return ty_declared_nonrecord(parse_head(t.clone()), env);
+        return (ty_declared_nonrecord(parse_head(t.clone()), env) && (!ty_grec_solid(&t, env)));
     }
     return (tk_nominal_name(t.clone()) && ty_declared_nonrecord(t.clone(), env));
+}
+
+fn ty_grec_solid(t: &str, env: &[Bind]) -> bool {
+    if (!tk_generic_record(t, env)) {
+        return false;
+    }
+    let pr = tenv_get(env, &(String::from("gpar ").revl_concat(&t.revl_slice(0i64, t.revl_index_of("[")))));
+    return ((pr != "") && ((pr.revl_split(",")).revl_length() == type_args(t).revl_length()));
 }
 
 fn ty_declared_nonrecord(h: String, env: &[Bind]) -> bool {
@@ -19112,6 +19130,8 @@ fn tk_check(e: Expr, expected: String, env: Vec<Bind>, where__: &str) -> TInf {
     return match e.clone() {
     Expr::RecUpd(r) => { let r = *r; tk_check_recupd(r.base.clone(), r.upds.clone(), expected.clone(), env.clone(), where__) },
     Expr::Lst(l) => if (parse_head(expected.clone()) == "List") { tk_check_list(l.items, 0i64, expected.clone(), env.clone()) } else { tk_check_flat(e.clone(), expected.clone(), env.clone(), where__) },
+    Expr::If(f) => { let f = *f; if grec_mentioned(&expected, &env) { tk_check_if(f.cond.clone(), f.then_.clone(), f.els.clone(), expected.clone(), env.clone(), where__) } else { tk_check_flat(e.clone(), expected.clone(), env.clone(), where__) } },
+    Expr::Match(m) => { let m = *m; if grec_mentioned(&expected, &env) { tk_check_match(m, expected.clone(), env.clone(), where__) } else { tk_check_flat(e.clone(), expected.clone(), env.clone(), where__) } },
     _ => tk_check_flat(e.clone(), expected.clone(), env.clone(), where__),
 };
 }
@@ -19128,6 +19148,47 @@ fn tk_check_flat(e: Expr, expected: String, env: Vec<Bind>, where__: &str) -> TI
         return tk_mismatch(where__, expected.clone(), r.ty.clone());
     }
     return tk_ok(expected.clone());
+}
+
+fn tk_check_if(cond: Expr, then_: Expr, els: Expr, expected: String, env: Vec<Bind>, where__: &str) -> TInf {
+    let c = tk_infer(cond.clone(), env.clone());
+    if (c.v != "") {
+        return c;
+    }
+    let a = tk_check(then_.clone(), expected.clone(), env.clone(), where__);
+    if (a.v != "") {
+        return a;
+    }
+    let b = tk_check(els.clone(), expected.clone(), env.clone(), where__);
+    if (b.v != "") {
+        return b;
+    }
+    return tk_ok(expected.clone());
+}
+
+fn tk_check_match(m: MatchN, expected: String, env: Vec<Bind>, where__: &str) -> TInf {
+    let v = tk_exhaustive(m.clone(), env.clone());
+    if (v != "") {
+        return TInf { ty: String::from(""), v: v.clone() };
+    }
+    let s = tk_infer(m.scrut.clone(), env.clone());
+    if (s.v != "") {
+        return s;
+    }
+    return tk_check_arms(m.arms.clone(), 0i64, expected.clone(), env.clone(), where__);
+}
+
+fn tk_check_arms(arms: Vec<ArmN>, i: i64, expected: String, env: Vec<Bind>, where__: &str) -> TInf {
+    if (i >= arms.revl_length()) {
+        return tk_ok(expected.clone());
+    }
+    let a = (arms)[(i) as usize].clone();
+    let inner = if (a.bind == "") { env.clone() } else { tenv_put(&env, a.bind.clone(), String::from("")) };
+    let r = tk_check(a.body.clone(), expected.clone(), inner, where__);
+    if (r.v != "") {
+        return r;
+    }
+    return tk_check_arms(arms.clone(), (i).checked_add(1i64).expect("revl: Int overflow"), expected.clone(), env.clone(), where__);
 }
 
 fn tk_check_list(items: Vec<Expr>, i: i64, expected: String, env: Vec<Bind>) -> TInf {
@@ -19150,7 +19211,7 @@ fn tk_check_recupd(base: Expr, upds: Vec<InitN>, expected: String, env: Vec<Bind
     if (f.v != "") {
         return f;
     }
-    if ((b.ty != "") && (!tk_compatible(expected.clone(), b.ty.clone()))) {
+    if ((b.ty != "") && (!tk_compat_env(expected.clone(), b.ty.clone(), &env))) {
         return tk_mismatch(where__, expected.clone(), b.ty.clone());
     }
     return tk_ok(b.ty.clone());
@@ -19207,12 +19268,12 @@ fn tk_bin(b: BinN, env: Vec<Bind>) -> TInf {
     if (r.v != "") {
         return r;
     }
-    return tk_binop(&b.op, l.ty.clone(), r.ty.clone());
+    return tk_binop(&b.op, l.ty.clone(), r.ty.clone(), &env);
 }
 
-fn tk_binop(op: &str, lt: String, rt: String) -> TInf {
+fn tk_binop(op: &str, lt: String, rt: String, env: &[Bind]) -> TInf {
     if ((((op == "==") || (op == "!=")) || (op == "===")) || (op == "!==")) {
-        if ((((lt != "") && (rt != "")) && (!tk_compatible(lt.clone(), rt.clone()))) && (!tk_compatible(rt.clone(), lt.clone()))) {
+        if ((((lt != "") && (rt != "")) && (!tk_compat_env(lt.clone(), rt.clone(), env))) && (!tk_compat_env(rt.clone(), lt.clone(), env))) {
             return tk_no("T1", &((((((String::from("`").revl_concat(&op)).revl_concat("` cannot compare `")).revl_concat(&tk_render(lt.clone()))).revl_concat("` with `")).revl_concat(&tk_render(rt.clone()))).revl_concat("` — the operands have no type in common")));
         }
         return tk_ok(String::from("Bool"));
@@ -19499,7 +19560,21 @@ fn tk_if(cond: Expr, then_: Expr, els: Expr, env: Vec<Bind>) -> TInf {
     if (b.v != "") {
         return b;
     }
+    if (grec_mentioned(&a.ty, &env) || grec_mentioned(&b.ty, &env)) {
+        return tk_if_join(a.ty.clone(), b.ty.clone(), &env);
+    }
     return tk_ok(join_ty(a.ty.clone(), b.ty.clone()));
+}
+
+fn tk_if_join(a: String, b: String, env: &[Bind]) -> TInf {
+    if ((a == "") || (b == "")) {
+        return tk_ok(join_ty(a.clone(), b.clone()));
+    }
+    let j = tk_join(a.clone(), b.clone(), env);
+    if (j == "") {
+        return tk_no("TYPE", &((((String::from("ternary branches disagree: `").revl_concat(&tk_render(a.clone()))).revl_concat("` vs `")).revl_concat(&tk_render(b.clone()))).revl_concat("`")));
+    }
+    return tk_ok(j.clone());
 }
 
 fn tk_parts(parts: Vec<PartN>, i: i64, env: Vec<Bind>) -> TInf {
@@ -19644,17 +19719,17 @@ fn tkp_args(ty: String) -> Vec<String> {
     return tk_split_depth(&(ty.revl_slice((b).checked_add(1i64).expect("revl: Int overflow"), (ty.revl_length()).checked_sub(1i64).expect("revl: Int overflow"))));
 }
 
-fn tk_join(a: String, b: String) -> String {
-    if tk_compatible(a.clone(), b.clone()) {
+fn tk_join(a: String, b: String, env: &[Bind]) -> String {
+    if tk_compat_env(a.clone(), b.clone(), env) {
         return a;
     }
-    if tk_compatible(b.clone(), a.clone()) {
+    if tk_compat_env(b.clone(), a.clone(), env) {
         return b;
     }
     return String::from("");
 }
 
-fn tk_unify(param: String, actual: String, sub: Vec<Bind>) -> TySub {
+fn tk_unify(param: String, actual: String, sub: Vec<Bind>, env: Vec<Bind>) -> TySub {
     if ((param == "") || (actual == "")) {
         return TySub { ok: true, sub: sub.clone() };
     }
@@ -19671,7 +19746,7 @@ fn tk_unify(param: String, actual: String, sub: Vec<Bind>) -> TySub {
         if (prior == "") {
             return TySub { ok: true, sub: tenv_put(&sub, ph.clone(), actual.clone()) };
         }
-        let w = tk_join(prior.clone(), actual.clone());
+        let w = tk_join(prior.clone(), actual.clone(), &env);
         if (w == "") {
             return TySub { ok: false, sub: sub.clone() };
         }
@@ -19680,14 +19755,14 @@ fn tk_unify(param: String, actual: String, sub: Vec<Bind>) -> TySub {
     let ah = tkp_head(actual.clone());
     let aa = tkp_args(actual.clone());
     if (((ph == "Opt") && (pa.revl_length() > 0i64)) && (ah != "Opt")) {
-        return tk_unify((pa)[(0i64) as usize].clone(), actual.clone(), sub.clone());
+        return tk_unify((pa)[(0i64) as usize].clone(), actual.clone(), sub.clone(), env.clone());
     }
     if ((ph == ah) && (pa.revl_length() == aa.revl_length())) {
         let mut cur = sub.clone();
         let mut ok = true;
         let mut i = 0i64;
         while (i < pa.revl_length()) {
-            let r = tk_unify((pa)[(i) as usize].clone(), (aa)[(i) as usize].clone(), cur.clone());
+            let r = tk_unify((pa)[(i) as usize].clone(), (aa)[(i) as usize].clone(), cur.clone(), env.clone());
             if (!r.ok) {
                 ok = false;
             }
@@ -19696,7 +19771,7 @@ fn tk_unify(param: String, actual: String, sub: Vec<Bind>) -> TySub {
         }
         return TySub { ok: ok, sub: cur.clone() };
     }
-    return TySub { ok: tk_compatible(param.clone(), actual.clone()), sub: sub.clone() };
+    return TySub { ok: tk_compat_env(param.clone(), actual.clone(), &env), sub: sub.clone() };
 }
 
 fn tk_subst(ty: String, sub: &[Bind]) -> String {
@@ -20142,18 +20217,18 @@ fn tk_spec_expect(spec: String, elem: String, th: &str, self__: String) -> Strin
     return spec;
 }
 
-fn tk_bargs(specs: &[String], argTys: &[String], i: i64, elem: String, th: &str, self__: String, method: &str) -> TInf {
+fn tk_bargs(specs: &[String], argTys: &[String], i: i64, elem: String, th: &str, self__: String, method: &str, env: &[Bind]) -> TInf {
     if ((i >= specs.revl_length()) || (i >= argTys.revl_length())) {
         return tk_ok(String::from(""));
     }
     let want = tk_spec_expect((specs)[(i) as usize].clone(), elem.clone(), th, self__.clone());
-    if (((want != "") && ((argTys)[(i) as usize] != "")) && (!tk_compatible(want.clone(), (argTys)[(i) as usize].clone()))) {
+    if (((want != "") && ((argTys)[(i) as usize] != "")) && (!tk_compat_env(want.clone(), (argTys)[(i) as usize].clone(), env))) {
         return tk_mismatch(&((String::from("builtin `").revl_concat(&method)).revl_concat("` argument")), want.clone(), (argTys)[(i) as usize].clone());
     }
-    return tk_bargs(specs, argTys, (i).checked_add(1i64).expect("revl: Int overflow"), elem.clone(), th, self__.clone(), method);
+    return tk_bargs(specs, argTys, (i).checked_add(1i64).expect("revl: Int overflow"), elem.clone(), th, self__.clone(), method, env);
 }
 
-fn tk_builtin_check(method: &str, recv: String, argTys: &[String]) -> TInf {
+fn tk_builtin_check(method: &str, recv: String, argTys: &[String], env: &[Bind]) -> TInf {
     if tk_is_host_family(&recv) {
         return tk_host_family_check(&recv, method, argTys);
     }
@@ -20184,7 +20259,7 @@ fn tk_builtin_check(method: &str, recv: String, argTys: &[String]) -> TInf {
     if ((((((method == "join") && (th0 == "List")) && (elem != "")) && (!tk_wild(&elem))) && (elem != "Never")) && (!tk_compatible(String::from("Str"), elem.clone()))) {
         return tk_no("T1", &(((String::from("builtin `join` needs a `List[Str]` receiver, got `").revl_concat(&tk_render(self__.clone()))).revl_concat("` (join concatenates string elements; map to `Str` first, ")).revl_concat("e.g. `xs.map(n => n.to_str()).join(sep)`)")));
     }
-    let m = tk_bargs(&specs, argTys, 0i64, elem.clone(), &th0, self__.clone(), method);
+    let m = tk_bargs(&specs, argTys, 0i64, elem.clone(), &th0, self__.clone(), method, env);
     if (m.v != "") {
         return m;
     }
@@ -20234,7 +20309,7 @@ fn tk_named(c: CallN, env: Vec<Bind>, argTys: Vec<String>) -> TCall {
         }
         return tk_hit(tk_ok(tk_call_result(ret.clone())));
     }
-    return tk_hit(tk_generic_args(ps.clone(), argTys.clone(), 0i64, vec![], &n, ret.clone()));
+    return tk_hit(tk_generic_args(ps.clone(), argTys.clone(), 0i64, vec![], &n, ret.clone(), env.clone()));
 }
 
 fn tk_mono_args(ps: &[String], argTys: &[String], i: i64, n: &str, env: &[Bind]) -> TInf {
@@ -20251,15 +20326,15 @@ fn tk_arg_where(i: i64, n: &str) -> String {
     return (((String::from("argument ").revl_concat(&(((i).checked_add(1i64).expect("revl: Int overflow"))).to_string())).revl_concat(" of `")).revl_concat(&n)).revl_concat("(...)`");
 }
 
-fn tk_generic_args(ps: Vec<String>, argTys: Vec<String>, i: i64, sub: Vec<Bind>, n: &str, ret: String) -> TInf {
+fn tk_generic_args(ps: Vec<String>, argTys: Vec<String>, i: i64, sub: Vec<Bind>, n: &str, ret: String, env: Vec<Bind>) -> TInf {
     if ((i >= ps.revl_length()) || (i >= argTys.revl_length())) {
         return tk_ok(tk_call_result(tk_subst(ret.clone(), &sub)));
     }
-    let r = tk_unify((ps)[(i) as usize].clone(), (argTys)[(i) as usize].clone(), sub.clone());
+    let r = tk_unify((ps)[(i) as usize].clone(), (argTys)[(i) as usize].clone(), sub.clone(), env.clone());
     if (!r.ok) {
         return tk_mismatch(&tk_arg_where(i, n), tk_subst((ps)[(i) as usize].clone(), &r.sub), (argTys)[(i) as usize].clone());
     }
-    return tk_generic_args(ps.clone(), argTys.clone(), (i).checked_add(1i64).expect("revl: Int overflow"), r.sub.clone(), n, ret.clone());
+    return tk_generic_args(ps.clone(), argTys.clone(), (i).checked_add(1i64).expect("revl: Int overflow"), r.sub.clone(), n, ret.clone(), env.clone());
 }
 
 fn tk_method(c: CallN, env: &[Bind], argTys: &[String], recv: String) -> TCall {
@@ -20290,19 +20365,19 @@ fn tk_method(c: CallN, env: &[Bind], argTys: &[String], recv: String) -> TCall {
         if ir_stratum(env) {
             return tk_miss();
         }
-        return tk_unknown_recv_check(&f.name, argTys);
+        return tk_unknown_recv_check(&f.name, argTys, env);
     }
-    return tk_hit(tk_builtin_check(&f.name, recv.clone(), argTys));
+    return tk_hit(tk_builtin_check(&f.name, recv.clone(), argTys, env));
 }
 
-fn tk_unknown_recv_check(method: &str, argTys: &[String]) -> TCall {
+fn tk_unknown_recv_check(method: &str, argTys: &[String], env: &[Bind]) -> TCall {
     if tk_bsig_multi(method) {
         return tk_miss();
     }
     if (tk_bsig_family(method, String::from("")) == "") {
         return tk_miss();
     }
-    let m = tk_bargs(&tk_bsig_params(method), argTys, 0i64, String::from(""), "", String::from(""), method);
+    let m = tk_bargs(&tk_bsig_params(method), argTys, 0i64, String::from(""), "", String::from(""), method, env);
     if (m.v != "") {
         return tk_hit(m.clone());
     }
@@ -20494,7 +20569,7 @@ fn tk_fnvalue(c: CallN, env: &[Bind], argTys: &[String], calleeTy: String) -> TC
     return match c.target.clone() {
     Expr::Var(n) => tk_fnvalue_named(&n, c.clone(), env, argTys),
     Expr::Field(f) => { let f = *f; tk_miss() },
-    _ => if tk_is_fn_ty(&calleeTy) { tk_hit(tk_fn_call(calleeTy.clone(), "this call's callee", &c.args, argTys)) } else { tk_miss() },
+    _ => if tk_is_fn_ty(&calleeTy) { tk_hit(tk_fn_call(calleeTy.clone(), "this call's callee", &c.args, argTys, env)) } else { tk_miss() },
 };
 }
 
@@ -20512,10 +20587,10 @@ fn tk_fnvalue_named(n: &str, c: CallN, env: &[Bind], argTys: &[String]) -> TCall
     if (!tk_is_fn_ty(&t)) {
         return tk_miss();
     }
-    return tk_hit(tk_fn_call(t.clone(), &((String::from("`").revl_concat(&n)).revl_concat("`")), &c.args, argTys));
+    return tk_hit(tk_fn_call(t.clone(), &((String::from("`").revl_concat(&n)).revl_concat("`")), &c.args, argTys, env));
 }
 
-fn tk_fn_call(fnTy: String, what: &str, args: &[Expr], argTys: &[String]) -> TInf {
+fn tk_fn_call(fnTy: String, what: &str, args: &[Expr], argTys: &[String], env: &[Bind]) -> TInf {
     let parts = ty_parse(fnTy.clone()).args;
     if (parts.revl_length() == 0i64) {
         return tk_ok(String::from(""));
@@ -20524,7 +20599,7 @@ fn tk_fn_call(fnTy: String, what: &str, args: &[Expr], argTys: &[String]) -> TIn
     if (args.revl_length() != nps) {
         return tk_no("T1", &(((((((what.revl_concat(" is a `")).revl_concat(&tk_render(fnTy.clone()))).revl_concat("` and takes ")).revl_concat(&(nps).to_string())).revl_concat(" argument(s), ")).revl_concat(&((args.revl_length())).to_string())).revl_concat(" given")));
     }
-    let m = tk_fn_args(&parts, argTys, 0i64, nps.clone(), what);
+    let m = tk_fn_args(&parts, argTys, 0i64, nps.clone(), what, env);
     if (m.v != "") {
         return m;
     }
@@ -20532,14 +20607,14 @@ fn tk_fn_call(fnTy: String, what: &str, args: &[Expr], argTys: &[String]) -> TIn
     return tk_ok(tk_call_result(ret.clone()));
 }
 
-fn tk_fn_args(ps: &[String], argTys: &[String], i: i64, nps: i64, what: &str) -> TInf {
+fn tk_fn_args(ps: &[String], argTys: &[String], i: i64, nps: i64, what: &str, env: &[Bind]) -> TInf {
     if ((i >= nps) || (i >= argTys.revl_length())) {
         return tk_ok(String::from(""));
     }
-    if ((((ps)[(i) as usize] != "") && ((argTys)[(i) as usize] != "")) && (!tk_compatible((ps)[(i) as usize].clone(), (argTys)[(i) as usize].clone()))) {
+    if ((((ps)[(i) as usize] != "") && ((argTys)[(i) as usize] != "")) && (!tk_compat_env((ps)[(i) as usize].clone(), (argTys)[(i) as usize].clone(), env))) {
         return tk_mismatch(&(((String::from("argument ").revl_concat(&(((i).checked_add(1i64).expect("revl: Int overflow"))).to_string())).revl_concat(" of ")).revl_concat(&what)), (ps)[(i) as usize].clone(), (argTys)[(i) as usize].clone());
     }
-    return tk_fn_args(ps, argTys, (i).checked_add(1i64).expect("revl: Int overflow"), nps, what);
+    return tk_fn_args(ps, argTys, (i).checked_add(1i64).expect("revl: Int overflow"), nps, what, env);
 }
 
 fn tk_optchain(target: Expr, args: Vec<Expr>, env: Vec<Bind>) -> TInf {
@@ -21479,7 +21554,7 @@ fn fb_walk(steps: Vec<FbStep>, i: i64, scope: Vec<Bind>, tys: Vec<Bind>, ret: St
             if (tv.v != "") {
                 return fb_type_refuse(tv.v.clone(), s.line, scope.clone(), tys.clone());
             }
-            if (!tk_compatible(ret.clone(), tv.ty.clone())) {
+            if (!tk_compat_env(ret.clone(), tv.ty.clone(), &tys)) {
                 return fb_type_refuse(tk_mismatch("this function's return", ret.clone(), tv.ty.clone()).v, s.line, scope.clone(), tys.clone());
             }
             let tlo = tk_low(try_operand(s.value.clone()), tys.clone());
@@ -21619,7 +21694,7 @@ fn fb_try_let(steps: Vec<FbStep>, i: i64, s: FbStep, scope: Vec<Bind>, tys: Vec<
     if (tv.v != "") {
         return fb_type_refuse(tv.v.clone(), s.line, scope.clone(), tys.clone());
     }
-    if (((s.declTy != "") && (tv.ty != "")) && (!tk_compatible(s.declTy.clone(), tv.ty.clone()))) {
+    if (((s.declTy != "") && (tv.ty != "")) && (!tk_compat_env(s.declTy.clone(), tv.ty.clone(), &tys))) {
         let where__ = (((String::from("`let ").revl_concat(&s.name)).revl_concat(": ")).revl_concat(&tk_render(s.declTy.clone()))).revl_concat("`");
         return fb_type_refuse(tk_mismatch(&where__, s.declTy.clone(), tv.ty.clone()).v, s.line, scope.clone(), tys.clone());
     }

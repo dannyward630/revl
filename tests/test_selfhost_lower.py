@@ -810,6 +810,10 @@ def _restoring(read: str | None = "let prev = store.get(k)",
             "}\n")
 
 
+_BOX2403 = "type Box[T] = { v: T }\n"
+_G2403 = "fn g(b: Box[Int]) -> Int { return b.v }\n"
+
+
 ACCEPTED_PROGRAMS = [
     # Issue #1897: a provide method may mark a WITNESSED effect `verified`.
     ("a verified witnessed effect in a provide method", _VERIFIED_WIT + """service W { emission fn put(k: Str) }
@@ -1898,6 +1902,14 @@ component Supervisor requires net: Kv provides sup: Sup {
     ("issue 1980: a write at another key between the read and the effect",
      _restoring(between='effect store.insert("j", "mid")\n'
                         'undo   store.remove("j")')),
+    # ---- issue #2403: the matching twins of the rows in REJECTED_PROGRAMS ----
+    ("issue 2403: a generic record argument with the same type argument",
+     _BOX2403 + _G2403 + "fn f(s: Box[Int]) -> Int { return g(s) }\n"),
+    ("issue 2403: a nested generic record argument with the same type argument",
+     _BOX2403 + "fn g(b: Box[Box[Int]]) -> Int { return 1 }\n"
+     "fn f(s: Box[Box[Int]]) -> Int { return g(s) }\n"),
+    ("issue 2403: a generic record compared with a record literal",
+     _BOX2403 + "fn f(b: Box[Int]) -> Bool { return b == { v: 1 } }\n"),
 ]
 
 
@@ -3863,6 +3875,16 @@ component C provides ops: Ops {
   provide ops { fn ping() = 1 }
 }
 """, "G4"),
+    # ---- issue #2403: two applied generic records meet by type argument -----
+    ("issue 2403: a generic record argument with the wrong type argument",
+     _BOX2403 + _G2403 + "fn f(s: Box[Str]) -> Int { return g(s) }\n", "T1"),
+    ("issue 2403: a generic record let with the wrong type argument",
+     _BOX2403 + "fn f(s: Box[Str]) -> Int {\n  let t: Box[Int] = s\n  return 1\n}\n", "T1"),
+    ("issue 2403: a generic record return with the wrong type argument",
+     _BOX2403 + "fn f(s: Box[Str]) -> Box[Int] { return s }\n", "T1"),
+    ("issue 2403: a nested generic record argument with the wrong type argument",
+     _BOX2403 + "fn g(b: Box[Box[Int]]) -> Int { return 1 }\n"
+     "fn f(s: Box[Box[Str]]) -> Int { return g(s) }\n", "T1"),
 ]
 
 

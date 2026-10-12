@@ -7220,10 +7220,20 @@ fn tk_compat_env(expected: Str, actual: Str, env: List[Bind]) -> Bool {
   if (!grec_mentioned(expected, env) && !grec_mentioned(actual, env)) {
     return tk_compatible(expected, actual)
   }
+  // issue #2403: with no structural record on either side the reference
+  // resolves nothing, and two applied records meet by type argument
+  if (!tk_mentions_struct(expected) && !tk_mentions_struct(actual)) {
+    return tk_compatible(expected, actual)
+  }
   let ee = grec_expand(expected, env, 0)
   let ae = grec_expand(actual, env, 0)
   if (ee == "" || ae == "") { return true }
+  if (ty_has_opaque(ee, env) || ty_has_opaque(ae, env)) { return true }
   return tk_compatible(ee, ae)
+}
+
+fn tk_mentions_struct(t: Str) -> Bool {
+  return t.indexOf("{") != 0 - 1
 }
 
 fn ct_record_shape(pt: Str, actual: Str, env: List[Bind]) -> Str {
@@ -7673,7 +7683,7 @@ fn ct_stmt_req_ret(e: Expr, cx: Ctx) -> Str {
 fn ct_return_req(e: Expr, ret: Str, cx: Ctx, env: List[Bind], where_: Str) -> Str {
   let rt = tk_solid(ct_stmt_req_ret(e, cx), env)
   let want = tk_solid(ret, env)
-  if (rt == "" || want == "" || tk_compatible(want, rt)) { return "" }
+  if (rt == "" || want == "" || tk_compat_env(want, rt, env)) { return "" }
   return tk_mismatch(where_, ret, rt).v
 }
 
@@ -13638,9 +13648,20 @@ fn ty_has_opaque(t: Str, env: List[Bind]) -> Bool {
   let args = tk_args(t)
   if (args.length() > 0) {
     if (ty_any_opaque(args, 0, env)) { return true }
-    return ty_declared_nonrecord(parse_head(t), env)
+    return ty_declared_nonrecord(parse_head(t), env) && !ty_grec_solid(t, env)
   }
   return tk_nominal_name(t) && ty_declared_nonrecord(t, env)
+}
+
+// Issue #2403: an applied generic record whose arity matches its declaration
+// is a record, not an alias. Two of them then meet by type argument, as
+// `compatible` meets two same-head types elementwise, and one meets a
+// structural record through `tk_compat_env`. A wrong arity stays opaque and
+// is left to the reference.
+fn ty_grec_solid(t: Str, env: List[Bind]) -> Bool {
+  if (!tk_generic_record(t, env)) { return false }
+  let pr = tenv_get(env, "gpar ".concat(t.slice(0, t.indexOf("["))))
+  return pr != "" && pr.split(",").length() == type_args(t).length()
 }
 
 // A TRANSPARENT ALIAS, as closely as a spelling can be narrowed to one: a name
@@ -13855,6 +13876,12 @@ fn tk_check(e: Expr, expected: Str, env: List[Bind], where_: Str) -> TInf {
     Lst(l)    => parse_head(expected) == "List"
                    ? tk_check_list(l.items, 0, expected, env)
                    : tk_check_flat(e, expected, env, where_),
+    If(f)     => grec_mentioned(expected, env)
+                   ? tk_check_if(f.cond, f.then_, f.els, expected, env, where_)
+                   : tk_check_flat(e, expected, env, where_),
+    Match(m)  => grec_mentioned(expected, env)
+                   ? tk_check_match(m, expected, env, where_)
+                   : tk_check_flat(e, expected, env, where_),
     _         => tk_check_flat(e, expected, env, where_),
   }
 }
@@ -13868,6 +13895,40 @@ fn tk_check_flat(e: Expr, expected: Str, env: List[Bind], where_: Str) -> TInf {
     return tk_mismatch(where_, expected, r.ty)
   }
   return tk_ok(expected)
+}
+
+// Issue #2403: `check_ast` checks each branch of an `if` and each arm of a
+// `match` against the expectation, so a disagreeing branch is named rather
+// than lost in a join that has no answer. Taken only where the expectation
+// names a generic record, the case a join stopped deciding once `Box[Int]`
+// was typed; an arm binder is left unknown, which is the silent direction.
+fn tk_check_if(cond: Expr, then_: Expr, els: Expr, expected: Str,
+               env: List[Bind], where_: Str) -> TInf {
+  let c = tk_infer(cond, env)
+  if (c.v != "") { return c }
+  let a = tk_check(then_, expected, env, where_)
+  if (a.v != "") { return a }
+  let b = tk_check(els, expected, env, where_)
+  if (b.v != "") { return b }
+  return tk_ok(expected)
+}
+
+fn tk_check_match(m: MatchN, expected: Str, env: List[Bind], where_: Str) -> TInf {
+  let v = tk_exhaustive(m, env)
+  if (v != "") { return { ty: "", v: v } }
+  let s = tk_infer(m.scrut, env)
+  if (s.v != "") { return s }
+  return tk_check_arms(m.arms, 0, expected, env, where_)
+}
+
+fn tk_check_arms(arms: List[ArmN], i: Int, expected: Str, env: List[Bind],
+                 where_: Str) -> TInf {
+  if (i >= arms.length()) { return tk_ok(expected) }
+  let a = arms[i]
+  let inner = a.bind == "" ? env : tenv_put(env, a.bind, "")
+  let r = tk_check(a.body, expected, inner, where_)
+  if (r.v != "") { return r }
+  return tk_check_arms(arms, i + 1, expected, env, where_)
 }
 
 // Each ELEMENT is checked against the element type, which names the offending
@@ -13892,7 +13953,7 @@ fn tk_check_recupd(base: Expr, upds: List[InitN], expected: Str,
   if (b.v != "") { return b }
   let f = tk_upd_fields(b.ty, upds, 0, env, true)
   if (f.v != "") { return f }
-  if (b.ty != "" && !tk_compatible(expected, b.ty)) {
+  if (b.ty != "" && !tk_compat_env(expected, b.ty, env)) {
     return tk_mismatch(where_, expected, b.ty)
   }
   return tk_ok(b.ty)
@@ -13953,18 +14014,18 @@ fn tk_bin(b: BinN, env: List[Bind]) -> TInf {
   if (l.v != "") { return l }
   let r = tk_infer(b.r, env)
   if (r.v != "") { return r }
-  return tk_binop(b.op, l.ty, r.ty)
+  return tk_binop(b.op, l.ty, r.ty, env)
 }
 
 // Port of `_binop_type`'s REFUSING arms. Every operator this slice does not
 // decide falls through to the non-raising `binop_ty`, so the type is the one
 // the annotation engine already agrees on and no new refusal appears.
-fn tk_binop(op: Str, lt: Str, rt: Str) -> TInf {
+fn tk_binop(op: Str, lt: Str, rt: Str, env: List[Bind]) -> TInf {
   if (op == "==" || op == "!=" || op == "===" || op == "!==") {
     // `incomparable`, NOT `mismatch`: equality has no expected/actual
     // direction, so neither side is the position the other must fit.
     if (lt != "" && rt != ""
-        && !tk_compatible(lt, rt) && !tk_compatible(rt, lt)) {
+        && !tk_compat_env(lt, rt, env) && !tk_compat_env(rt, lt, env)) {
       return tk_no("T1", "`".concat(op).concat("` cannot compare `")
         .concat(tk_render(lt)).concat("` with `").concat(tk_render(rt))
         .concat("` — the operands have no type in common"))
@@ -14305,7 +14366,23 @@ fn tk_if(cond: Expr, then_: Expr, els: Expr, env: List[Bind]) -> TInf {
   if (a.v != "") { return a }
   let b = tk_infer(els, env)
   if (b.v != "") { return b }
+  if (grec_mentioned(a.ty, env) || grec_mentioned(b.ty, env)) {
+    return tk_if_join(a.ty, b.ty, env)
+  }
   return tk_ok(join_ty(a.ty, b.ty))
+}
+
+// Issue #2403: the reference's ternary rule, `join` with the declared-type
+// table, for branches that name a generic record. Other branch pairs keep the
+// annotation engine's join, which leaves a disagreement unknown.
+fn tk_if_join(a: Str, b: Str, env: List[Bind]) -> TInf {
+  if (a == "" || b == "") { return tk_ok(join_ty(a, b)) }
+  let j = tk_join(a, b, env)
+  if (j == "") {
+    return tk_no("TYPE", "ternary branches disagree: `".concat(tk_render(a))
+      .concat("` vs `").concat(tk_render(b)).concat("`"))
+  }
+  return tk_ok(j)
 }
 
 // `p_template` tags an interpolation part `"e"` and a literal one `"t"`; the
@@ -14489,9 +14566,9 @@ fn tkp_args(ty: Str) -> List[Str] {
 // `join`: the common type of two branches. Its callers below hand it two KNOWN,
 // non-wildcard spellings, so "" is unambiguously "there is no common type" and
 // never "unknown".
-fn tk_join(a: Str, b: Str) -> Str {
-  if (tk_compatible(a, b)) { return a }
-  if (tk_compatible(b, a)) { return b }
+fn tk_join(a: Str, b: Str, env: List[Bind]) -> Str {
+  if (tk_compat_env(a, b, env)) { return a }
+  if (tk_compat_env(b, a, env)) { return b }
   return ""
 }
 
@@ -14500,7 +14577,7 @@ type TySub = { ok: Bool, sub: List[Bind] }
 // `unify`: match a MARKED parameter type against an argument type, growing the
 // substitution. `ok == false` only on a DEFINITE conflict — an unknown on
 // either side passes, which is what keeps a gradual argument silent.
-fn tk_unify(param: Str, actual: Str, sub: List[Bind]) -> TySub {
+fn tk_unify(param: Str, actual: Str, sub: List[Bind], env: List[Bind]) -> TySub {
   if (param == "" || actual == "") { return { ok: true, sub: sub } }
   let ph = tkp_head(param)
   let pa = tkp_args(param)
@@ -14512,7 +14589,7 @@ fn tk_unify(param: Str, actual: Str, sub: List[Bind]) -> TySub {
     if (tkp_head(actual) == "Async") { return { ok: false, sub: sub } }
     let prior = tenv_get(sub, ph)
     if (prior == "") { return { ok: true, sub: tenv_put(sub, ph, actual) } }
-    let w = tk_join(prior, actual)
+    let w = tk_join(prior, actual, env)
     if (w == "") { return { ok: false, sub: sub } }
     return { ok: true, sub: tenv_put(sub, ph, w) }
   }
@@ -14520,21 +14597,21 @@ fn tk_unify(param: Str, actual: Str, sub: List[Bind]) -> TySub {
   let aa = tkp_args(actual)
   // `T` -> `Opt[T]` injection, ahead of the head comparison
   if (ph == "Opt" && pa.length() > 0 && ah != "Opt") {
-    return tk_unify(pa[0], actual, sub)
+    return tk_unify(pa[0], actual, sub, env)
   }
   if (ph == ah && pa.length() == aa.length()) {
     var cur = sub
     var ok = true
     var i = 0
     while (i < pa.length()) {
-      let r = tk_unify(pa[i], aa[i], cur)
+      let r = tk_unify(pa[i], aa[i], cur, env)
       if (!r.ok) { ok = false }
       cur = r.sub
       i += 1
     }
     return { ok: ok, sub: cur }
   }
-  return { ok: tk_compatible(param, actual), sub: sub }
+  return { ok: tk_compat_env(param, actual, env), sub: sub }
 }
 
 // `substitute`: apply a unifier. A type parameter it did not bind keeps its
@@ -14941,19 +15018,20 @@ fn tk_spec_expect(spec: Str, elem: Str, th: Str, self_: Str) -> Str {
 }
 
 fn tk_bargs(specs: List[Str], argTys: List[Str], i: Int, elem: Str, th: Str,
-            self_: Str, method: Str) -> TInf {
+            self_: Str, method: Str, env: List[Bind]) -> TInf {
   if (i >= specs.length() || i >= argTys.length()) { return tk_ok("") }
   let want = tk_spec_expect(specs[i], elem, th, self_)
-  if (want != "" && argTys[i] != "" && !tk_compatible(want, argTys[i])) {
+  if (want != "" && argTys[i] != "" && !tk_compat_env(want, argTys[i], env)) {
     return tk_mismatch("builtin `".concat(method).concat("` argument"),
                        want, argTys[i])
   }
-  return tk_bargs(specs, argTys, i + 1, elem, th, self_, method)
+  return tk_bargs(specs, argTys, i + 1, elem, th, self_, method, env)
 }
 
 // `builtin_check`: type a stdlib method call. The receiver type is KNOWN at
 // every call site below — the unknown-receiver reading is `tk_low`'s.
-fn tk_builtin_check(method: Str, recv: Str, argTys: List[Str]) -> TInf {
+fn tk_builtin_check(method: Str, recv: Str, argTys: List[Str],
+                    env: List[Bind]) -> TInf {
   if (tk_is_host_family(recv)) {
     return tk_host_family_check(recv, method, argTys)
   }
@@ -14998,7 +15076,7 @@ fn tk_builtin_check(method: Str, recv: Str, argTys: List[Str]) -> TInf {
         .concat("` (join concatenates string elements; map to `Str` first, ")
         .concat("e.g. `xs.map(n => n.to_str()).join(sep)`)"))
   }
-  let m = tk_bargs(specs, argTys, 0, elem, th0, self_, method)
+  let m = tk_bargs(specs, argTys, 0, elem, th0, self_, method, env)
   if (m.v != "") { return m }
   return tk_ok(builtin_ret(method, self_))
 }
@@ -15041,7 +15119,7 @@ fn tk_named(c: CallN, env: List[Bind], argTys: List[Str]) -> TCall {
     if (m.v != "") { return tk_hit(m) }
     return tk_hit(tk_ok(tk_call_result(ret)))
   }
-  return tk_hit(tk_generic_args(ps, argTys, 0, [], n, ret))
+  return tk_hit(tk_generic_args(ps, argTys, 0, [], n, ret, env))
 }
 
 fn tk_mono_args(ps: List[Str], argTys: List[Str], i: Int, n: Str,
@@ -15063,15 +15141,15 @@ fn tk_arg_where(i: Int, n: Str) -> Str {
 // with the substitution learned SO FAR applied, which is the reference's own
 // `substitute(p, subst)`.
 fn tk_generic_args(ps: List[Str], argTys: List[Str], i: Int, sub: List[Bind],
-                   n: Str, ret: Str) -> TInf {
+                   n: Str, ret: Str, env: List[Bind]) -> TInf {
   if (i >= ps.length() || i >= argTys.length()) {
     return tk_ok(tk_call_result(tk_subst(ret, sub)))
   }
-  let r = tk_unify(ps[i], argTys[i], sub)
+  let r = tk_unify(ps[i], argTys[i], sub, env)
   if (!r.ok) {
     return tk_mismatch(tk_arg_where(i, n), tk_subst(ps[i], r.sub), argTys[i])
   }
-  return tk_generic_args(ps, argTys, i + 1, r.sub, n, ret)
+  return tk_generic_args(ps, argTys, i + 1, r.sub, n, ret, env)
 }
 
 // A METHOD callee: the host constructor form, `Map.empty()`, and every receiver
@@ -15114,9 +15192,9 @@ fn tk_method(c: CallN, env: List[Bind], argTys: List[Str],
   // reference admits.
   if (recv == "" || tk_wild(recv)) {
     if (ir_stratum(env)) { return tk_miss() }
-    return tk_unknown_recv_check(f.name, argTys)
+    return tk_unknown_recv_check(f.name, argTys, env)
   }
-  return tk_hit(tk_builtin_check(f.name, recv, argTys))
+  return tk_hit(tk_builtin_check(f.name, recv, argTys, env))
 }
 
 // `builtin_check` with target_type None. The reference skips exactly the rules
@@ -15129,10 +15207,10 @@ fn tk_method(c: CallN, env: List[Bind], argTys: List[Str],
 //
 // A MULTI-family row picks no row without a receiver and decides nothing, which
 // is the reference's `sig.get(None)` miss.
-fn tk_unknown_recv_check(method: Str, argTys: List[Str]) -> TCall {
+fn tk_unknown_recv_check(method: Str, argTys: List[Str], env: List[Bind]) -> TCall {
   if (tk_bsig_multi(method)) { return tk_miss() }
   if (tk_bsig_family(method, "") == "") { return tk_miss() }
-  let m = tk_bargs(tk_bsig_params(method), argTys, 0, "", "", "", method)
+  let m = tk_bargs(tk_bsig_params(method), argTys, 0, "", "", "", method, env)
   if (m.v != "") { return tk_hit(m) }
   // the row's RESULT, with the receiver-dependent spellings unresolved:
   // `@self`/`@elem` are unknown and `Opt[@elem]` is the reference's
@@ -15375,7 +15453,7 @@ fn tk_fnvalue(c: CallN, env: List[Bind], argTys: List[Str],
     // read out of a `let` chain, …
     _        => tk_is_fn_ty(calleeTy)
                   ? tk_hit(tk_fn_call(calleeTy, "this call's callee", c.args,
-                                      argTys))
+                                      argTys, env))
                   : tk_miss(),
   }
 }
@@ -15390,11 +15468,11 @@ fn tk_fnvalue_named(n: Str, c: CallN, env: List[Bind],
   if (tenv_get(env, "case ".concat(n)) != "") { return tk_miss() }
   let t = tenv_get(env, n)
   if (!tk_is_fn_ty(t)) { return tk_miss() }
-  return tk_hit(tk_fn_call(t, "`".concat(n).concat("`"), c.args, argTys))
+  return tk_hit(tk_fn_call(t, "`".concat(n).concat("`"), c.args, argTys, env))
 }
 
 fn tk_fn_call(fnTy: Str, what: Str, args: List[Expr],
-              argTys: List[Str]) -> TInf {
+              argTys: List[Str], env: List[Bind]) -> TInf {
   let parts = ty_parse(fnTy).args
   if (parts.length() == 0) { return tk_ok("") }
   let nps = parts.length() - 1
@@ -15406,7 +15484,7 @@ fn tk_fn_call(fnTy: Str, what: Str, args: List[Expr],
       .concat("` and takes ").concat(nps.to_str()).concat(" argument(s), ")
       .concat(args.length().to_str()).concat(" given"))
   }
-  let m = tk_fn_args(parts, argTys, 0, nps, what)
+  let m = tk_fn_args(parts, argTys, 0, nps, what, env)
   if (m.v != "") { return m }
   let ret = parts[nps]
   // ELIMINATION (item 92 §2): calling an async-typed value yields the unwrapped
@@ -15415,13 +15493,13 @@ fn tk_fn_call(fnTy: Str, what: Str, args: List[Expr],
 }
 
 fn tk_fn_args(ps: List[Str], argTys: List[Str], i: Int, nps: Int,
-              what: Str) -> TInf {
+              what: Str, env: List[Bind]) -> TInf {
   if (i >= nps || i >= argTys.length()) { return tk_ok("") }
-  if (ps[i] != "" && argTys[i] != "" && !tk_compatible(ps[i], argTys[i])) {
+  if (ps[i] != "" && argTys[i] != "" && !tk_compat_env(ps[i], argTys[i], env)) {
     return tk_mismatch("argument ".concat((i + 1).to_str()).concat(" of ")
                          .concat(what), ps[i], argTys[i])
   }
-  return tk_fn_args(ps, argTys, i + 1, nps, what)
+  return tk_fn_args(ps, argTys, i + 1, nps, what, env)
 }
 
 // `?.` REQUIRES an optional on the left and always yields one on the right. On a
@@ -16434,7 +16512,7 @@ fn fb_walk(steps: List[FbStep], i: Int, scope: List[Bind], tys: List[Bind],
     if (is_try(s.value)) {
       let tv = fb_try(try_operand(s.value), tys, ret)
       if (tv.v != "") { return fb_type_refuse(tv.v, s.line, scope, tys) }
-      if (!tk_compatible(ret, tv.ty)) {
+      if (!tk_compat_env(ret, tv.ty, tys)) {
         return fb_type_refuse(tk_mismatch("this function's return", ret, tv.ty).v,
                               s.line, scope, tys)
       }
@@ -16546,7 +16624,7 @@ fn fb_try_let(steps: List[FbStep], i: Int, s: FbStep, scope: List[Bind],
   let opnd = try_operand(s.value)
   let tv = fb_try(opnd, tys, ret)
   if (tv.v != "") { return fb_type_refuse(tv.v, s.line, scope, tys) }
-  if (s.declTy != "" && tv.ty != "" && !tk_compatible(s.declTy, tv.ty)) {
+  if (s.declTy != "" && tv.ty != "" && !tk_compat_env(s.declTy, tv.ty, tys)) {
     let where_ = "`let ".concat(s.name).concat(": ").concat(tk_render(s.declTy)).concat("`")
     return fb_type_refuse(tk_mismatch(where_, s.declTy, tv.ty).v, s.line, scope, tys)
   }
