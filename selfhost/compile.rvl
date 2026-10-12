@@ -1969,7 +1969,9 @@ fn ad_add_decl(decls: AdDecls, kind: Str, name: Str, public: Bool) -> AdDecls {
 // depth 0: `pub` marks the next declaration public, `type NAME`, `service NAME`
 // and `fn NAME` name one, and `extern ... fn NAME` names an extern (its class,
 // `emission[...]` scope and the like sit between `extern` and `fn`). A `fn`
-// that is not followed by a name is a function type and names nothing. The
+// that is not followed by a name is a function type and names nothing, and
+// `fn|async NAME` is named past its colour marker. An `event NAME` names a
+// private type, as the reference parser records it. The
 // module parsed already (`ad_used_modules_refusal`), so no head is malformed.
 fn ad_decls(ts: List[Token]) -> AdDecls {
   var out: AdDecls = { open: [], fns: [], types: [], externs: [] }
@@ -1983,9 +1985,15 @@ fn ad_decls(ts: List[Token]) -> AdDecls {
     if ((k == "}") || (k == "]") || (k == ")")) { depth -= 1 }
     if ((depth == 0) && (k == "kw")) {
       let w = ts[i].text
-      let named = ad_kind(ts, i + 1, "ident")
-      if ((w == "fn") && named) {
-        out = ad_add_decl(out, in_extern ? "extern" : "fn", ts[i + 1].text, public)
+      // `fn|async NAME`: the caller-decided colour marker sits between `fn`
+      // and the name (item 388).
+      let poly = (ad_tok(ts, i + 1).text == "|") && ad_kw(ts, i + 2, "async")
+      let at_name = poly ? i + 3 : i + 1
+      let named = ad_kind(ts, at_name, "ident")
+      if (w == "fn") {
+        if (named) {
+          out = ad_add_decl(out, in_extern ? "extern" : "fn", ts[at_name].text, public)
+        }
         public = false
         in_extern = false
       }
@@ -1999,6 +2007,11 @@ fn ad_decls(ts: List[Token]) -> AdDecls {
         public = false
         in_extern = false
       }
+    }
+    // `event NAME(...)` / `event NAME { ... }` declares a private type.
+    if ((depth == 0) && (k == "ident") && (ts[i].text == "event") && ad_kind(ts, i + 1, "ident")
+        && (ad_kind(ts, i + 2, "(") || ad_kind(ts, i + 2, "{"))) {
+      out = ad_add_decl(out, "type", ts[i + 1].text, false)
     }
     i += 1
   }

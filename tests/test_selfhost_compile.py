@@ -1274,6 +1274,21 @@ _IMPORT_REFUSED = {
             "  }\n"
             "}\n"),
     }),
+    # The colour marker sits between `fn` and the extern's name (item 388), so
+    # the private `helper` after it is still private.
+    "a_private_fn_after_a_colour_polymorphic_extern": ("`helper` is module-private in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, send, helper }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "pub extern emission fn|async send(x: Str) -> Str = @py { return x }\n\n"
+            "fn helper() -> Int { return 1 }\n\n"
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+    }),
+    "an_event": ("`Placed` is module-private in", {
+        "sub/doc.rvl": 'use "./lib.rvl" { Store, Placed }\n\n' + _STORE_COMPONENT % "1",
+        "sub/lib.rvl": (
+            "event Placed(key: id) { id: Str }\n\n"
+            "pub service Store { fn put(x: Int) -> Str }\n"),
+    }),
     # One `use` further down: the reference checks the names `lib.rvl` imports
     # too, though nothing of `inner.rvl` is carried.
     "a_private_fn_two_uses_away": ("`hidden` is module-private in", {
