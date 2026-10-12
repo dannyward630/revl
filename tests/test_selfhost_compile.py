@@ -1069,6 +1069,43 @@ _UNLINKABLE = {
             "type H = { h: Int }; pub type Row = { id: Int }\n"
             "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
     }),
+    # Issue #2308: braces and quotes inside every string form the reference
+    # lexes ('...', """...""", backtick templates and their `${...}`) stay
+    # inside the string, so the private alias `Id` after one is still seen and
+    # the link refuses. Read as text, the `}` or `'` shifted the scan and `Row`
+    # was emitted with `id: int`.
+    "sq_close_brace_hides_alias": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub type Row = { id: Id }\n"
+            "pub fn s() -> Str { return '}' }\n"
+            "type Id = Int\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    "sq_open_brace_hides_alias": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub fn s() -> Str { return '{' }\n"
+            "pub type Row = { id: Id }\n"
+            "type Id = Int\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    "triple_quote_hides_alias": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            'pub fn s() -> Str { return """a " { """ }\n'
+            "pub type Row = { id: Id }\n"
+            "type Id = Int\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    "template_hides_alias": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub type Row = { id: Id }\n"
+            "pub fn s(x: Str) -> Str { return `{ ${ x.concat(`}{`) } '` }\n"
+            "type Id = Int\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
     # Issue #2308: the reference renames the document's private `Item` apart
     # (`Item__m0`) from the `Item` the imported service carries.
     "carried_type_collision": ("collides", {
@@ -1150,6 +1187,34 @@ _LINKED_AS_REFERENCE = {
         "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
         "lib.rvl": (
             "  pub type Row = { id: Int }\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    # Issue #2308: a `pub type` after a string holding a brace or a quote is
+    # carried; read as text, the opener left the scan inside a string and the
+    # native IR had no `Row` (ir_version 1). One case per string form the
+    # reference lexes, with the other quote kinds and escapes at the end.
+    "sq_string_before_record": (("py", "go", "java", "rust"), {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub fn s() -> Str { return '\"' }\n"
+            "pub fn t() -> Str { return 'a \" ` \"\"\" {\\\\' }\n"
+            "pub type Row = { id: Int }\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    "dq_and_triple_before_record": (("py", "go", "java", "rust"), {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub fn s() -> Str { return \"a ' ` {\\\\\" }\n"
+            'pub fn t() -> Str { return """a \' " ` } """ }\n'
+            "pub type Row = { id: Int }\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    "template_before_record": (("py", "go", "java", "rust"), {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub fn s(m: Map[Str, Str]) -> Str { return `a ${ m.get(\"}\") } b` }\n"
+            "pub fn t(x: Str) -> Str { return `{ ${ x.concat(`}`) } \" '` }\n"
+            "pub type Row = { id: Int }\n"
             "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
     }),
     # A pure dependency whose extern bodies hold column-0 host lines: they are

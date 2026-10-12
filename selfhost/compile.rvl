@@ -1098,81 +1098,317 @@ fn ul_word_at(s: Str, at: Int) -> Str {
   return s.slice(at, j)
 }
 
-// The index of the next token at or after `i` of `s`: whitespace, `//` line
-// comments and `/* */` block comments skipped.
-fn ul_skip_trivia(s: Str, i: Int) -> Int {
-  var j = ul_skip_ws(s, i)
-  while ((s.slice(j, j + 2) == "//") || (s.slice(j, j + 2) == "/*")) {
-    if (s.slice(j, j + 2) == "//") { j = ul_skip_ws(s, ul_line_end(s, j)) }
+// Issue #2308. The type declarations of a module, read the way the REFERENCE
+// lexer reads the text (src/revl/lexer.py), so a brace or a quote inside a
+// string, a template, a comment or a host body never shifts what is seen as
+// top level. The forms, all at revl level (`lex`, lexer.py:380-492):
+//   * `//` to the end of the line; revl has no block comment;
+//   * `"""` (checked before `"`) to the next `"""`, verbatim, no escapes
+//     (`_lex_triple_string`, lexer.py:686);
+//   * `"` and `'` strings, whose only escapes are `\<quote>` and `\\`; a
+//     newline or the end of input inside one is an error (`_lex_string`,
+//     lexer.py:611);
+//   * a backtick template to the next backtick, where `${` opens an
+//     interpolation balanced by `_match_brace` under `_REVL_TRIVIA`: `"`
+//     escape strings, backtick raw spans and `//` comments (`_lex_template`,
+//     lexer.py:769; `_REVL_TRIVIA`, lexer.py:120);
+//   * `@backend` then any whitespace then `{`: a host body balanced by
+//     `_match_brace` under that backend's `_HOST_TRIVIA`, the C family by
+//     default (`_HOST_TRIVIA` and its families, lexer.py:130-158;
+//     `_char_literal_end`, `_skip_trivia` and `_match_brace`, lexer.py:161-243).
+// Anything the reference would reject (an unterminated string, template or
+// host body, an interpolation that is empty or does not lex, a bracket that
+// closes below depth 0, an open bracket at the end, or a `type` keyword inside
+// brackets) makes the scan fail, and the caller refuses rather than trust the
+// list.
+
+// The kind of host trivia `_HOST_TRIVIA` gives the backend `name`: "py", "ts",
+// "wasm", or "c" (rust, go, java and every other name).
+fn rl_host_kind(name: Str) -> Str {
+  if ((name == "py") || (name == "python")) { return "py" }
+  if ((name == "ts") || (name == "typescript") || (name == "node") || (name == "js")) { return "ts" }
+  if (name == "wasm") { return "wasm" }
+  return "c"
+}
+
+// How the trivia `kind` ("revl" or a host kind) reads a string opened by `c`:
+// "escape", "raw", "char", or "" when `c` opens none (`_Trivia.strings`).
+fn rl_string_mode(kind: Str, c: Str) -> Str {
+  if (c == "\"") { return "escape" }
+  if (c == "'") {
+    if ((kind == "py") || (kind == "ts")) { return "escape" }
+    if (kind == "c") { return "char" }
+    return ""
+  }
+  if (c == "`") {
+    if ((kind == "revl") || (kind == "c") || (kind == "ts")) { return "raw" }
+  }
+  return ""
+}
+
+// `_skip_trivia`'s "escape" mode for the string `c` opening at `i`: a
+// backslash skips the next character, and a newline ends the span unconsumed.
+// An unterminated span consumes to the end.
+fn rl_escape_end(s: Str, i: Int, c: Str) -> Int {
+  let n = s.length()
+  var j = i + 1
+  while (j < n) {
+    let ch = s.slice(j, j + 1)
+    if (ch == "\\") { j += 2 }
     else {
-      let e = ul_find(s, "*/", j + 2)
-      if (e < 0) { return s.length() }
-      j = ul_skip_ws(s, e + 2)
+      if (ch == c) { return j + 1 }
+      if (ch.charCodeAt(0) == 10) { return j }
+      j += 1
     }
   }
+  return n
+}
+
+// `_char_literal_end`: the index just past a closed char literal at `i`
+// (`'x'`, `'\n'`, `'\u{1F600}'`), or `i` when it does not look like one (a
+// Rust lifetime), so the `'` is ordinary text.
+fn rl_char_end(s: Str, i: Int) -> Int {
+  let n = s.length()
+  var j = i + 1
+  if ((j >= n) || (s.slice(j, j + 1).charCodeAt(0) == 10)) { return i }
+  if (s.slice(j, j + 1) == "\\") {
+    j += 2
+    while ((j < n) && (s.slice(j, j + 1) != "'") && (s.slice(j, j + 1).charCodeAt(0) != 10)) { j += 1 }
+    if ((j < n) && (s.slice(j, j + 1) == "'")) { return j + 1 }
+    return i
+  }
+  if ((s.slice(j, j + 1) != "'") && (s.slice(j + 1, j + 2) == "'")) { return j + 2 }
+  return i
+}
+
+// The index just past the `opener` span at `i` closed by `closer`, or the end.
+fn rl_span_end(s: Str, i: Int, opener: Str, closer: Str) -> Int {
+  let e = ul_find(s, closer, i + opener.length())
+  if (e < 0) { return s.length() }
+  return e + closer.length()
+}
+
+// `_skip_trivia` for a Python triple string `triple` at `i`: a backslash
+// skips the next character; unterminated consumes to the end.
+fn rl_triple_trivia_end(s: Str, i: Int, triple: Str) -> Int {
+  let n = s.length()
+  var j = i + 3
+  while ((j < n) && (s.slice(j, j + 3) != triple)) {
+    if (s.slice(j, j + 1) == "\\") { j += 1 }
+    j += 1
+  }
+  if (j < n) { return j + 3 }
+  return n
+}
+
+// `_skip_trivia` under the trivia `kind`: the index just past the string,
+// char literal or comment at `i`, or `i` itself when none starts there.
+fn rl_trivia_end(s: Str, i: Int, kind: Str) -> Int {
+  let two = s.slice(i, i + 2)
+  if (((kind == "c") || (kind == "ts")) && (two == "/*")) { return rl_span_end(s, i, "/*", "*/") }
+  if ((kind == "wasm") && (two == "(;")) { return rl_span_end(s, i, "(;", ";)") }
+  if ((kind == "revl") && (two == "//")) { return ul_line_end(s, i) }
+  let three = s.slice(i, i + 3)
+  if ((kind == "py") && ((three == "\"\"\"") || (three == "'''"))) { return rl_triple_trivia_end(s, i, three) }
+  let c = s.slice(i, i + 1)
+  let mode = rl_string_mode(kind, c)
+  if (mode == "char") { return rl_char_end(s, i) }
+  if (mode == "raw") { return rl_span_end(s, i, c, c) }
+  if (mode == "escape") { return rl_escape_end(s, i, c) }
+  return i
+}
+
+// `_match_brace`: the index of the `}` matching the `{` at `open_at` under the
+// trivia `kind`, or -1 when the input ends first.
+fn rl_match_brace(s: Str, open_at: Int, kind: Str) -> Int {
+  let n = s.length()
+  var depth = 0
+  var i = open_at
+  while (i < n) {
+    let c = s.slice(i, i + 1)
+    if (c == "{") {
+      depth += 1
+      i += 1
+    }
+    else {
+      if (c == "}") {
+        depth -= 1
+        if (depth == 0) { return i }
+        i += 1
+      }
+      else {
+        let j = rl_trivia_end(s, i, kind)
+        if (j > i) { i = j } else { i += 1 }
+      }
+    }
+  }
+  return 0 - 1
+}
+
+// `_lex_string`: the index just past the `quote` string opening at `at`, or -1
+// when a newline or the end of input comes first.
+fn rl_string_end(s: Str, at: Int, quote: Str) -> Int {
+  let n = s.length()
+  var i = at + 1
+  while (i < n) {
+    let c = s.slice(i, i + 1)
+    let next = s.slice(i + 1, i + 2)
+    if ((c == "\\") && ((next == quote) || (next == "\\"))) { i += 2 }
+    else {
+      if (c == quote) { return i + 1 }
+      if (c.charCodeAt(0) == 10) { return 0 - 1 }
+      i += 1
+    }
+  }
+  return 0 - 1
+}
+
+// `_lex_template`: the index just past the template opening at `at`, or -1
+// when it, or one of its `${...}` interpolations, is unterminated.
+fn rl_template_end(s: Str, at: Int) -> Int {
+  let n = s.length()
+  var i = at + 1
+  while (i < n) {
+    let c = s.slice(i, i + 1)
+    if (c == "`") { return i + 1 }
+    if ((c == "$") && (s.slice(i + 1, i + 2) == "{")) {
+      let j = rl_match_brace(s, i + 1, "revl")
+      if (j < 0) { return 0 - 1 }
+      // The parser lexes the captured source again as an expression, so what
+      // it would reject there (a `'` string `_match_brace` does not know, or
+      // an empty `${}`) fails the scan too.
+      let inner = s.slice(i + 2, j)
+      if (ul_skip_ws(inner, 0) >= inner.length()) { return 0 - 1 }
+      if (!ul_type_scan(inner).ok) { return 0 - 1 }
+      i = j + 1
+    }
+    else { i += 1 }
+  }
+  return 0 - 1
+}
+
+// The host-body arm of `lex`: the index just past the `@backend { ... }` body
+// whose `@` is at `at`, `at + 1` when no body follows (an `@` token), or -1
+// when the body is unterminated.
+fn rl_host_body_end(s: Str, at: Int) -> Int {
+  let n = s.length()
+  let name = ul_word_at(s, at + 1)
+  if (name == "") { return at + 1 }
+  var k = at + 1 + name.length()
+  while ((k < n) && ul_is_ws(s.slice(k, k + 1))) { k += 1 }
+  if (s.slice(k, k + 1) != "{") { return at + 1 }
+  let p = rl_match_brace(s, k, rl_host_kind(name))
+  if (p < 0) { return 0 - 1 }
+  return p + 1
+}
+
+// The index just past the comment, string, template or host body that starts
+// at `i` of `s` at revl level, `i` itself when none does, or -1 when it is
+// unterminated (which the reference rejects).
+fn rl_opaque_end(s: Str, i: Int) -> Int {
+  if (s.slice(i, i + 2) == "//") { return ul_line_end(s, i) }
+  if (s.slice(i, i + 3) == "\"\"\"") {
+    let e = ul_find(s, "\"\"\"", i + 3)
+    if (e < 0) { return 0 - 1 }
+    return e + 3
+  }
+  let c = s.slice(i, i + 1)
+  if ((c == "\"") || (c == "'")) { return rl_string_end(s, i, c) }
+  if (c == "`") { return rl_template_end(s, i) }
+  if (c == "@") { return rl_host_body_end(s, i) }
+  return i
+}
+
+// The next token at or after `i`: whitespace and `//` comments skipped.
+fn rl_skip_trivia(s: Str, i: Int) -> Int {
+  var j = ul_skip_ws(s, i)
+  while (s.slice(j, j + 2) == "//") { j = ul_skip_ws(s, ul_line_end(s, j)) }
   return j
 }
 
-// The type name a `type` keyword ending at `kw_end` declares, or "".
-fn ul_type_name_after(s: Str, kw_end: Int) -> Str {
-  return ul_word_at(s, ul_skip_trivia(s, kw_end))
+// After a `pub` ending at `i`: the index of the `type` it declares, past the
+// modifiers the reference reads there (parser.py, the `pub` arm of the
+// program loop: `verified`, then `commutative`, then `endorse[...]` slots),
+// 0 when no `type` follows, or -1 for `pub commutative type`, which the
+// reference rejects.
+fn rl_pub_type_at(s: Str, i: Int) -> Int {
+  var k = rl_skip_trivia(s, i)
+  if (ul_word_at(s, k) == "verified") { k = rl_skip_trivia(s, k + 8) }
+  var is_comm = false
+  if (ul_word_at(s, k) == "commutative") {
+    is_comm = true
+    k = rl_skip_trivia(s, k + 11)
+  }
+  while (ul_word_at(s, k) == "endorse") {
+    let open_at = rl_skip_trivia(s, k + 7)
+    if (s.slice(open_at, open_at + 1) != "[") { return 0 }
+    let close_at = ul_find(s, "]", open_at)
+    if (close_at < 0) { return 0 }
+    k = rl_skip_trivia(s, close_at + 1)
+  }
+  if (ul_word_at(s, k) != "type") { return 0 }
+  if (is_comm) { return 0 - 1 }
+  return k
 }
 
-// The names `source` declares with a TOP-LEVEL `type` (`pub` ones only unless
-// `private` is set), in order. The keyword is found by token, at any column,
-// at bracket depth 0 and outside strings, comments and host bodies, so an
-// indented declaration or two on one line count, and a `type` field of a
-// record or a host-code word does not. The native IR keeps no visibility for a
-// type, so it is read off the text.
-fn ul_type_decls(source: Str, private: Bool) -> List[Str] {
-  var out: List[Str] = []
+// A module's top-level type declarations, every name and the `pub` ones, in
+// order, and whether the text was read as the reference reads it (`ok`).
+type UlTypeScan = { all: List[Str], pubs: List[Str], ok: Bool }
+
+// The types `source` declares with a TOP-LEVEL `type` or `pub type`: found by
+// token, at any column, at bracket depth 0, outside comments, strings,
+// templates and host bodies, so an indented declaration or two on one line
+// count, and a `type` field of a record or a word of host code does not.
+fn ul_type_scan(source: Str) -> UlTypeScan {
+  var all: List[Str] = []
+  var pubs: List[Str] = []
   var depth = 0
   var i = 0
   let n = source.length()
   while (i < n) {
-    let past = ul_skip_opaque(source, i)
+    let past = rl_opaque_end(source, i)
+    if (past < 0) { return { all: all, pubs: pubs, ok: false } }
     if (past > i) { i = past }
     else {
       let ch = source.slice(i, i + 1)
       if (ul_is_word_start(ch)) {
         let w = ul_word_at(source, i)
         i += w.length()
-        if (depth == 0) {
-          var kw_end = 0 - 1
+        // `type` is a keyword that only heads a top-level declaration
+        // (parser.py `type_decl`), so one inside brackets is a program the
+        // reference rejects: fail closed rather than read it as a field.
+        if ((depth > 0) && (w == "type")) { return { all: all, pubs: pubs, ok: false } }
+        if ((depth == 0) && ((w == "pub") || (w == "type"))) {
+          var is_pub = false
           if (w == "pub") {
-            let k = ul_skip_trivia(source, i)
-            if (ul_word_at(source, k) == "type") { kw_end = k + 4 }
+            let k = rl_pub_type_at(source, i)
+            if (k < 0) { return { all: all, pubs: pubs, ok: false } }
+            if (k > 0) {
+              is_pub = true
+              i = k + 4
+            }
           }
-          if ((w == "type") && private) { kw_end = i }
-          if (kw_end >= 0) {
-            i = kw_end
-            let name = ul_type_name_after(source, i)
-            if (name != "") { out = out.push(name) }
+          if (is_pub || (w == "type")) {
+            let name = ul_word_at(source, rl_skip_trivia(source, i))
+            if (name != "") {
+              all = all.push(name)
+              if (is_pub) { pubs = pubs.push(name) }
+            }
           }
         }
       }
       else {
         if ((ch == "{") || (ch == "[") || (ch == "(")) { depth += 1 }
-        if ((ch == "}") || (ch == "]") || (ch == ")")) { depth -= 1 }
+        if ((ch == "}") || (ch == "]") || (ch == ")")) {
+          depth -= 1
+          if (depth < 0) { return { all: all, pubs: pubs, ok: false } }
+        }
         i += 1
       }
     }
   }
-  return out
+  return { all: all, pubs: pubs, ok: depth == 0 }
 }
-
-// The index just past the string, comment or host body starting at `i` of
-// `s`, or `i` itself when none starts there.
-fn ul_skip_opaque(s: Str, i: Int) -> Int {
-  let two = s.slice(i, i + 2)
-  if (s.slice(i, i + 1) == "\"") { return ul_dquote_end(s, i) }
-  if ((two == "//") || (two == "/*")) { return ul_skip_trivia(s, i) }
-  if (s.slice(i, i + 1) == "@") { return ul_host_body_end(s, i) }
-  return i
-}
-
-// The names `source` declares with a top-level `pub type`, in order.
-fn ul_pub_types(source: Str) -> List[Str] { return ul_type_decls(source, false) }
 
 // The types an imported service carries, in its module's declaration order, or
 // the refusal ("" for none) where the native IR cannot supply one.
@@ -1187,7 +1423,12 @@ type UlCarry = { names: List[Str], refusal: Str }
 fn ul_carried_types(dep: Str, module_ir: Str, source: Str, entry: Str) -> UlCarry {
   var none: List[Str] = []
   let table = ul_key_value(module_ir, "types")
-  let pubs = ul_pub_types(source)
+  let scan = ul_type_scan(source)
+  if (!scan.ok) {
+    return { names: none, refusal: "LINK|the type declarations of `".concat(dep)
+      .concat("` could not be read the way the reference lexer reads them (an unterminated string, template or host body, or unbalanced brackets)") }
+  }
+  let pubs = scan.pubs
   // Every type the module declares, public or private, must be in the native
   // table before the closure is read off it: the producer expands a transparent
   // alias (`pub type Al = Cell`, or a private `type Id = Int`) in the service
@@ -1196,7 +1437,7 @@ fn ul_carried_types(dep: Str, module_ir: Str, source: Str, entry: Str) -> UlCarr
   // print `id: Int` where the reference prints `id: Id`. Which types an
   // expanded alias would have reached cannot be told from the native IR, so a
   // missing declaration is refused even when no operation seems to reach it.
-  let decls = ul_type_decls(source, true)
+  let decls = scan.all
   var p = 0
   while (p < decls.length()) {
     if (ul_key_value(table, decls[p]) == "") {
@@ -1719,22 +1960,41 @@ test "an imported service carries the public types it names (issue #2308)" {
   assert ul_key_idents(row, "type").length() == 1
   assert ul_key_idents(row, "returns").length() == 0
   assert ul_value_idents("{\"Ref\": \"Str\"}")[0] == "Str"
-  assert ul_pub_types("type A = { a: Int }".concat(nl).concat("pub type B = A")).length() == 1
-  let tabbed = ul_pub_types("pub".concat(str_tab()).concat("type  T = { a: Int }").concat(nl).concat("pubtype U = {}").concat(nl).concat("pub typeV = {}"))
+  assert ul_type_scan("type A = { a: Int }".concat(nl).concat("pub type B = A")).pubs.length() == 1
+  let tabbed = ul_type_scan("pub".concat(str_tab()).concat("type  T = { a: Int }").concat(nl).concat("pubtype U = {}").concat(nl).concat("pub typeV = {}")).pubs
   assert tabbed.length() == 1
   assert tabbed[0] == "T"
-  let both = ul_type_decls("type P = Int".concat(nl).concat("pub type Q = P").concat(nl).concat("typeR = {}"), true)
+  let both = ul_type_scan("type P = Int".concat(nl).concat("pub type Q = P").concat(nl).concat("typeR = {}")).all
   assert both.length() == 2
   assert both[0] == "P"
   assert both[1] == "Q"
   // By token at any column and depth 0: indented, two on a line, and never a
   // record field, a string or a host body.
-  let flat = ul_type_decls("  type A = Int; pub type B = { type: A }".concat(nl)
-    .concat("// type C").concat(nl).concat("extern pure fn e() -> Int = @py { type = 1 }"), true)
+  let flat = ul_type_scan("  type A = Int; pub type B = { type: A }".concat(nl)
+    .concat("// type C").concat(nl).concat("extern pure fn e() -> Int = @py { type = 1 }")).all
   assert flat.length() == 2
   assert flat[0] == "A"
   assert flat[1] == "B"
-  assert ul_pub_types("  pub type B = A; type A = Int")[0] == "B"
+  assert ul_type_scan("  pub type B = A; type A = Int").pubs[0] == "B"
+  // Every string form the reference lexes hides its braces and quotes.
+  let q = "\""
+  let sq = ul_type_scan("fn s() -> Str { return '}' }".concat(nl).concat("type Id = Int"))
+  assert sq.ok
+  assert sq.all[0] == "Id"
+  assert ul_type_scan("let a = '".concat(q).concat("{\\\\'").concat(nl).concat("type Id = Int")).all[0] == "Id"
+  assert ul_type_scan("let a = ".concat(q).concat(q).concat(q).concat(" ").concat(q).concat(" { ").concat(q).concat(q).concat(q).concat(nl).concat("type Id = Int")).all[0] == "Id"
+  assert ul_type_scan("let a = `${ {x: `}`}.x } }`".concat(nl).concat("type Id = Int")).all[0] == "Id"
+  assert ul_type_scan("extern fn e() -> Int = @rust { '}' }".concat(nl).concat("type Id = Int")).all[0] == "Id"
+  // It fails closed on what the reference rejects or cannot balance.
+  assert !ul_type_scan("let a = 'x").ok
+  assert !ul_type_scan("let a = `x ${ y").ok
+  assert !ul_type_scan("let a = `x ${ f('}') }`").ok
+  assert !ul_type_scan("let a = `x ${ }`").ok
+  assert !ul_type_scan("type R = { type: Int }").ok
+  assert !ul_type_scan("let a = ".concat(q).concat(q).concat(q).concat("x")).ok
+  assert !ul_type_scan("fn f() { }}").ok
+  assert !ul_type_scan("fn f() { ").ok
+  assert !ul_type_scan("extern fn e() -> Int = @py { ").ok
   // The closure is public-only, transitive, and in declaration order.
   let mod_ir = "{\"types\": {\"C\": {\"fields\": {\"x\": \"Int\"}}, \"H\": {\"fields\": {}}, \"T\": {\"cases\": [{\"name\": \"K\", \"payload\": \"C\"}]}, \"R\": {\"fields\": {\"t\": \"T\", \"h\": \"H\"}}}}"
   let mod_src = "pub type C = { x: Int }".concat(nl).concat("type H = {}").concat(nl)
