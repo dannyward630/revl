@@ -362,7 +362,8 @@ def test_wasm_run_fails_when_the_commit_markers_are_not_durable(
     assert len(harnesses) == 1 and not harnesses[0].killed
     err = capsys.readouterr().err
     assert FSYNC_FAILED in err and "commit markers are not durable" in err
-    assert "activation-complete" not in _records(wal)
+    # the discharge marker's fsync is the one that failed; nothing follows it
+    assert _records(wal) == ["header", "discharge-descriptor", "discharge"]
 
 
 def test_wasm_drain_write_failure_is_a_durability_error():
