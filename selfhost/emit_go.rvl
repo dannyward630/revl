@@ -2232,7 +2232,7 @@ fn emit_externs(externs: List[Any]) -> Eout {
     let bodies = value_field(ext, "bodies")
     let go_body = value_field(bodies, "go")
     if (value_is_null(go_body)) {
-      out = out.push(`<<EXTERN-NO-GO-BODY:${name}>>`)
+      out = out.push(`<<UNSUPPORTED-EXTERN-NO-GO-BODY:${name}>>`)
       out = out.push("")
     } else {
       let body = trim(value_str(go_body))
@@ -3250,6 +3250,35 @@ fn deferred_test_markers(ir: Any) -> List[Str] {
   return out
 }
 
+// `_refuse_deferred_emissions`: a CALL to a `deferred` emission extern, in any
+// position inside a component, needs a session owner runtime this tier does
+// not have, so the reference refuses the document. The port names each
+// reached call, component first, on every path (issue #2316). A declared but
+// never-called deferred extern is not named, as on the reference.
+fn deferred_emission_markers(ir: Any) -> List[Str] {
+  // Read through `list_contains` and `flag_of`, like the other declines:
+  // tools/selfhost_coverage.py reads an inline comparison as a port.
+  var deferred = []
+  for (e of value_list(value_field(ir, "externs"))) {
+    if (list_contains(["emission"], value_str(value_field(e, "class"))) && flag_of(e, "deferred")) {
+      deferred = deferred.push(value_str(value_field(e, "name")))
+    }
+  }
+  var out = []
+  if (deferred.length() == 0) { return out }
+  for (c of value_list(value_field(ir, "components"))) {
+    let cname = value_str(value_field(c, "name"))
+    for (n of walk_nodes(c)) {
+      let name = value_str(value_field(n, "name"))
+      let mark = `<<UNSUPPORTED-DEFERRED-EMISSION:${cname}.${name}>>`
+      if (node_kind(n) == "fn" && list_contains(deferred, name) && !list_contains(out, mark)) {
+        out = out.push(mark)
+      }
+    }
+  }
+  return out
+}
+
 // ------------------------------------------------------- the IR text probes
 // The reference gates the Opt / Result / Map preambles on substrings of
 // `json.dumps({types, functions, externs, tests})`. A probe that only names
@@ -3542,6 +3571,7 @@ fn emit_module(ir: Any, combined: Bool) -> Str {
   // silence (issue #1123).
   let test_markers = deferred_test_markers(ir)
   if (test_markers.length() > 0) { out = out.concat(test_markers) }
+  out = out.concat(deferred_emission_markers(ir))
   return rstrip(out.join(newline())).concat(newline())
 }
 
@@ -4373,6 +4403,8 @@ fn components_in_slice(ir: Any) -> Bool {
   // An extern's own declared `compensate` (issue #1592) registers through
   // `revlDeclared`, past this slice.
   for (ext of value_list(value_field(ir, "externs"))) { ok = ok && value_is_null(value_field(ext, "compensate")) }
+  // A called `deferred` emission is a reference refusal (issue #2316).
+  ok = ok && deferred_emission_markers(ir).length() == 0
   let doc = comp_doc(ir)
   for (c of value_list(value_field(ir, "components"))) { ok = ok && component_ok(c, doc) }
   return ok && keys_in_slice(ir)
@@ -4693,7 +4725,7 @@ fn emit_live_module(ir: Any, in_slice: Bool) -> Str {
   var body = []
   for (l of marked) { body = body.push(strip_marks(l)) }
   if (!in_slice || text_has_any(body.join(newline()), ["RevlOpt[", "RevlSome[", "RevlNone[", "RevlResult[", "RevlOk[", "RevlErr["])) {
-    let named = banner.concat(uncarried_components(ir)).concat(deferred_test_markers(ir))
+    let named = banner.concat(uncarried_components(ir)).concat(deferred_test_markers(ir)).concat(deferred_emission_markers(ir))
     return rstrip(named.join(newline())).concat(newline())
   }
   let uses_strconv = has_text(marked, flag("s"))
