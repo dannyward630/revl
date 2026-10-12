@@ -1,0 +1,177 @@
+"""The self-host gate refuses folded names the way the reference does (issue
+#2351).
+
+The reference refuses two component names, or two service names, that differ
+only in letter case or underscores: inside one program (issues #2224 and #2275)
+and, on a hot swap, between an incoming name and a running one (#2309 for
+components, #2334 for services). The self-host driver takes a running manifest
+too (`selfhost/compile.rvl`, `admit_into` / `compile_to_into`), and before this
+it raised no objection to any of these and went on to EMIT the program the
+reference refuses. Now each of them is refused under the tag `FOLD` with the
+reference's own sentence, byte for byte.
+
+The running composition reaches the self-host as the item-186 row wire
+(`revl.manifest.manifest_wire`), the same projection `tests/test_selfhost_
+admit_into.py` uses, and the reference is asked the same question with the
+compiled IR.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "tests"))
+
+from revl.compiler import compile_source  # noqa: E402
+from revl.errors import RevlError  # noqa: E402
+from revl.manifest import manifest_wire  # noqa: E402
+
+import test_selfhost_compile as compile_oracle  # noqa: E402
+import test_selfhost_lower as lower_oracle  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def native() -> dict:
+    """selfhost/compile.rvl, compiled by the reference and run on python."""
+    return compile_oracle._exec_selfhost("selfhost/compile.rvl")
+
+
+def _refusal(source: str, **kwargs) -> RevlError:
+    with pytest.raises(RevlError) as info:
+        compile_source(source, "candidate.rvl", **kwargs)
+    return info.value
+
+
+RUNNING_COMPONENT = """service Store {
+  fn get(key: Str) -> Str
+}
+
+component KVStore provides a: Store {
+  provide a {
+    fn get(key) = key
+  }
+}
+"""
+
+INCOMING_COMPONENT = """component Kvstore provides b: Store {
+  provide b {
+    fn get(key) = key
+  }
+}
+"""
+
+RUNNING_SERVICE = """service KVStore {
+  fn get(key: Str) -> Str
+}
+
+component A provides a: KVStore {
+  provide a {
+    fn get(key) = key
+  }
+}
+"""
+
+INCOMING_SERVICE = """service Kvstore {
+  fn put(key: Str) -> Str
+}
+
+component B provides b: Kvstore {
+  provide b {
+    fn put(key) = key
+  }
+}
+"""
+
+SERVICE_PAIR = """service KVStore {
+  fn get(key: Str) -> Str
+}
+
+service Kv_store {
+  fn put(key: Str) -> Str
+}
+"""
+
+COMPONENT_PAIR = """service Store {
+  fn get(key: Str) -> Str
+}
+
+component KVStore provides a: Store {
+  provide a {
+    fn get(key) = key
+  }
+}
+
+component KvStore provides b: Store {
+  provide b {
+    fn get(key) = key
+  }
+}
+"""
+
+
+@pytest.mark.parametrize("running, incoming", [
+    (RUNNING_COMPONENT, INCOMING_COMPONENT),
+    (RUNNING_SERVICE, INCOMING_SERVICE),
+], ids=["component", "service"])
+def test_the_manifest_path_refuses_a_name_folded_onto_a_running_one(
+        native, running, incoming):
+    ir = compile_source(running, "running.rvl")
+    wire = manifest_wire(ir)
+    error = _refusal(incoming, manifest=ir)
+    assert lower_oracle._classify(error) == "FOLD", error.message
+    assert native["admit_into"](incoming, wire) == "FOLD|" + error.message
+    assert (native["compile_to_into"](incoming, "py", wire)
+            == "REFUSED|FOLD|" + error.message)
+
+
+@pytest.mark.parametrize("source", [SERVICE_PAIR, COMPONENT_PAIR],
+                         ids=["services", "components"])
+def test_one_program_with_two_folded_names_is_refused_in_the_reference_words(
+        native, source):
+    error = _refusal(source)
+    assert native["compile_to"](source, "py") == "REFUSED|FOLD|" + error.message
+    assert native["admit_into"](source, "") == "FOLD|" + error.message
+    assert native["admit"](source) == "FOLD|" + error.message
+
+
+def test_the_program_fold_comes_before_the_running_fold(native):
+    """The reference checks the incoming program's own names first, so a
+    candidate carrying both collisions is refused for its own pair."""
+    ir = compile_source(RUNNING_SERVICE, "running.rvl")
+    incoming = SERVICE_PAIR.replace("KVStore", "KVSTORE_")
+    error = _refusal(incoming, manifest=ir)
+    assert "collides with service `KVSTORE_`" in error.message, error.message
+    assert native["admit_into"](incoming, manifest_wire(ir)) == "FOLD|" + error.message
+
+
+def test_withdrawn_redeclared_and_apart_names_raise_no_fold(native):
+    """The positive controls: a swap that withdraws the running component, a
+    service redeclared under its exact running name, and names that stay apart
+    are all admitted by the reference and draw no FOLD refusal here."""
+    ir = compile_source(RUNNING_COMPONENT, "running.rvl")
+    compile_source(INCOMING_COMPONENT, "candidate.rvl", manifest=ir,
+                   replacing=("KVStore",))
+    withdrawn = native["admit_into"](
+        INCOMING_COMPONENT, manifest_wire(ir, replacing=("KVStore",)))
+    assert not withdrawn.startswith("FOLD|"), withdrawn
+    apart = INCOMING_COMPONENT.replace("Kvstore", "Cache")
+    compile_source(apart, "candidate.rvl", manifest=ir)
+    assert not native["admit_into"](apart, manifest_wire(ir)).startswith("FOLD|")
+
+    svc_ir = compile_source(RUNNING_SERVICE, "running.rvl")
+    redeclared = "service KVStore {\n  fn get(key: Str) -> Str\n}\n"
+    compile_source(redeclared, "candidate.rvl", manifest=svc_ir)
+    verdict = native["admit_into"](redeclared, manifest_wire(svc_ir))
+    assert not verdict.startswith("FOLD|"), verdict
+    apart_svc = INCOMING_SERVICE.replace("Kvstore", "Cache")
+    compile_source(apart_svc, "candidate.rvl", manifest=svc_ir)
+    verdict = native["admit_into"](apart_svc, manifest_wire(svc_ir))
+    assert not verdict.startswith("FOLD|"), verdict
+    # an exact repeat is `duplicate service`, never a fold
+    repeat = SERVICE_PAIR.replace("Kv_store", "KVStore")
+    assert not native["admit"](repeat).startswith("FOLD|")
