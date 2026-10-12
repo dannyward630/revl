@@ -19387,6 +19387,18 @@ fn parse_row(row: Str, man: Manifest) -> Manifest {
                svcs: man.svcs, svcsKnown: man.svcsKnown, svcOps: man.svcOps,
                bad: "" }
     }
+    // the PRESENCE row (issue #2289): a bare component name, `C`, for a
+    // running component that renders no other row. It is a node and nothing
+    // more, so it only joins `mnames`, which the running name fold reads. A
+    // row with any separator left is a garbled wire and falls through.
+    if (bare_ident(row, 0)) {
+      return { provs: man.provs, reqs: man.reqs, routes: man.routes,
+               hands: man.hands,
+               mnames: add_mname(man.mnames, row),
+               repl: man.repl, halted: man.halted,
+               svcs: man.svcs, svcsKnown: man.svcsKnown, svcOps: man.svcOps,
+               bad: "" }
+    }
   }
   return man_bad(man, "unrecognized manifest row `".concat(row).concat("`"))
 }

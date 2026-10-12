@@ -209,3 +209,35 @@ def test_withdrawn_redeclared_and_apart_names_raise_no_fold(native):
     # an exact repeat is `duplicate service`, never a fold
     repeat = SERVICE_PAIR.replace("Kv_store", "KVStore")
     assert not native["admit"](repeat).startswith("FOLD|")
+
+
+ROWLESS_RUNNING = RUNNING_COMPONENT + "\ncomponent Noop {\n}\n"
+
+
+def _local_component(name: str) -> str:
+    return ("service Local {\n  fn get(key: Str) -> Str\n}\n\n"
+            f"component {name} provides b: Local {{\n  provide b {{\n"
+            "    fn get(key) = key\n  }\n}\n")
+
+
+def test_the_manifest_path_refuses_a_name_folded_onto_a_rowless_running_one(native):
+    """Issue #2289: `component Noop {}` has no provision, requirement, route or
+    handoff row, so the wire names it with a presence row, and the self-host
+    refuses `NOOP` against it in the reference's words. The same name is a
+    replacement and a name that stays apart is admitted, on both sides."""
+    ir = compile_source(ROWLESS_RUNNING, "running.rvl")
+    wire = manifest_wire(ir)
+    assert "Noop" in wire.split(";"), wire
+    error = _refusal(_local_component("NOOP"), manifest=ir)
+    assert lower_oracle._classify(error) == "FOLD", error.message
+    assert native["admit_into"](_local_component("NOOP"), wire) == "FOLD|" + error.message
+    for name in ("Noop", "Cache"):
+        compile_source(_local_component(name), "candidate.rvl", manifest=ir)
+        assert native["admit_into"](_local_component(name), wire) == "", name
+
+
+def test_a_garbled_presence_row_is_refused_by_name(native):
+    """A presence row is a bare name; a row carrying anything else is a wire
+    the gate cannot read, and it refuses rather than skip it."""
+    verdict = native["admit_into"](_local_component("Cache"), "Kv/a/;No!op")
+    assert "unrecognized manifest row `No!op`" in verdict, verdict

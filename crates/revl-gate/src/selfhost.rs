@@ -23306,6 +23306,9 @@ fn parse_row(row: String, man: Manifest) -> Manifest {
             let b = cut(a.rest.clone(), "/");
             return Manifest { provs: man.provs.revl_push(Prov3 { key: b.s.clone(), rlm: b.rest.clone(), comp: a.s.clone() }), reqs: man.reqs.clone(), routes: man.routes.clone(), hands: man.hands.clone(), mnames: add_mname(man.mnames.clone(), a.s.clone()), repl: man.repl.clone(), halted: man.halted, svcs: man.svcs.clone(), svcsKnown: man.svcsKnown, svcOps: man.svcOps.clone(), bad: String::from("") };
         }
+        if bare_ident(&row, 0i64) {
+            return Manifest { provs: man.provs.clone(), reqs: man.reqs.clone(), routes: man.routes.clone(), hands: man.hands.clone(), mnames: add_mname(man.mnames.clone(), row.clone()), repl: man.repl.clone(), halted: man.halted, svcs: man.svcs.clone(), svcsKnown: man.svcsKnown, svcOps: man.svcOps.clone(), bad: String::from("") };
+        }
     }
     return man_bad(man.clone(), &((String::from("unrecognized manifest row `").revl_concat(&row)).revl_concat("`")));
 }
