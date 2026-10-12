@@ -948,6 +948,15 @@ def test_native_driver_links_the_pure_closure_externs(
     assert got == want
 
 
+_STORE_COMPONENT = (
+    "service Front { fn go() -> Str }\n\n"
+    "component App requires store: Store provides front: Front {\n"
+    "  provide front {\n"
+    "    fn go() = store.put(%s)\n"
+    "  }\n"
+    "}\n")
+
+
 _UNLINKABLE = {
     # The reference renames both private `h` apart (`h__m0`, `h__m1`); emitting
     # two `h` would let the document's `f` call a.rvl's.
@@ -1000,6 +1009,18 @@ _UNLINKABLE = {
         "doc.rvl": 'use "a.rvl" as m\n\nfn f(x: Int) -> Int { return m.helper(x) }\n',
         "a.rvl": "pub fn helper(x: Int) -> Int { return x + 1 }\n",
     }),
+    # Issue #2308: the producer expands the alias `Al` in the service row and
+    # keeps no `types` entry for it, where the reference carries `Al` itself.
+    "carried_alias": ("did not lower natively", {
+        "doc.rvl": 'use "lib.rvl" { Store }\n\n' + _STORE_COMPONENT % '"x"',
+        "lib.rvl": (
+            "pub type Cell = { b: Int }\n"
+            "pub type Al = Cell\n"
+            "pub service Store {\n"
+            "  fn put(s: Str) -> Str\n"
+            "  fn peek() -> Al\n"
+            "}\n"),
+    }),
     # Issue #2308: the reference renames the document's private `Item` apart
     # (`Item__m0`) from the `Item` the imported service carries.
     "carried_type_collision": ("collides", {
@@ -1036,14 +1057,6 @@ def test_native_driver_refuses_what_it_cannot_link(compile_rvl, tmp_path, case):
     assert why in got
 
 
-_STORE_COMPONENT = (
-    "service Front { fn go() -> Str }\n\n"
-    "component App requires store: Store provides front: Front {\n"
-    "  provide front {\n"
-    "    fn go() = store.put(%s)\n"
-    "  }\n"
-    "}\n")
-
 # case -> (tiers, files). The tiers are those whose native emitter covers the
 # document once it is linked: wasm's emits no component yet, and only py and ts
 # bodies are written for the extern case.
@@ -1075,6 +1088,14 @@ _LINKED_AS_REFERENCE = {
             "  fn put(rows: List[Row]) -> Str\n"
             "  fn count() -> Int\n"
             "}\n"),
+    }),
+    # `pub` and `type` may be separated by any run of spaces or tabs.
+    "service_record_tabbed": (("py", "ts", "go", "java", "rust"), {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n'
+                   + _STORE_COMPONENT % '{ ref: "a", qty: 1 }',
+        "lib.rvl": (
+            "pub\ttype  Item = { ref: Str, qty: Int }\n"
+            "pub service Store { fn put(row: Item) -> Str }\n"),
     }),
     # A pure dependency whose extern bodies hold column-0 host lines: they are
     # inside the declaration, not top-level declarations of their own.

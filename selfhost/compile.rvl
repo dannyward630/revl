@@ -94,7 +94,7 @@ use "./emit_go.rvl" { emit_go_src }
 use "./emit_java.rvl" { emit_java_src }
 use "./emit_wasm.rvl" { emit_wasm_src }
 use "../stdlib/json.rvl" { json_parse }
-use "../stdlib/str.rvl" { str_newline }
+use "../stdlib/str.rvl" { str_newline, str_tab }
 
 // The tiers whose self-host emitter is byte-exact against its reference on this
 // surface AND whose entrypoint has a distinct public name, so it can co-compile
@@ -740,9 +740,13 @@ fn ul_dquote_end(s: Str, at: Int) -> Int {
 }
 
 // The index just past the `@backend { … }` host body whose `@` is at `at`, read
-// as the lexer's `scan_host_body` reads it: spaces, then newlines, may sit before
-// the `{`, and the body closes on brace depth with a `"` string skipped. When no
-// host body starts at `at`, the index just past the `@`.
+// as the self-host lexer's `scan_host_body` reads it: spaces, then newlines, may
+// sit before the `{`, and the body closes on brace depth with a `"` string
+// skipped. When no host body starts at `at`, the index just past the `@`. The
+// reference lexer also skips `'` strings, triple quotes, block comments and
+// backtick spans; a body whose brace sits in one of those is read differently
+// here, but then the self-host lexer misreads it the same way, its externs do
+// not lower, and `ul_dep_refusal` refuses the module.
 fn ul_host_body_end(s: Str, at: Int) -> Int {
   let n = s.length()
   if (!ul_is_word_start(s.slice(at + 1, at + 2))) { return at + 1 }
@@ -1086,8 +1090,21 @@ fn ul_key_value(s: Str, key: Str) -> Str {
   return s.slice(ul_top_key(s, key), end)
 }
 
-// The names `source` declares `pub type` at column 0, in order. The native IR
-// keeps no visibility for a type, so it is read off the text.
+// The index just past the keyword `word` at `at` of `line` when at least one
+// space or tab follows it, or -1.
+fn ul_keyword_end(line: Str, at: Int, word: Str) -> Int {
+  let end = at + word.length()
+  if (line.slice(at, end) != word) { return 0 - 1 }
+  let c = line.slice(end, end + 1)
+  if (c == "") { return 0 - 1 }
+  let k = c.charCodeAt(0)
+  if ((k != 32) && (k != 9)) { return 0 - 1 }
+  return ul_skip_ws(line, end)
+}
+
+// The names `source` declares `pub type` at column 0 (any run of spaces or tabs
+// between the words), in order. The native IR keeps no visibility for a type,
+// so it is read off the text.
 fn ul_pub_types(source: Str) -> List[Str] {
   var out: List[Str] = []
   var i = 0
@@ -1095,11 +1112,14 @@ fn ul_pub_types(source: Str) -> List[Str] {
   while (i < n) {
     let eol = ul_line_end(source, i)
     let line = source.slice(i, eol)
-    if (line.slice(0, 9) == "pub type ") {
-      let at = ul_skip_ws(line, 9)
-      var j = at
-      while ((j < line.length()) && ul_is_word_char(line.slice(j, j + 1))) { j += 1 }
-      if (j > at) { out = out.push(line.slice(at, j)) }
+    let after_pub = ul_keyword_end(line, 0, "pub")
+    if (after_pub >= 0) {
+      let at = ul_keyword_end(line, after_pub, "type")
+      if (at >= 0) {
+        var j = at
+        while ((j < line.length()) && ul_is_word_char(line.slice(j, j + 1))) { j += 1 }
+        if (j > at) { out = out.push(line.slice(at, j)) }
+      }
     }
     i = eol + 1
   }
@@ -1120,6 +1140,19 @@ fn ul_carried_types(dep: Str, module_ir: Str, source: Str, entry: Str) -> UlCarr
   var none: List[Str] = []
   let table = ul_key_value(module_ir, "types")
   let pubs = ul_pub_types(source)
+  // Every public type must be in the native table before the closure is read
+  // off it: the producer expands a transparent alias (`pub type Al = Cell`) in
+  // the service row and keeps no entry for it, so a closure walked from the row
+  // would carry `Cell` where the reference carries `Al`. A missing public type
+  // is therefore refused even when no operation seems to reach it.
+  var p = 0
+  while (p < pubs.length()) {
+    if (ul_key_value(table, pubs[p]) == "") {
+      return { names: none, refusal: "LINK|type `".concat(pubs[p]).concat("` of `").concat(dep)
+        .concat("` did not lower natively, and an imported service of that module may carry it") }
+    }
+    p += 1
+  }
   var pending = ul_push_all(ul_key_idents(entry, "type"), ul_key_idents(entry, "returns"))
   var seen: List[Str] = []
   var q = 0
@@ -1635,6 +1668,9 @@ test "an imported service carries the public types it names (issue #2308)" {
   assert ul_key_idents(row, "returns").length() == 0
   assert ul_value_idents("{\"Ref\": \"Str\"}")[0] == "Str"
   assert ul_pub_types("type A = { a: Int }".concat(nl).concat("pub type B = A")).length() == 1
+  let tabbed = ul_pub_types("pub".concat(str_tab()).concat("type  T = { a: Int }").concat(nl).concat("pubtype U = {}").concat(nl).concat("pub typeV = {}"))
+  assert tabbed.length() == 1
+  assert tabbed[0] == "T"
   // The closure is public-only, transitive, and in declaration order.
   let mod_ir = "{\"types\": {\"C\": {\"fields\": {\"x\": \"Int\"}}, \"H\": {\"fields\": {}}, \"T\": {\"cases\": [{\"name\": \"K\", \"payload\": \"C\"}]}, \"R\": {\"fields\": {\"t\": \"T\", \"h\": \"H\"}}}}"
   let mod_src = "pub type C = { x: Int }".concat(nl).concat("type H = {}").concat(nl)

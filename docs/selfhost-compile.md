@@ -113,7 +113,11 @@ path, which is what the resolution needs:
 
   An extern declaration is read as a whole, host bodies included, so a
   column-0 line of host code inside `@py { ... }` is not taken for a
-  top-level declaration of its own (issue #2308).
+  top-level declaration of its own (issue #2308). The body is scanned as the
+  self-host lexer scans it (brace depth, `"` strings skipped), not as the
+  reference lexer does; a body whose brace sits in a `'` string or a comment is
+  misread by both self-host scans alike, its externs do not lower, and the
+  module is refused.
 - Last, the driver links the types an imported service carries (issue #2308).
   A `use "./lib.rvl" { Store }` that names only a service makes no pure
   dependency, but the reference's `compile_files` still brings the PUBLIC record
@@ -123,8 +127,11 @@ path, which is what the resolution needs:
   does the same, in the module's declaration order, each type once, and sets
   `ir_version` to 3 as a type table does in the reference. It refuses with
   `REFUSED|LINK|` where the reference would rename apart (a document's own type
-  of the same name), where two modules carry one name, and where a public type
-  the closure reaches did not lower natively.
+  of the same name), where two modules carry one name, and where any public
+  type of the service's module has no native `types` entry. The last covers a
+  transparent alias (`pub type Al = Cell`): the producer expands it in the
+  service row and writes no entry for it, so a closure read off the row would
+  carry `Cell` where the reference carries `Al`.
 
 This is the honest multi-file native compile: the whole chain still runs in revl,
 and the only host crossing is the read the reference loader also performs. It
