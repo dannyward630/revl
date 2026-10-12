@@ -2661,6 +2661,68 @@ _ISSUE_2399_REFUSED = {
         "  return match o { Some(x) => { let k = x\n k }, None => 0 }\n}\n"),
 }
 
+_BOX = "type Box[T] = { v: T }\n"
+_EXTERN = "extern pure fn g() = @py { return [1] }\n"
+
+_ISSUE_2399_REFUSED.update({
+    # an arm binder is typed only where `_arm_payload_type` types it
+    "arm_opt_matched_with_ok": (
+        "fn f(o: Opt[Int]) -> Int {\n"
+        "  return match o { Ok(x) => { let k = x\n k }, _ => 0 }\n}\n"),
+    "arm_result_matched_with_some": (
+        "fn f(o: Result[Int, Str]) -> Int {\n"
+        "  return match o { Some(x) => { let k = x\n k }, _ => 0 }\n}\n"),
+    "arm_binder_of_applied_declared_generic": (
+        "type Option[T] = Some(T) | None\nfn f(o: Option[Int]) -> Int {\n"
+        "  return match o { Some(x) => { let k = x\n k }, None => 0 }\n}\n"),
+    # a test written right after an extern is still checked
+    "test_body_host_method_after_extern": (
+        _EXTERN + "test \"t\" {\n  let a = g()\n  let n = a.length()\n  assert true\n}\n"),
+    "prop_body_host_method_after_extern": (
+        _EXTERN + "prop test \"p\" (n: Int) {\n  let a = g()\n"
+        "  let k = a.length()\n  assert true\n}\n"),
+    "test_body_let_mismatch_after_extern": (
+        _EXTERN + "test \"t\" {\n  let m: Int = \"s\"\n  assert true\n}\n"),
+    "duplicate_test_after_extern": (
+        _EXTERN + "test \"t\" {\n  assert true\n}\ntest \"t\" {\n  assert true\n}\n"),
+    # an alias leaves prop bodies undecided, not their names
+    "duplicate_prop_test_with_an_alias": "type M = Int\n" + _prop_doc("") + _prop_doc(""),
+    # the instantiated fields still refuse a record that does not fit
+    "generic_record_field_mismatch_in_test": _BOX + _test_doc("  let b: Box[Int] = { v: \"s\" }"),
+    "generic_record_field_mismatch_in_fn": (
+        _BOX + "fn f(n: Int) -> Int {\n  let b: Box[Int] = { v: \"s\" }\n  return n\n}\n"),
+    "generic_record_wrong_field": (
+        _BOX + "fn f(n: Int) -> Int {\n  let b: Box[Int] = { w: n }\n  return n\n}\n"),
+})
+
+# A record literal bound to an applied generic record, which the reference
+# checks against the instantiated fields, and the arm binders it types. The
+# self-host must neither refuse these at admission nor when it compiles them.
+_ISSUE_2399_COMPILED = {
+    "generic_record_in_test": _BOX + _test_doc("  let b: Box[Int] = { v: 1 }"),
+    "generic_record_in_prop": _BOX + _prop_doc("  let b: Box[Int] = { v: n }"),
+    "generic_record_in_fn": (
+        _BOX + "fn f(n: Int) -> Int {\n  let b: Box[Int] = { v: n }\n  return b.v\n}\n"),
+    "generic_record_two_params": (
+        "type P[A, B] = { a: A, b: B }\nfn f(n: Int) -> Int {\n"
+        "  let p: P[Int, Str] = { a: n, b: \"s\" }\n  return p.a\n}\n"),
+    "generic_record_nested_argument": (
+        _BOX + "fn f(n: Int) -> Int {\n  let b: Box[List[Int]] = { v: [n] }\n  return n\n}\n"),
+    "arm_result_ok_and_err": (
+        "fn f(o: Result[Int, Str]) -> Int {\n"
+        "  return match o { Ok(x) => { let k = x\n k }, Err(e) => { let m = e\n 0 } }\n}\n"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_ISSUE_2399_COMPILED))
+def test_the_review_controls_of_issue_2399_compile_on_both_sides(compile_rvl, admit, name):
+    text = _ISSUE_2399_COMPILED[name]
+    assert _reference_refusal(text) == ""
+    assert admit(text) == ""
+    got = compile_rvl["compile_to_at"](text, "py", "x.rvl")
+    assert not got.startswith("REFUSED|"), got[:160]
+
+
 # Documents the reference compiles, each next to one of the rules above: the
 # gate must not refuse any of them.
 _ISSUE_2399_ADMITTED = {

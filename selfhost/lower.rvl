@@ -7123,6 +7123,41 @@ fn tk_generic_record(pt: Str, env: List[Bind]) -> Bool {
   return b > 0 && tenv_get(env, "grec ".concat(pt.slice(0, b))) != ""
 }
 
+// `nominal_record_fields` for an applied generic record: `Box[Int]` against
+// `type Box[T] = { v: T }` is `{v: Int}`. "" where the arity disagrees, the
+// parameters were not read, or a field type is a shape `tk_subst` does not
+// rewrite (a record or a function type).
+fn grec_shape(t: Str, env: List[Bind]) -> Str {
+  let b = t.indexOf("[")
+  if (b <= 0) { return "" }
+  let nm = t.slice(0, b)
+  let pr = tenv_get(env, "gpar ".concat(nm))
+  if (pr == "") { return "" }
+  let ps = pr.split(",")
+  let args = type_args(t)
+  if (args.length() != ps.length()) { return "" }
+  var sub: List[Bind] = []
+  var i = 0
+  while (i < ps.length()) {
+    sub = sub.push({ name: ps[i], ty: ty_trim(args[i]) })
+    i += 1
+  }
+  let pfx = "gfld ".concat(nm).concat(".")
+  var out = ""
+  var k = 0
+  while (k < env.length()) {
+    let n = env[k].name
+    if (n.slice(0, pfx.length()) == pfx) {
+      let ft = env[k].ty
+      if (ft.indexOf("{") != 0 - 1 || ft.indexOf("(") != 0 - 1) { return "" }
+      out = out.concat(out == "" ? "" : ", ").concat(n.slice(pfx.length(), n.length()))
+        .concat(": ").concat(tk_subst(ft, sub))
+    }
+    k += 1
+  }
+  return out == "" ? "" : "{".concat(out).concat("}")
+}
+
 fn ct_record_shape(pt: Str, actual: Str, env: List[Bind]) -> Str {
   if (actual.indexOf("{") == 0 - 1) { return pt }
   // a container parameter (`Opt[Row]`, `List[Row]`): every record named in it
@@ -13722,6 +13757,14 @@ fn tk_check_flat(e: Expr, expected: Str, env: List[Bind], where_: Str) -> TInf {
   let r = tk_infer(e, env)
   if (r.v != "") { return r }
   if (r.ty == "") { return r }
+  // issue #2399: a record shape meeting an applied generic record is checked
+  // against its instantiated fields; one this walk cannot instantiate is left
+  // to the reference
+  if (tk_is_struct(r.ty) && tk_generic_record(expected, env)) {
+    let gs = grec_shape(expected, env)
+    if (gs != "" && !tk_compatible(gs, r.ty)) { return tk_mismatch(where_, expected, r.ty) }
+    return tk_ok(expected)
+  }
   if (!tk_compatible(expected, r.ty)) {
     return tk_mismatch(where_, expected, r.ty)
   }
@@ -15641,16 +15684,17 @@ fn ba_unknown_msg(n: Str) -> Str {
 
 // Whether the reference has a payload type for `pat` over a scrutinee declared
 // `ty`: `_variant_case_payload`, `model_answer.arm_payload`, then the builtin
-// `Opt`/`Result` heads. Any declared or provided type name answers yes, which
-// is the silent direction.
+// `Opt`/`Result` heads. `_variant_case_payload` is keyed by the scrutinee's
+// whole spelling, so a declared type answers only when it is written with no
+// type arguments. A provided type answers yes, which is the silent direction.
 fn ba_payload_known(ty: Str, pat: Str, env: List[Bind]) -> Bool {
   let head = parse_head(ty)
   if (head == "") { return true }
-  if (tenv_get(env, "decl ".concat(head)) == "1") { return true }
-  if (head == "Answer" || head == "Aggregate" || head == "DissentEntry") { return true }
   let args = type_args(ty)
-  if (head == "Opt") { return pat != "Some" || args.length() > 0 }
-  if (head == "Result") { return true }
+  if (tenv_get(env, "decl ".concat(head)) == "1" && args.length() == 0) { return true }
+  if (head == "Answer" || head == "Aggregate" || head == "DissentEntry") { return true }
+  if (head == "Opt") { return pat == "Some" && args.length() > 0 }
+  if (head == "Result") { return args.length() == 2 && (pat == "Ok" || pat == "Err") }
   return false
 }
 
@@ -16754,7 +16798,10 @@ fn fb_refusal_at(ts: List[Token], i: Int, gtys: List[Bind],
 // `lifecycle test` shares the plain pass's name table, and its body is the
 // lifecycle walk's, not this one's. A prop test body keeps its annotations as
 // written (`_subst_body_annotations` erases only `test` bodies), so where the
-// text declares an alias the prop pass is left undecided.
+// text declares an alias the prop BODIES are left undecided. Their names are
+// still checked: the `tb names only` row says so.
+fn tb_names_only() -> Str { return "tb names only" }
+
 fn tb_dup_msg(kind: Str, name: Str) -> Str {
   return tagged("TEST", "duplicate ".concat(kind).concat(" `").concat(name).concat("`"))
 }
@@ -16785,7 +16832,7 @@ fn tb_refusal_at(ts: List[Token], i: Int, gtys: List[Bind], al: Map[Str, Str],
       if (contains(seen, nm)) {
         return mk_verd(tb_dup_msg(kind, nm), tkc(ts, i + 1).line)
       }
-      if (prop) {
+      if (prop && tenv_get(gtys, tb_names_only()) != "1") {
         let pe = close_paren(ts, i + 3)
         let v = tb_body(ts, pe + 1, qe - 1, params_at(ts, i + 4).ps, gtys, al)
         if (v.v != "") { return v }
@@ -16813,7 +16860,7 @@ fn tb_refusal_at(ts: List[Token], i: Int, gtys: List[Bind], al: Map[Str, Str],
     return tb_refusal_at(ts, type_decl_end(ts, i + 1), gtys, al, prop, seen)
   }
   if (t.text == "extern") {
-    return tb_refusal_at(ts, p_extern(ts, i, empty_prog()).i, gtys, al, prop, seen)
+    return tb_refusal_at(ts, tb_extern_end(ts, i), gtys, al, prop, seen)
   }
   if (t.text == "fn") {
     return tb_refusal_at(ts, p_fn(ts, i, empty_prog()).i, gtys, al, prop, seen)
@@ -16827,15 +16874,33 @@ fn tb_refusal_at(ts: List[Token], i: Int, gtys: List[Bind], al: Map[Str, Str],
   return tb_refusal_at(ts, skip_line(ts, i), gtys, al, prop, seen)
 }
 
+// Where an `extern` ends for this walk. `p_extern` steps over its host bodies
+// up to the next declaration head, and its stop set has no `test`, so a test
+// written right after an extern was stepped over with it.
+fn tb_extern_end(ts: List[Token], i: Int) -> Int {
+  let k = p_extern(ts, i, empty_prog()).i
+  var j = i + 1
+  while (j < k) {
+    if (atk(ts, j, "{")) {
+      let e = close_brace(ts, j)
+      j = e == 0 - 1 ? k : e
+    } else if (atw(ts, j, "test") || at_qual_test(ts, j)) {
+      return j
+    } else { j += 1 }
+  }
+  return k
+}
+
 // Both passes, in the reference's order: the plain tests, then the prop tests.
 fn test_refusals(ts: List[Token], gtys: List[Bind], al: Map[Str, Str]) -> List[Verd] {
   var out: List[Verd] = []
   let tv = tb_refusal_at(ts, 0, gtys, al, false, [])
   if (tv.v != "") { out = out.push(tv) }
-  if (rp_aliases(ts).length() == 0) {
-    let pv = tb_refusal_at(ts, 0, gtys, al, true, [])
-    if (pv.v != "") { out = out.push(pv) }
-  }
+  // where the text declares an alias the prop BODIES are left undecided (see
+  // the head of this section), but the name check reads no annotation
+  let pg = rp_aliases(ts).length() == 0 ? gtys : tenv_put(gtys, tb_names_only(), "1")
+  let pv = tb_refusal_at(ts, 0, pg, al, true, [])
+  if (pv.v != "") { out = out.push(pv) }
   return out
 }
 
@@ -28228,6 +28293,31 @@ fn event_field_binds(ts: List[Token], i: Int, acc: List[Bind], al: Map[Str, Str]
   return rec_field_binds(ts, j + 1, bend - 1, nm, acc, al)
 }
 
+// Issue #2399: a generic record's parameters (`gpar <Name>`, comma-joined) and
+// its declared field types (`gfld <Name>.<field>`), the table
+// `nominal_record_fields` instantiates `Box[Int]` from. A parameter list this
+// reading cannot take whole records nothing, which leaves the record unresolved.
+fn grec_rows(ts: List[Token], i: Int, j: Int, bend: Int, nm: Str,
+             acc: List[Bind], al: Map[Str, Str]) -> List[Bind] {
+  var ps: List[Str] = []
+  var k = i + 3
+  while (k < j - 2 && atk(ts, k, "ident") && (atk(ts, k + 1, ",") || atk(ts, k + 1, "]"))) {
+    ps = ps.push(tkc(ts, k).text)
+    k += 2
+  }
+  if (ps.length() == 0 || !atk(ts, k - 1, "]") || k != j - 1) { return acc }
+  let fs = rec_field_binds(ts, j + 1, bend - 1, nm, [], al)
+  var out = acc.push({ name: "gpar ".concat(nm), ty: ps.join(",") })
+  var f = 0
+  while (f < fs.length()) {
+    // "field <Name>.<x>" becomes "gfld <Name>.<x>"
+    out = out.push({ name: "gfld ".concat(fs[f].name.slice(6, fs[f].name.length())),
+                     ty: fs[f].ty })
+    f += 1
+  }
+  return out
+}
+
 fn decl_cases(ts: List[Token], i: Int, a: CaseAcc, al: Map[Str, Str]) -> CaseStep {
   // the WHOLE declaration, not its first line. A variant is routinely written
   // over several lines (`pub type Method =` then one `| Case` per line), and a
@@ -28248,7 +28338,9 @@ fn decl_cases(ts: List[Token], i: Int, a: CaseAcc, al: Map[Str, Str]) -> CaseSte
       // issue #2362: a generic record gets no field rows, only a `grec` mark,
       // so a record literal meeting it is refused by name (`ct_args`).
       let marked = bend == 0 - 1 ? a
-        : { binds: a.binds.push({ name: "grec ".concat(nm), ty: nm }), amb: a.amb }
+        : { binds: grec_rows(ts, i, j, bend, nm,
+                             a.binds.push({ name: "grec ".concat(nm), ty: nm }), al),
+            amb: a.amb }
       return { a: marked, i: bend == 0 - 1 ? lineHi : bend }
     }
     let fields = rec_field_binds(ts, j + 1, bend - 1, nm, a.binds, al)
