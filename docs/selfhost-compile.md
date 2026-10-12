@@ -127,11 +127,12 @@ path, which is what the resolution needs:
   does the same, in the module's declaration order, each type once, and sets
   `ir_version` to 3 as a type table does in the reference. It refuses with
   `REFUSED|LINK|` where the reference would rename apart (a document's own type
-  of the same name), where two modules carry one name, and where any public
-  type of the service's module has no native `types` entry. The last covers a
-  transparent alias (`pub type Al = Cell`): the producer expands it in the
-  service row and writes no entry for it, so a closure read off the row would
-  carry `Cell` where the reference carries `Al`.
+  of the same name), where two modules carry one name, and where any type the
+  service's module declares, public or private, has no native `types` entry.
+  The last covers a transparent alias (`pub type Al = Cell`, or a private
+  `type Id = Int`): the producer expands it in the service row and in record
+  fields and writes no entry for it, so the link would carry `Cell` where the
+  reference carries `Al`, or print `id: Int` where the reference keeps `id: Id`.
 
 This is the honest multi-file native compile: the whole chain still runs in revl,
 and the only host crossing is the read the reference loader also performs. It

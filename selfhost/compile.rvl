@@ -1102,29 +1102,34 @@ fn ul_keyword_end(line: Str, at: Int, word: Str) -> Int {
   return ul_skip_ws(line, end)
 }
 
-// The names `source` declares `pub type` at column 0 (any run of spaces or tabs
-// between the words), in order. The native IR keeps no visibility for a type,
-// so it is read off the text.
-fn ul_pub_types(source: Str) -> List[Str] {
+// The names `source` declares `type` at column 0, `pub` ones only unless
+// `private` is set (any run of spaces or tabs between the words), in order.
+// The native IR keeps no visibility for a type, so it is read off the text.
+fn ul_type_decls(source: Str, private: Bool) -> List[Str] {
   var out: List[Str] = []
   var i = 0
   let n = source.length()
   while (i < n) {
     let eol = ul_line_end(source, i)
     let line = source.slice(i, eol)
+    var at = 0 - 1
     let after_pub = ul_keyword_end(line, 0, "pub")
-    if (after_pub >= 0) {
-      let at = ul_keyword_end(line, after_pub, "type")
-      if (at >= 0) {
-        var j = at
-        while ((j < line.length()) && ul_is_word_char(line.slice(j, j + 1))) { j += 1 }
-        if (j > at) { out = out.push(line.slice(at, j)) }
-      }
+    if (after_pub >= 0) { at = ul_keyword_end(line, after_pub, "type") }
+    else {
+      if (private) { at = ul_keyword_end(line, 0, "type") }
+    }
+    if (at >= 0) {
+      var j = at
+      while ((j < line.length()) && ul_is_word_char(line.slice(j, j + 1))) { j += 1 }
+      if (j > at) { out = out.push(line.slice(at, j)) }
     }
     i = eol + 1
   }
   return out
 }
+
+// The names `source` declares `pub type` at column 0, in order.
+fn ul_pub_types(source: Str) -> List[Str] { return ul_type_decls(source, false) }
 
 // The types an imported service carries, in its module's declaration order, or
 // the refusal ("" for none) where the native IR cannot supply one.
@@ -1140,15 +1145,19 @@ fn ul_carried_types(dep: Str, module_ir: Str, source: Str, entry: Str) -> UlCarr
   var none: List[Str] = []
   let table = ul_key_value(module_ir, "types")
   let pubs = ul_pub_types(source)
-  // Every public type must be in the native table before the closure is read
-  // off it: the producer expands a transparent alias (`pub type Al = Cell`) in
-  // the service row and keeps no entry for it, so a closure walked from the row
-  // would carry `Cell` where the reference carries `Al`. A missing public type
-  // is therefore refused even when no operation seems to reach it.
+  // Every type the module declares, public or private, must be in the native
+  // table before the closure is read off it: the producer expands a transparent
+  // alias (`pub type Al = Cell`, or a private `type Id = Int`) in the service
+  // row and in record fields and keeps no entry for it, so a closure walked
+  // from the native IR would carry `Cell` where the reference carries `Al`, or
+  // print `id: Int` where the reference prints `id: Id`. Which types an
+  // expanded alias would have reached cannot be told from the native IR, so a
+  // missing declaration is refused even when no operation seems to reach it.
+  let decls = ul_type_decls(source, true)
   var p = 0
-  while (p < pubs.length()) {
-    if (ul_key_value(table, pubs[p]) == "") {
-      return { names: none, refusal: "LINK|type `".concat(pubs[p]).concat("` of `").concat(dep)
+  while (p < decls.length()) {
+    if (ul_key_value(table, decls[p]) == "") {
+      return { names: none, refusal: "LINK|type `".concat(decls[p]).concat("` of `").concat(dep)
         .concat("` did not lower natively, and an imported service of that module may carry it") }
     }
     p += 1
@@ -1671,6 +1680,10 @@ test "an imported service carries the public types it names (issue #2308)" {
   let tabbed = ul_pub_types("pub".concat(str_tab()).concat("type  T = { a: Int }").concat(nl).concat("pubtype U = {}").concat(nl).concat("pub typeV = {}"))
   assert tabbed.length() == 1
   assert tabbed[0] == "T"
+  let both = ul_type_decls("type P = Int".concat(nl).concat("pub type Q = P").concat(nl).concat("typeR = {}"), true)
+  assert both.length() == 2
+  assert both[0] == "P"
+  assert both[1] == "Q"
   // The closure is public-only, transitive, and in declaration order.
   let mod_ir = "{\"types\": {\"C\": {\"fields\": {\"x\": \"Int\"}}, \"H\": {\"fields\": {}}, \"T\": {\"cases\": [{\"name\": \"K\", \"payload\": \"C\"}]}, \"R\": {\"fields\": {\"t\": \"T\", \"h\": \"H\"}}}}"
   let mod_src = "pub type C = { x: Int }".concat(nl).concat("type H = {}").concat(nl)

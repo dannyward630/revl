@@ -1021,6 +1021,31 @@ _UNLINKABLE = {
             "  fn peek() -> Al\n"
             "}\n"),
     }),
+    # Issue #2308: a PRIVATE alias is expanded by the producer too, in a
+    # record field and in a service row. The reference keeps `id: Id`, keeps
+    # `p: P` without carrying `Cell`, and carries nothing for `List[P]`.
+    "private_alias_in_field": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "type Id = Int\n"
+            "pub type Row = { id: Id }\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    "private_alias_of_public_record": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub type Cell = { b: Int }\n"
+            "type P = Cell\n"
+            "pub type Row = { p: P }\n"
+            "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
+    }),
+    "private_alias_in_service_row": ("did not lower natively", {
+        "doc.rvl": 'use "./lib.rvl" { Store }\n\n' + _STORE_COMPONENT % "[]",
+        "lib.rvl": (
+            "pub type Cell = { b: Int }\n"
+            "type P = Cell\n"
+            "pub service Store { fn put(xs: List[P]) -> Str }\n"),
+    }),
     # Issue #2308: the reference renames the document's private `Item` apart
     # (`Item__m0`) from the `Item` the imported service carries.
     "carried_type_collision": ("collides", {
