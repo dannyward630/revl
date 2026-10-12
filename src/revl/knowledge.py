@@ -174,12 +174,19 @@ def _first_code_line(text: str, after: int) -> int | None:
     return None
 
 
+#: the key under which `anchor_of` keeps the text's tokens in its `nodes`
+#: cache (every other key is a (kind, name) pair)
+_TOKENS = "tokens"
+
+
 def anchor_of(text: str, name: str, block: Block, decls: list,
               nodes: dict, program=None) -> tuple[str | None, int, int]:
     """(symbol path or None for the file, first line, last line) of what a
     block describes. `decls` are the file's top-level declarations, `nodes`
-    a cache of their parsed nodes and `program` the file already parsed (so
-    a declaration is looked up in it rather than parsed again, issue #2191)."""
+    a cache, for one text, of their parsed nodes and of the text's tokens once
+    lexed (so the file is lexed once, not once per member comment, issue
+    #2250), and `program` the file already parsed (so a declaration is looked
+    up in it rather than parsed again, issue #2191)."""
     from . import nested  # noqa: PLC0415
 
     line = _first_code_line(text, block.last)
@@ -200,7 +207,10 @@ def anchor_of(text: str, name: str, block: Block, decls: list,
         node = nodes[key]
         for member in nested.members(node, decl.kind):
             if member.line == line:
-                first, last = nested.span(text, name, node, decl.kind, member)
+                if _TOKENS not in nodes:
+                    nodes[_TOKENS] = nested.tokens_of(text, name)
+                first, last = nested.span(text, name, node, decl.kind, member,
+                                          nodes[_TOKENS])
                 return ".".join((decl.name,) + member.path), first, last
     except nested.NestedError:
         pass
@@ -228,8 +238,9 @@ def index_text(path: str, text: str, report: dict | None, known_codes) -> list[d
     from . import nested, symbols  # noqa: PLC0415
 
     # parse once: every comment's anchor is looked up in this one program, and
-    # a span several comments share is fingerprinted once (issue #2191)
-    program = nested._program(text, path)
+    # a span several comments share is fingerprinted once (issue #2191); the
+    # text is lexed at most once for every member span (issue #2250)
+    program = nested.parse(text, path)
     decls = symbols.declarations(text, path, program) if program is not None else []
     nodes: dict = {}
     prints: dict = {}

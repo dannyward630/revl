@@ -324,8 +324,19 @@ def pytest_runtest_makereport(item, call):
 # runtimes' skips (cordis-ts, cordis4j, cordis-rs, ...): re-running those files
 # under the cordis-py venv would only skip them again. Guards word their reason
 # freely, so this excludes the other runtimes rather than requiring "cordis-py".
-_NAMES_CORDIS_PY = re.compile(r"cordis(?![-_]?(?:ts|4j|rs|java|go|wasm|js)\b)",
-                              re.IGNORECASE)
+#
+# A reason that names another runtime anywhere is that runtime's skip, even
+# when it says "cordis" again later ("cordis (TS): node_modules/cordis not
+# installed"). There is no `\b` after the runtime name: `\b` does not match
+# before `_`, so REVL_CORDIS4J_CLASSES got through (issue #2257). `c\b` is the
+# cordisc compiler ("cordisc (or node)") and ` \(ts\)` the "cordis (TS)" guards.
+_NAMES_CORDIS = re.compile(r"cordis", re.IGNORECASE)
+_NAMES_OTHER_RUNTIME = re.compile(
+    r"cordis(?:[-_]?(?:ts|4j|rs|java|go|wasm|js)|c\b| \(ts\))", re.IGNORECASE)
+
+
+def _names_cordis_py(reason: str) -> bool:
+    return bool(_NAMES_CORDIS.search(reason)) and not _NAMES_OTHER_RUNTIME.search(reason)
 
 
 def _skip_reason(report) -> str:
@@ -340,7 +351,7 @@ def _log_cordis_skip(report) -> None:
     target = os.environ.get("REVL_CORDIS_SKIP_LOG")
     if not target or not report.skipped:
         return
-    if not _NAMES_CORDIS_PY.search(_skip_reason(report)):
+    if not _names_cordis_py(_skip_reason(report)):
         return
     try:
         with open(target, "a", encoding="utf-8") as fh:

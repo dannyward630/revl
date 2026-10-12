@@ -175,6 +175,39 @@ func fatalLine(name string, fatal any) {
 	fmt.Fprintln(os.Stderr, "["+name+"] FATAL "+bridge.ScrubText(fmt.Sprint(fatal)))
 }
 
+// fatalBoot ends a boot that cannot be honoured, as the rust runner's
+// `fatal_boot` does (#2200): one scrubbed FATAL line on stderr, what did boot
+// disposed last first, exit 1. Every boot-failure arm goes through here so the
+// teardown they promise cannot drift apart (issues #2223, #2254). `os.Exit`,
+// not a panic or a return, so the teardown in main never prints `DOWN` for a
+// failed boot.
+//
+// `Dispose` only REQUESTS the teardown, so each one is awaited (bounded) or
+// `os.Exit` would kill the process before any inverse replayed. A fiber that
+// does not settle in time is reported as such, never as disposed. `Gone` also
+// returns for a fiber that had already FAILED, which replays nothing, so the
+// line names the state the fiber ended in. `log` is main's scrubbing
+// printer, passed in because it is a closure over the process name.
+func fatalBoot(name, message string, fibers []labeledFiber,
+	log func(channel, subject, detail string)) {
+	fatalLine(name, message)
+	bootCtx, bootCancel := stdctx.WithTimeout(stdctx.Background(), 5*time.Second)
+	for i := len(fibers) - 1; i >= 0; i-- {
+		fibers[i].fiber.Dispose()
+		if err := fibers[i].fiber.Gone(bootCtx); err != nil {
+			log("swap", fibers[i].label, "dispose NOT confirmed: "+err.Error())
+			continue
+		}
+		if state := fibers[i].fiber.State(); state != stc.StateGone {
+			log("swap", fibers[i].label, "dispose -> ended "+state.String())
+			continue
+		}
+		log("swap", fibers[i].label, "dispose -> inverses replay (LIFO)")
+	}
+	bootCancel()
+	os.Exit(1)
+}
+
 // guard returns the deferred function that funnels a failure of the goroutine
 // it is deferred in: one redacted line on stderr, then `os.Exit`, which runs NO
 // teardown and so reaches no `DOWN` — the conductor's clean-teardown signal
@@ -297,18 +330,24 @@ func main() {
 	for key, info := range s.Proxies {
 		client, err := bridge.NewClient(info.Socket)
 		if err != nil {
-			log("proxy", key, "dial failed: "+err.Error())
-			continue
+			// issue #2254: a proxy that cannot be reached leaves the
+			// composition short, in both modes, as the rust runner's proxy
+			// unwrap does. The fault sweep never targets a proxy, so `--once`
+			// gets no exception: a dead provider must not read as NO-RESIDUE.
+			fatalBoot(name, "proxy dial failed for key "+key+": "+err.Error(), fibers, log)
 		}
 		clients = append(clients, client)
 		comp, ok := emitted.RevlProxyComponent(key, info.Service, client)
 		if !ok {
-			log("proxy", key, "UNSUPPORTED service "+info.Service)
-			continue
+			// issue #2254: a proxy this build has no component for is the
+			// same spec/build mismatch as an unknown component (#2223).
+			fatalBoot(name, "unsupported proxy service "+info.Service+" for key "+
+				key+": the spec names a proxy this build does not have", fibers, log)
 		}
 		fiber := root.Load(comp)
 		if err := fiber.Ready(ready); err != nil {
-			log("proxy", key, "load error: "+err.Error())
+			// issue #2254: fatal in both modes, as for a failed dial above.
+			fatalBoot(name, "boot failed loading proxy for key "+key+": "+err.Error(), fibers, log)
 		}
 		fibers = append(fibers, labeledFiber{key + "-proxy", fiber})
 		log("proxy", key, "-> "+info.Socket+" ["+info.Service+"]")
@@ -327,25 +366,17 @@ func main() {
 			// loaded. Dispose what did boot, last first, print one scrubbed
 			// line on stderr and exit 1. `os.Exit`, not a panic or a return,
 			// so the teardown below never prints `DOWN` for a failed boot.
-			fatalLine(name, "unknown component "+cname+": the spec names a "+
-				"component this build does not have")
-			// `Dispose` only REQUESTS the teardown, so each one is awaited
-			// (bounded) or `os.Exit` would kill the process before any inverse
-			// replayed. A fiber that does not settle in time is reported as
-			// such, never as disposed.
-			bootCtx, bootCancel := stdctx.WithTimeout(stdctx.Background(), 5*time.Second)
-			for i := len(fibers) - 1; i >= 0; i-- {
-				fibers[i].fiber.Dispose()
-				if err := fibers[i].fiber.Gone(bootCtx); err != nil {
-					log("swap", fibers[i].label, "dispose NOT confirmed: "+err.Error())
-					continue
-				}
-				log("swap", fibers[i].label, "dispose -> inverses replay (LIFO)")
-			}
-			bootCancel()
-			os.Exit(1)
+			fatalBoot(name, "unknown component "+cname+": the spec names a "+
+				"component this build does not have", fibers, log)
 		}
 		if err := fiber.Ready(ready); err != nil {
+			// issue #2254: outside `--once` a failed activation is fatal, as
+			// in the rust runner. In `--once` mode the FAILED fiber is kept so
+			// the LIFO teardown and the no-residue proof the fault sweep reads
+			// still run; stc has already unwound its own effects.
+			if !s.Once {
+				fatalBoot(name, "boot failed loading "+cname+": "+err.Error(), fibers, log)
+			}
 			log("load", cname, "load error: "+err.Error())
 		}
 		fibers = append(fibers, labeledFiber{cname, fiber})

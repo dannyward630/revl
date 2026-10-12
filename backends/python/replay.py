@@ -1469,7 +1469,10 @@ def _record_emission_outcome(ref: dict, outcome: str,
 
 
 def _call_within(ref: dict, fn: Callable, args: tuple, kwargs: dict) -> Any:
-    """Call a host crossing and journal completion or failure after it returns."""
+    """``fn(*args, **kwargs)`` with ``ref`` as the enclosing crossing
+    (`_ENCLOSING`), for the synchronous body and, when it returns an awaitable,
+    for the awaited one (`_await_within`). Journals the crossing's completion or
+    failure once the body, or the awaited result, settles."""
     token = _ENCLOSING.set(ref)
     try:
         result = fn(*args, **kwargs)
@@ -2175,7 +2178,8 @@ def _seal_torn_tail(path: str, *, allow_unsynced: bool = False) -> None:
         except (OSError, ValueError) as error:
             if not allow_unsynced:
                 raise ReplayError(
-                    "write-ahead log fsync failed; the host call was not permitted"
+                    "write-ahead log fsync failed while sealing the torn tail; "
+                    "the log is not known to be durable"
                 ) from error
 
 

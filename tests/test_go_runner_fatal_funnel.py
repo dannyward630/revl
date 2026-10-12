@@ -519,3 +519,114 @@ def test_an_unknown_component_is_fatal_and_disposes_what_booted(tmp_path):
     assert "MARK applied" in out, out
     assert "MARK INVERSE-RAN" in out, out
     assert out.index("MARK applied") < out.index("MARK INVERSE-RAN"), out
+
+
+# ---------------------------------------------------------------------------
+# an unsupported proxy and a load error are fatal too (issue #2254)
+# ---------------------------------------------------------------------------
+
+def _assert_fatal_boot(done, names: str) -> None:
+    """The shared verdict of a fatal boot: non-zero exit, one FATAL line on
+    stderr naming *names*, and no `UP` / `NO-RESIDUE` / `DOWN` claim."""
+    assert done.returncode != 0, (done.stdout, done.stderr)
+    assert "FATAL" in done.stderr and names in done.stderr, done.stderr
+    for claim in ("UP", "NO-RESIDUE", "DOWN"):
+        assert f"] {claim}" not in done.stdout, done.stdout
+
+
+def test_an_unsupported_proxy_service_is_fatal(tmp_path):
+    """The spec asks for a proxy the binary has no proxy component for. The
+    proxy loop runs before any component loads, so the run must stop there:
+    exit non-zero naming the service, and never load `Impl` (its effect never
+    applies). Before #2254 it logged `UNSUPPORTED`, booted `Impl` and exited 0
+    with `UP` and `NO-RESIDUE`. The proxy socket really listens, so the arm
+    reaches the service check rather than stopping at the dial."""
+    binary = _build(tmp_path, doc=_UNDO_DOC)
+    sockdir = tempfile.mkdtemp(prefix="rvlgo_2254_", dir="/tmp")
+    sock = str(Path(sockdir) / "g.sock")
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(sock)
+            server.listen(1)
+            spec = tmp_path / "ghost-proxy.json"
+            spec.write_text(json.dumps({
+                **_SPEC, "probe": [],
+                "proxies": {"ghost": {"socket": sock, "service": "GhostSvc"}}}))
+            done = subprocess.run([binary, str(spec)], capture_output=True,
+                                  text=True, timeout=300, stdin=subprocess.DEVNULL)
+    finally:
+        shutil.rmtree(sockdir, ignore_errors=True)
+    _assert_fatal_boot(done, "GhostSvc")
+    assert "MARK applied" not in done.stdout + done.stderr, done.stdout
+
+
+_LOAD_FAIL_DOC = _UNDO_DOC + '''
+component Bad requires vault: Vault {
+  fail "activation refused"
+}
+'''
+
+
+def test_a_component_load_error_is_fatal_and_disposes_what_booted(tmp_path):
+    """`Impl` boots, then `Bad`'s activation fails. Outside `--once` there is no
+    teardown-and-prove round-trip to salvage, so, as in the rust runner, the
+    boot is fatal: exit non-zero naming `Bad`, no `UP` / `NO-RESIDUE` / `DOWN`,
+    and `Impl` really torn down (its inverse ran before the exit). Before #2254
+    the error was logged, the process said `UP` and exited 0 on stdin EOF."""
+    binary = _build(tmp_path, doc=_LOAD_FAIL_DOC)
+    spec = tmp_path / "bad.json"
+    spec.write_text(json.dumps({**_SPEC, "components": ["Impl", "Bad"],
+                                "probe": [], "once": False}))
+    done = subprocess.run([binary, str(spec)], capture_output=True, text=True,
+                          timeout=300, stdin=subprocess.DEVNULL)
+    _assert_fatal_boot(done, "Bad")
+    out = done.stdout + done.stderr
+    assert "MARK applied" in out, out
+    assert "MARK INVERSE-RAN" in out, out
+    assert out.index("MARK applied") < out.index("MARK INVERSE-RAN"), out
+
+
+@pytest.mark.parametrize("once", [False, True], ids=["held", "once"])
+def test_a_failed_proxy_dial_is_fatal(tmp_path, once):
+    """The spec's proxy socket has no listener, so the proxy can never answer.
+    In both modes, as with the rust runner's proxy unwrap, the boot stops:
+    exit non-zero naming the key, and `Impl` never loads. `--once` gets no
+    exception here: the fault sweep never targets a proxy, and a dead provider
+    must not read as `UP` / `NO-RESIDUE` / exit 0. Before #2254 it logged
+    `dial failed`, booted `Impl` and exited 0."""
+    binary = _build(tmp_path, doc=_UNDO_DOC)
+    sockdir = tempfile.mkdtemp(prefix="rvlgo_2254_", dir="/tmp")
+    try:
+        spec = tmp_path / "dead-proxy.json"
+        spec.write_text(json.dumps({
+            **_SPEC, "probe": [], "once": once,
+            "proxies": {"ghost": {"socket": str(Path(sockdir) / "none.sock"),
+                                  "service": "GhostSvc"}}}))
+        done = subprocess.run([binary, str(spec)], capture_output=True,
+                              text=True, timeout=300, stdin=subprocess.DEVNULL)
+    finally:
+        shutil.rmtree(sockdir, ignore_errors=True)
+    _assert_fatal_boot(done, "ghost")
+    assert "MARK applied" not in done.stdout + done.stderr, done.stdout
+
+
+def test_a_fiber_that_already_failed_is_reported_by_its_end_state(tmp_path):
+    """In `--once` mode `Bad`'s failed activation is kept, then `Ghost` (not in
+    this build) makes the boot fatal. `Gone` returns at once for a FAILED
+    fiber, which replays nothing, so its dispose line must name that state
+    and never claim inverses replayed; `Impl`'s does replay."""
+    binary = _build(tmp_path, doc=_LOAD_FAIL_DOC)
+    spec = tmp_path / "bad-ghost.json"
+    spec.write_text(json.dumps({**_SPEC, "components": ["Impl", "Bad", "Ghost"],
+                                "probe": []}))
+    done = subprocess.run([binary, str(spec)], capture_output=True, text=True,
+                          timeout=300, stdin=subprocess.DEVNULL)
+    _assert_fatal_boot(done, "Ghost")
+    bad = [line for line in done.stdout.splitlines()
+           if "| Bad " in line and "dispose" in line]
+    assert bad and all("ended failed" in line and "inverses replay" not in line
+                       for line in bad), done.stdout
+    impl = [line for line in done.stdout.splitlines()
+            if "| Impl " in line and "dispose" in line]
+    assert impl and all("inverses replay" in line for line in impl), done.stdout
+    assert "MARK INVERSE-RAN" in done.stdout + done.stderr, done.stderr

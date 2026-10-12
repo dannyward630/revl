@@ -40,9 +40,19 @@ uv venv && uv pip install -e ".[test]"
 .venv/bin/pytest tests/            # the frontend suite — should be green
 ```
 
-**The fast frontend loop.** The full suite is 1500+ tests (~60s); frontend-only
-work (parser, checker, lowering, docs, frontend-facing tests) does not need to
-pay for it every iteration. The same two files cover most of it:
+<!-- docgen:suite-size begin -->
+The root suite, `tests/`, defines more than 10,000 test
+functions (parametrization collects far more tests than that), and it
+takes tens of CI minutes of test time across the shards, the sum of
+`tests/shard_weights.json`. `tools/docgen.py --check` fails when either
+claim stops being true; `--show suite-size` prints the exact figures.
+<!-- docgen:suite-size end -->
+
+**The fast frontend loop.** A single local run of the whole suite takes hours
+on a loaded machine (253 test-minutes when issue #2217 measured it), so
+frontend-only work (parser, checker, lowering, docs,
+frontend-facing tests) does not pay for it every iteration. The same two files
+cover most of it:
 
 ```bash
 .venv/bin/pytest tests/test_frontend.py tests/test_doc_examples.py -q   # ~0.5s
@@ -50,12 +60,18 @@ pay for it every iteration. The same two files cover most of it:
 
 Before committing, run the tests your change affects, not the whole tree
 between every edit. The pre-commit hook already does this for you: it selects
-the affected tests with `tools/affected_tests.py`. When the selector reports
-`FULL` — or is unavailable — the hook gives that fallback a wall-clock ceiling
-(`REVL_HOOK_FULL_BUDGET`, default 60s) and skips it with the selector's reason
-and the `--no-verify` instruction, rather than running the whole suite to
-completion; the suite is CI's job, sharded there. For the fast inner-loop gate
-over the same selection, `make pre-merge-affected`.
+the affected tests with `tools/affected_tests.py` and reports how many passed.
+When the selector reports `FULL`, or is unavailable, the hook never runs the
+whole suite: it runs a defined core subset (`CORE_TESTS` in
+`tools/hooks/pre-commit`, override with `REVL_HOOK_CORE_TESTS`) under a
+wall-clock ceiling (`REVL_HOOK_FULL_BUDGET`, default 60s), and says the full
+suite did not run. If that subset fails, passes no test, or exceeds the
+ceiling, the commit is refused with the selector's reason and the
+`--no-verify` instruction. An affected selection whose every test skips (a
+machine without a backend's toolchain) does not block the commit, but the step
+prints `SKIPPED` and the hook ends with "ok, but the affected tests verified
+nothing". The full suite is CI's job, sharded there. For the fast inner-loop
+gate over the same selection, `make pre-merge-affected`.
 
 **Where the code lives (a two-minute map).** The compiler is `src/revl/`
 (`parser.py` → `typecheck.py` → `lower.py` → `apply.py`). The **emitters are

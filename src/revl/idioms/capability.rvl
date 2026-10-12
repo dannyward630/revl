@@ -1,0 +1,13 @@
+// idiom: capability
+// summary: a capability declared once, then named by an emission and bound to a value
+// rule: `capability TOKEN(dim: kind)` adds a dimension the token may bind (kind is path, discrete or ceiling); `emission[TOKEN(dim="v")]` scopes a crossing to it
+// rule: G4: a provider body may cross only through the capabilities its service declares, so the scope can narrow a crossing and never widen it
+// fill: emission[mail.send(account="ops")]
+
+capability mail.send(account: discrete)
+
+service Mail { emission[mail.send(account="ops")] fn send(to: Str) -> Int }
+
+component Mailer provides mail: Mail {
+  provide mail { fn send(to) = 1 }
+}

@@ -355,7 +355,7 @@ def test_json_shape_is_stable_and_complete():
     report.smoke = [doctor.Smoke("py", SKIPPED, "no runtime")]
     blob = doctor.to_json(report)
     assert set(blob) == {"revl_version", "checks", "smoke", "resolution",
-                         "summary"}
+                         "summary", "checkout"}
     row = blob["checks"][0]
     assert set(row) == {"name", "status", "version", "detail", "tier"}
     assert blob["smoke"][0] == {"tier": "py", "outcome": SKIPPED,

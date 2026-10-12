@@ -2,8 +2,8 @@
 """Affected-test selector for the revl pre-merge gate.
 
 WHY THIS EXISTS. `make pre-merge` (tools/pre_merge.sh, roadmap item 327) runs the
-full ~8-minute `tests/` suite plus every per-backend emit/golden suite on every
-change. An agent that touched one emitter or one stdlib module should not pay for
+full `tests/` suite (hours locally; its size is the generated suite-size paragraph
+in CONTRIBUTING.md) plus every per-backend emit/golden suite on every change. An agent that touched one emitter or one stdlib module should not pay for
 all of it on the inner loop. This selector maps the changed files to the MINIMAL
 set of pre-merge targets to run, and `sh tools/pre_merge.sh --affected` runs only
 those.
@@ -98,6 +98,9 @@ BENCH_DEPENDENT_TESTS = (
     # Issue #1702: checks the blast-radius task set, its expected states, its
     # TypeScript renderings and its scorer, all under bench/blast_radius/.
     "tests/test_blast_radius_bench.py",
+    # Issues #2195 / #2197: loads `bench/admission_latency.py` by path and runs
+    # its scenario against the compile hot path.
+    "tests/test_compile_hot_path_2195_2197.py",
     # Issue #1462: runs `bench/structured_output_bench.py` against a fake
     # server.
     "tests/test_constrained_decoding_1462.py",
@@ -184,7 +187,7 @@ BENCH_DEPENDENT_TESTS = (
 # oracle tests; nothing under src/revl imports it, so — exactly like bench/ and
 # formal/ — a change to one self-host file can only break its own oracle set,
 # never the frontend pipeline. Before this mapping every self-host edit matched
-# no rule and fell to the fail-safe FULL gate (~8 min), which then aborted on the
+# no rule and fell to the fail-safe FULL gate (the whole suite), which then aborted on the
 # pre-existing >120s descent test tests/test_selfhost_lower.py under the hook's
 # --timeout, so the commit could not complete at all and the whole class of edits
 # had to be landed with --no-verify (issue #431). Mapping each file to its narrow

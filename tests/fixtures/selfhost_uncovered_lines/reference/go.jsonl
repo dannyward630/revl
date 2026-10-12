@@ -62,7 +62,7 @@
 
 ["function", "component-method-expression-renderer-and-tuple-return-conven", "_comp_checked_div_expr", 9, 9]
 
-["function", "component-method-expression-renderer-and-tuple-return-conven", "_comp_infer", 19, 19]
+["function", "component-method-expression-renderer-and-tuple-return-conven", "_comp_infer", 18, 18]
 
 ["function", "component-method-expression-renderer-and-tuple-return-conven", "_comp_infer_match", 4, 4]
 
@@ -70,7 +70,7 @@
 
 ["function", "component-method-expression-renderer-and-tuple-return-conven", "_emit_return", 21, 21]
 
-["function", "component-method-expression-renderer-and-tuple-return-conven", "_expr", 63, 63]
+["function", "component-method-expression-renderer-and-tuple-return-conven", "_expr", 62, 62]
 
 ["function", "component-method-expression-renderer-and-tuple-return-conven", "_format", 2, 2]
 
@@ -208,6 +208,12 @@
 
 ["function", "merge-the-same-body-async-sync-twins-of", "_dedup_colour_erased_poly_externs._rewrite", 6, 6]
 
+["reason", "narrow-int-component-tier-widens-to-the-int64-helpers", "A component document with no declared `type` renders revl `Int` as Go's `int` (`_go_type`), and the checked helpers `revlAdd`/`revlSub`/`revlMul` take int64, so `_comp_checked_int` widens each operand through `_comp_int64` and narrows the result back (issue #2259). That document takes `_emit`, the component-only path selfhost/emit_go.rvl does not port, so no oracle document reaches it; the go corpus's component documents ride the v3 combined path, where Int is already int64. backends/go/test_emit_go.py pins the narrow form (`int(revlMul(int64(s), int64(s)))`)."]
+
+["function", "narrow-int-component-tier-widens-to-the-int64-helpers", "_comp_checked_int", 1, 1]
+
+["function", "narrow-int-component-tier-widens-to-the-int64-helpers", "_comp_int64", 1, 1]
+
 ["reason", "only-carriage-return-escaping-remains-parser-parse-file", "Only carriage-return escaping remains: parser.parse_file normalizes literal CR to LF, and the lexer preserves backslash-r verbatim rather than interpreting it. This file-corpus input boundary cannot produce a CR string literal. Newline, tab, BMP and astral scalar escaping are covered."]
 
 ["function", "only-carriage-return-escaping-remains-parser-parse-file", "_go_string", 1, 1]
@@ -230,7 +236,7 @@
 
 ["function", "placement-interop-bridge-entry-point-emits-wire-codecs", "_emit_v3_bridge_helpers", 52, 52]
 
-["function", "placement-interop-bridge-entry-point-emits-wire-codecs", "_emit_v3_combined", 33, 33]
+["function", "placement-interop-bridge-entry-point-emits-wire-codecs", "_emit_v3_combined", 30, 30]
 
 ["function", "placement-interop-bridge-entry-point-emits-wire-codecs", "_emit_v3_placement", 1, 1]
 
@@ -276,9 +282,9 @@
 
 ["function", "remaining-branches-are-inference-fallbacks-for-nodes-the", "_go_v3_infer_type", 9, 9]
 
-["reason", "remaining-entry-paths-accept-the-package-name-compatibility", "Remaining entry paths accept the package_name compatibility option, reject unsupported IR versions/lifecycle placement, or assemble live component/host/realm/runtime output after the pure-module early return -- including item 421 F6(e)'s `reflect` import for a live component holding a declared `Secret[T]` with no lifecycle in play. The oracle calls _emit(ir) on module-only v3 documents, and a module-only document takes the pure typed-core path before any of this code; a component document cannot stand in as a corpus case either, because emit_go.rvl excludes the live component surface. The F6(e) guard is pinned by backends/go/test_secret_registry_go.py::test_a_live_component_reaches_the_reflect_import_without_a_lifecycle instead. Issue #1347 adds three statements: `Int.to_int32` in a component METHOD body flags the checked narrow `revlToI32`, so this path resets `_COMP_NEEDS_OVERFLOW32` and writes the helper that the pure typed-core path emits off `ctx.needs_overflow32`. It sits in the same live-component assembly after the pure-module early return, which the module oracle never enters. Issue #1669 adds two statements: an ir_version 3 document that carries a `lifecycle test`, components and a module `fn` takes the combined renderer, because the live stc-go path never renders module fns. A component document cannot be a go corpus case (selfhost/emit_go.rvl names its components instead); backends/go/test_module_fn_lifecycle_1669.py runs it under `go test` against the pinned stc-go. Issue #2198 adds three statements: an `Int` negation in a component METHOD body flags the checked `revlSub`, so this path resets `_COMP_NEEDS_OVERFLOW` and writes the helper the pure typed-core path emits off `ctx.needs_overflow`. It sits in the same live-component assembly after the pure-module early return, which the module oracle never enters."]
+["reason", "remaining-entry-paths-accept-the-package-name-compatibility", "Remaining entry paths accept the package_name compatibility option, reject unsupported IR versions/lifecycle placement, or assemble live component/host/realm/runtime output after the pure-module early return -- including item 421 F6(e)'s `reflect` import for a live component holding a declared `Secret[T]` with no lifecycle in play. The oracle calls _emit(ir) on module-only v3 documents, and a module-only document takes the pure typed-core path before any of this code; a component document cannot stand in as a corpus case either, because emit_go.rvl excludes the live component surface. The F6(e) guard is pinned by backends/go/test_secret_registry_go.py::test_a_live_component_reaches_the_reflect_import_without_a_lifecycle instead. Issue #1347 adds three statements: `Int.to_int32` in a component METHOD body flags the checked narrow `revlToI32`, so this path resets `_COMP_NEEDS_OVERFLOW32` and writes the helper that the pure typed-core path emits off `ctx.needs_overflow32`. It sits in the same live-component assembly after the pure-module early return, which the module oracle never enters. Issue #1669 adds two statements: an ir_version 3 document that carries a `lifecycle test`, components and a module `fn` takes the combined renderer, because the live stc-go path never renders module fns. A component document cannot be a go corpus case (selfhost/emit_go.rvl names its components instead); backends/go/test_module_fn_lifecycle_1669.py runs it under `go test` against the pinned stc-go. Issue #2198 adds three statements: an `Int` negation in a component METHOD body flags the checked `revlSub`, so this path resets `_COMP_NEEDS_OVERFLOW` and writes the helper the pure typed-core path emits off `ctx.needs_overflow`. It sits in the same live-component assembly after the pure-module early return, which the module oracle never enters. Issue #2259 adds five more on the same path: the resets of `_COMP_NEEDS_FLOAT_DIV` and `_COMP_NEEDS_FLOAT_REM`, and the writes of the `revlDiv` helper and the `math` import that a method body's true division or Float `%` flags."]
 
-["function", "remaining-entry-paths-accept-the-package-name-compatibility", "_emit", 89, 89]
+["function", "remaining-entry-paths-accept-the-package-name-compatibility", "_emit", 94, 94]
 
 ["reason", "remaining-fallbacks-reject-a-signature-without-a-parenthesiz", "Remaining fallbacks reject a signature without a parenthesized argument list or without its closing parenthesis; canonical frontend function types are well formed."]
 

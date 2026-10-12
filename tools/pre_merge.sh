@@ -171,18 +171,48 @@ skipped=0
 
 # step "<label>" <cmd...> : run a command that MUST pass. Prints ok / FAILED and
 # the tail of its output on failure. A failure fails the whole gate.
+#
+# Exit 77 (SKIP_RC, the automake "skipped" code) means the command checked
+# nothing because a tool it needs is absent: formal/scripts/run_gate.sh without
+# lake, regen_goldens via `skip_on` below. That prints SKIPPED with the
+# command's own `SKIP` lines and counts as skipped, never "ok", and it does not
+# fail the gate (issue #2209). Before this, `step` printed "ok" for any exit 0
+# and dropped the output, so a skipped formal gate read as passed.
+SKIP_RC=77
 step() {
     label=$1
     shift
     printf '  %-42s' "$label"
-    ran=$((ran + 1))
     if out=$("$@" 2>&1); then
+        rc=0
+    else
+        rc=$?
+    fi
+    if [ "$rc" -eq "$SKIP_RC" ]; then
+        echo "SKIPPED (a tool is missing; see the SKIP lines)"
+        printf '%s\n' "$out" | grep '^SKIP' | tail -5 | sed 's/^/      /'
+        skipped=$((skipped + 1))
+        return
+    fi
+    ran=$((ran + 1))
+    if [ "$rc" -eq 0 ]; then
         echo "ok"
     else
         echo "FAILED"
         echo "$out" | tail -30 | sed 's/^/      /'
         fail=1
     fi
+}
+
+# skip_on <rc> <cmd...> : run <cmd...>, turning its own "skipped" exit code
+# <rc> into SKIP_RC for `step`. Any other code passes through unchanged.
+skip_on() {
+    _skip_rc=$1
+    shift
+    "$@"
+    _rc=$?
+    [ "$_rc" -eq "$_skip_rc" ] && return "$SKIP_RC"
+    return "$_rc"
 }
 
 # skip "<label>" "<why>" : a step that cannot run here. Loud on purpose — the
@@ -369,9 +399,11 @@ gemit java "backend-java (emit goldens)" backends/java/test_emit_java.py
 # full comparison on one with it. CI runs the same check in `lint` and
 # `backend-go`, and adds `--strict` there so a skip is an error: in CI the tool
 # is supposed to be present, and a gate that skipped compared nothing. Locally
-# a missing gofmt is an ordinary fact about the machine, so this line does not
-# pass it.
-step "goldens      (drift, all targets)" "$PYTHON" tools/regen_goldens.py --check
+# a missing gofmt is an ordinary fact about the machine, so it must not fail the
+# gate, but it must not read as "ok" either (issue #2209). `--strict` makes the
+# driver exit 3 (its SKIPPED code) only when a target skipped and nothing
+# drifted or broke, and `skip_on 3` turns that into a SKIPPED line here.
+step "goldens      (drift, all targets)" skip_on 3 "$PYTHON" tools/regen_goldens.py --check --strict
 
 # 4. Generated-artifact gates (pure Python, always run): the README conformance
 #    matrix must match a fresh generation, the same contract the frontend CI job
@@ -492,7 +524,7 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 if [ "$cordis_missing" -ne 0 ]; then
-    echo "pre-merge: NOT OK: the cordis-runtime half of tests/ did not run (no cordis-py venv)."
+    echo "pre-merge: NOT OK: the cordis-runtime half of tests/ did not run (no cordis-py venv at CORDIS_PY_PIN, or no pin found; see above)."
     echo "           Run \`sh backends/python/setup.sh\` or set REVL_CORDIS_PYTHON, then re-run."
     exit 1
 fi
@@ -503,6 +535,8 @@ fi
 if [ "$RUN_ALL" -eq 0 ]; then
     echo "pre-merge (affected): ok for the selected targets — NOT the full gate."
     echo "           Run \`make pre-merge\` (full) before release / on CI."
+elif [ "$skipped" -ne 0 ]; then
+    echo "pre-merge: ok, but $skipped step(s) SKIPPED: what needs a missing tool was not checked (see above)"
 else
     echo "pre-merge: ok"
 fi

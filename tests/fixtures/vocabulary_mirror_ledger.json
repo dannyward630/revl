@@ -3,6 +3,29 @@
   "classes": [
     {
       "sites": [
+        "src/revl/_run_backends.py::KNOWN_BACKENDS",
+        "src/revl/_run_backends.py::RUNNABLE_BACKENDS",
+        "src/revl/fault.py::_SWEEP_ALL_TIERS",
+        "src/revl/gate.py::_KNOWN_TIERS",
+        "src/revl/test.py::_RAW_RUNNERS",
+        "tools/conformance_cert.py::ALL_TIERS",
+        "tools/docgen.py::VISION_TIER_RUNTIME",
+        "tools/fuzz_cross_tier.py::detect_tiers",
+        "tools/selfhost_coverage.py::TIERS",
+        "tools/selfhost_line_coverage.py::TIERS"
+      ],
+      "tokens": [
+        "go",
+        "java",
+        "py",
+        "rust",
+        "ts",
+        "wasm"
+      ],
+      "note": "The six tier names in their short spelling, re-declared in ten places, the largest mirror class in the tree. Real mirror, not yet resolved."
+    },
+    {
+      "sites": [
         "src/revl/bundle.py::DEFAULT_BACKENDS",
         "src/revl/cli/parser.py::BUNDLE_BACKENDS",
         "tools/affected_tests.py::BACKEND_TIERS",
@@ -232,29 +255,6 @@
         "Str"
       ],
       "note": "The primitives a value can be generated for, declared by the fault sweep and by the lowering check. A primitive added to one and not the other means the checker admits a type the generator cannot produce, or the reverse."
-    },
-    {
-      "sites": [
-        "src/revl/fault.py::_SWEEP_ALL_TIERS",
-        "src/revl/gate.py::_KNOWN_TIERS",
-        "src/revl/run.py::KNOWN_BACKENDS",
-        "src/revl/run.py::RUNNABLE_BACKENDS",
-        "src/revl/test.py::_RAW_RUNNERS",
-        "tools/conformance_cert.py::ALL_TIERS",
-        "tools/docgen.py::VISION_TIER_RUNTIME",
-        "tools/fuzz_cross_tier.py::detect_tiers",
-        "tools/selfhost_coverage.py::TIERS",
-        "tools/selfhost_line_coverage.py::TIERS"
-      ],
-      "tokens": [
-        "go",
-        "java",
-        "py",
-        "rust",
-        "ts",
-        "wasm"
-      ],
-      "note": "The six tier names in their short spelling, re-declared in ten places, the largest mirror class in the tree. Real mirror, not yet resolved."
     },
     {
       "sites": [

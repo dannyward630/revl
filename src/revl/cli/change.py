@@ -613,6 +613,11 @@ def _run_recover(args) -> int:
         if getattr(args, "composition", None):
             world = _bind_composition(args)
         from ..wal import resolve_crossing
+        # Each ack is appended as it is validated, so one invalid seq in
+        # `--operator-resolved 1 --operator-resolved 2` leaves seq 1's ack
+        # on disk and then errors out below: partial application, which is
+        # acceptable because each ack only settles a crossing the operator named;
+        # re-run with the bad seq removed.
         for seq in getattr(args, "operator_resolved", []):
             resolve_crossing(args.wal, seq)
         report = recover(args.wal, world=world, session=session,
