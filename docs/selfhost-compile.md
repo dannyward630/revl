@@ -176,10 +176,15 @@ path, which is what the resolution needs:
   <Type>.<name>` rows; a `return` of a requirement call is checked at the
   operation's declared return; and a `fn m() = <expr>` provide method is typed
   as the `return <expr>` the reference makes of it, with its requirement calls
-  checked as any statement's are. Still not decided: a requirement call nested
-  inside a larger expression (`store.put(1) + 1`) is untyped, so its value
-  is not held to a declared result, and a variant or generic parameter meeting
-  a record literal stays silent.
+  checked before the return's own check, as the reference orders them. Still
+  not decided: a requirement call nested inside a larger expression
+  (`store.put(1) + 1`) is untyped, so its value is not held to a declared
+  result; a variant or generic parameter meeting a record literal stays
+  silent; through an import, a wrong call nested in a larger returned value
+  (`= store.put(1, 2) == 1`) refuses with the return's message rather than the
+  call's, because the first admission reads the importing document alone; and
+  a wrong argument count to an unmarked `emission` operation refuses with the
+  wiring's G4 where the reference reports the count first.
 
 This is the honest multi-file native compile: the whole chain still runs in revl,
 and the only host crossing is the read the reference loader also performs. It

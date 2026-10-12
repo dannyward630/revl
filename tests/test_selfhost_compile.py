@@ -1363,6 +1363,11 @@ _CALL_SITE_RULES = {
     "record_extra_field": ("pub type Row = { id: Int }\n"
                            "pub service Store { fn put(r: Row) -> Str }\n",
                            "= store.put({ id: 1, b: 2 })", "T1"),
+    # the requirement call is decided before the return's own check
+    "arity_under_compare": ("pub service Store { fn put(id: Int) -> Int }\n",
+                            "= store.put(1, 2) == 1", "T1"),
+    "argument_in_list": ("pub service Store { fn put(id: Int) -> Str }\n",
+                         '{\n      return [store.put("x")]\n    }', "T1"),
     # Positive controls: admitted by the reference, and by the native gate.
     "return_matches": ("pub service Store { fn put(id: Int) -> Str }\n",
                        "= store.put(1)", "emit"),
@@ -1370,6 +1375,13 @@ _CALL_SITE_RULES = {
                        "pub service Store { fn put(r: Row) -> Str }\n",
                        '= store.put({ n: "a", id: 1 })', "emit"),
 }
+
+# Through an import these two still refuse, but with the return's own message:
+# the first native admission reads the importing document alone, where the
+# service is undeclared, so the outer value's type is checked before the
+# import pass can hold the nested call to its declaration. A named gap in
+# docs/selfhost-compile.md; pinned here so it cannot become a silent emit.
+_CALL_SITE_IMPORT_MESSAGE_GAP = {"arity_under_compare", "argument_in_list"}
 
 _CALL_SITE_COMPONENT = (
     "service Front { fn go() -> Str }\n\n"
@@ -1418,6 +1430,9 @@ def test_native_driver_decides_the_call_site_rules_through_an_import(
     else:
         want = _reference_message(lambda: compile_files([str(doc)]))
         assert want != ""
+        if case in _CALL_SITE_IMPORT_MESSAGE_GAP:
+            assert got.startswith("REFUSED|T1|`go` returns expects"), got[:200]
+            return
         assert got == "REFUSED|T1|" + want, got[:200]
 
 

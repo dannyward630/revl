@@ -13477,13 +13477,13 @@ fn mth_type_verdict(body: Vec<Stmt>, i: i64, env: Vec<Bind>, cx: Ctx__m2, ret: S
     }
     if (((s.kind == "return") && (ret != "")) && (!is_bad(s.e.clone()))) {
         let where__ = (String::from("`").revl_concat(&mname)).revl_concat("` returns");
-        let rc = tk_check(s.e.clone(), ret.clone(), env.clone(), &where__);
-        if (rc.v != "") {
-            return mk_verd(rc.v.clone(), ln.clone());
-        }
         let rq = ct_scan(s.e.clone(), cx.clone(), env.clone());
         if (rq != "") {
             return mk_verd(rq.clone(), ln.clone());
+        }
+        let rc = tk_check(s.e.clone(), ret.clone(), env.clone(), &where__);
+        if (rc.v != "") {
+            return mk_verd(rc.v.clone(), ln.clone());
         }
         let rr = ct_return_req(s.e.clone(), ret.clone(), cx.clone(), &env, &where__);
         if (rr != "") {

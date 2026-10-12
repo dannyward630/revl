@@ -7339,13 +7339,13 @@ fn mth_type_verdict(body: List[Stmt], i: Int, env: List[Bind], cx: Ctx,
   // parse leaves a `skip`, and `is_bad` is the second fence on the same rule.
   if (s.kind == "return" && ret != "" && !is_bad(s.e)) {
     let where_ = "`".concat(mname).concat("` returns")
-    let rc = tk_check(s.e, ret, env, where_)
-    if (rc.v != "") { return mk_verd(rc.v, ln) }
     // issue #2362: a requirement call in the returned value is held to its
-    // declaration too (`_component_req_call` runs while the value is lowered,
-    // ahead of `_do_return`'s check), as every other statement's is below.
+    // declaration first (`_component_req_call` runs while the value is
+    // lowered, ahead of `_do_return`'s check), as every other statement's is.
     let rq = ct_scan(s.e, cx, env)
     if (rq != "") { return mk_verd(rq, ln) }
+    let rc = tk_check(s.e, ret, env, where_)
+    if (rc.v != "") { return mk_verd(rc.v, ln) }
     let rr = ct_return_req(s.e, ret, cx, env, where_)
     if (rr != "") { return mk_verd(rr, ln) }
     return mth_type_verdict(body, i + 1, env, cx, ret, mname, fallback)
