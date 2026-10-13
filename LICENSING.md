@@ -20,7 +20,8 @@ published by the Free Software Foundation. The full text is in [LICENSE](LICENSE
   are compiler source; the rest of `backends/` is MIT, below)
 - `tools/`, `tests/`, `tck/`, `formal/`, `schema/`, `registry/`, `bench/`,
   `dogfood/`, `ci/`, `site/`, `playground/`, `docs/`, and every other path not
-  named in the MIT list below
+  named in the MIT list below, except the research text named in the CC BY 4.0
+  section below
 
 The AGPL's network clause (section 13) applies. If you run a modified revl,
 including a modified admission gate, as a service that others interact with over
@@ -44,6 +45,18 @@ Licensed under the MIT License. The full text is in [LICENSES/MIT.txt](LICENSES/
 These are MIT so that a component compiled with revl carries no AGPL obligation.
 A closed-source program may be written in revl, compiled with revl, and shipped
 with the MIT runtime shims inside it.
+
+## The research drafts: CC BY 4.0
+
+The text under `docs/research/` (the research paper drafts, their collection
+file and their README), and the pages `tools/publish_research.py` renders from
+it under `site/research/`, are licensed under the Creative Commons Attribution
+4.0 International license (CC BY 4.0). Author: Thomas Moussajee. You may share
+and adapt the text for any purpose, including commercially, if you give
+appropriate credit, link to the license and say if you made changes. The legal
+code is at <https://creativecommons.org/licenses/by/4.0/>; this repository does
+not carry a copy of it. The renderer itself, `tools/publish_research.py`, and
+the stylesheet `site/css/research.css` stay under the AGPL-3.0-only rule above.
 
 ## Output of the compiler
 

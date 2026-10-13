@@ -87,3 +87,11 @@ site/vendor/revl-*.whl
 # Render it into a checkout with:
 #   python3 tools/publish_census_artifact.py --write
 site/census-artifact/
+
+# the rendered research paper drafts (docs/research/). NOT committed, for the
+# census edition's reason: the pages are a function of the drafts and the tree
+# they link into, so a committed copy goes stale at the next merge.
+# `.github/workflows/pages.yml` renders them into the deployed site. Render
+# them into a checkout with:
+#   python3 tools/publish_research.py --write
+site/research/

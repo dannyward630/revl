@@ -1,0 +1,109 @@
+/* revl research pages. Loaded after site.css and reusing its tokens.
+   Written for a phone first: one column, no horizontal page scroll. Tables
+   scroll inside their own box; long paths and identifiers wrap. */
+
+body.research { overflow-wrap: break-word; }
+body.research main { padding-top: 40px; padding-bottom: 72px; max-width: 860px; }
+
+body.research h1 {
+  font-size: clamp(28px, 6vw, 44px); line-height: 1.12;
+  letter-spacing: -0.03em; font-weight: 800; margin: 0 0 16px;
+}
+body.research h2 {
+  font-size: clamp(21px, 4vw, 27px); line-height: 1.25;
+  letter-spacing: -0.02em; margin: 44px 0 14px;
+}
+body.research h3 { font-size: 17px; line-height: 1.35; margin: 0 0 6px; }
+body.research p, body.research li { max-width: 46em; }
+body.research ul, body.research ol { padding-left: 22px; }
+body.research li { margin: 0 0 6px; }
+body.research .muted { color: var(--muted); font-size: 14px; }
+
+body.research code {
+  font-size: 0.86em; background: rgba(148, 163, 184, 0.1);
+  border-radius: 5px; padding: 1px 5px; overflow-wrap: anywhere;
+}
+body.research a.repo code { color: var(--blue); }
+body.research a.repo:hover code { background: var(--teal-weak); }
+
+.research-hero { padding: 24px 0 8px; }
+.research-hero .lede { font-size: 18px; color: var(--muted); max-width: 36em; }
+
+.badge-plain { background: rgba(148, 163, 184, 0.1); color: var(--muted); }
+.badges { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 20px; }
+
+.crumbs { font-family: var(--mono); font-size: 12.5px; color: var(--faint); margin: 0 0 14px; }
+.back { margin-top: 48px; }
+
+/* collection index */
+.maturity { list-style: none; padding: 0; }
+.maturity li { margin: 0 0 8px; color: var(--muted); }
+
+.filters {
+  display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: center;
+  margin: 0 0 24px; padding: 14px 16px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+}
+.filters[hidden] { display: none; }
+.filters label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--faint); font-family: var(--mono); }
+.filters select {
+  background: var(--bg1); color: var(--text); border: 1px solid var(--line-strong);
+  border-radius: 7px; padding: 7px 10px; font: inherit; font-size: 14px; max-width: 100%;
+}
+
+section.theme[hidden], article.paper[hidden] { display: none; }
+section.theme h2 .count {
+  font-family: var(--mono); font-size: 12px; font-weight: 500; color: var(--faint);
+  margin-left: 8px;
+}
+article.paper {
+  padding: 14px 16px; margin: 0 0 12px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+}
+article.paper:hover { border-color: var(--line-strong); }
+article.paper h3 a { color: var(--text); }
+.paper-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 8px; }
+.paper-id { font-family: var(--mono); font-weight: 600; font-size: 13px; }
+article.paper .status { margin: 0; color: var(--muted); font-size: 14.5px; }
+
+.groups li { color: var(--muted); }
+.groups li a { font-family: var(--mono); }
+
+/* one paper */
+.state {
+  margin: 0 0 28px; padding: 14px 18px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-left: 3px solid var(--amber); border-radius: 10px;
+}
+.state p { margin: 0 0 8px; }
+.state p:last-child { margin: 0; }
+.toc ol { columns: 2 260px; column-gap: 28px; font-size: 14.5px; margin: 0 0 8px; }
+.toc a { color: var(--muted); }
+
+.tablewrap {
+  overflow-x: auto; margin: 14px 0 20px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  -webkit-overflow-scrolling: touch;
+}
+.tablewrap table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 13.5px; }
+.tablewrap th {
+  text-align: left; font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--faint); font-weight: 500;
+  padding: 9px 12px; border-bottom: 1px solid var(--line); background: var(--bg1);
+}
+.tablewrap td { padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.tablewrap tr:last-child td { border-bottom: 0; }
+
+pre.cite {
+  overflow-x: auto; margin: 12px 0; padding: 14px 16px;
+  background: var(--bg1); border: 1px solid var(--line); border-radius: 10px;
+  font-size: 13px; line-height: 1.5;
+}
+pre.cite code { background: none; padding: 0; overflow-wrap: normal; }
+
+@media (max-width: 620px) {
+  body.research main { padding-top: 24px; }
+  .toc ol { columns: 1; }
+  .filters label, .filters select { width: 100%; }
+  .foot-inner { gap: 16px; }
+}

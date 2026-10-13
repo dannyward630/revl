@@ -1,0 +1,45 @@
+{
+  "snapshot": "45bec431f",
+  "author": "Thomas Moussajee",
+  "license": "CC BY 4.0",
+  "license_url": "https://creativecommons.org/licenses/by/4.0/",
+  "repo": "https://github.com/inso1337/revl",
+  "themes": [
+    [
+      "formal-pl",
+      "Formal and PL core"
+    ],
+    [
+      "effects-replay",
+      "Effects, recovery and replay"
+    ],
+    [
+      "lifecycle-swap",
+      "Lifecycle, hot swap and Cordis"
+    ],
+    [
+      "distribution",
+      "Distribution and placement"
+    ],
+    [
+      "security",
+      "Security and information flow"
+    ],
+    [
+      "compiler",
+      "Compiler, backends and verification"
+    ],
+    [
+      "agents",
+      "Agents and LLMs"
+    ],
+    [
+      "empirical",
+      "Benchmarks and empirical studies"
+    ],
+    [
+      "methods",
+      "Methods"
+    ]
+  ]
+}
