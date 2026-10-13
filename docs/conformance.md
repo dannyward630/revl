@@ -155,9 +155,12 @@ the revl-native path:
   reference emitter byte-for-byte. `ok` means byte-identical, so revl compiles
   itself correctly for that construct. `lim` is the documented self-host
   frontier: the native pipeline runs but is not yet byte-exact, or its own gate
-  declines the construct. `GAP` would be a crash. The frontier is real (the
-  typed component/method body is only partly native yet), so most component and
-  `fn`-body constructs read `lim` while the function/type surface reads `ok`.
+  declines the construct. `GAP` would be a crash. The frontier is narrow: in
+  the table above only two of the 61 constructs (component/block effect setup
+  and fn/verified fn) read `lim` in the `revl` column, and every other
+  construct is byte-identical. The self-host gate still declines several
+  guarantees, marked `unimpl` for the `revl` column in
+  [the guarantee x tier support matrix](#the-guarantee-x-tier-support-matrix).
 
 `tests/test_cross_tier.py` holds a floor for a handful of constructs known to
 be portable. This walks the *whole* surface and reports what each tier does
