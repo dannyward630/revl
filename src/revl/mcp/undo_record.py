@@ -93,10 +93,12 @@ def undo_cold_start_note(components: list[str], to: int | None) -> str:
     return (f"revl_undo re-admits {target}'s sources and starts it cold: a "
             f"`handoff` is not run in reverse (a rollback never carries the "
             f"generation it leaves into the one it returns to), so the live "
-            f"state held by {', '.join(components)} is dropped. To keep it, "
-            f"re-apply that generation's source as a forward change "
-            f"(revl_change with `replace` and `commit: true`), which hands "
-            f"state off through a declared `handoff` like any swap.")
+            f"state held by {', '.join(components)} is dropped. A forward "
+            f"change that re-applies that generation's source (revl_change "
+            f"with `replace` and `commit: true`) keeps the state of a "
+            f"component that declares a `handoff` on both sides, and of a "
+            f"template's live instances; any other component starts cold "
+            f"either way.")
 
 
 def _none(reason: str) -> dict:
@@ -198,7 +200,10 @@ def _describe_generation(session, pre: PreState) -> dict:
 def _live_state(session) -> list[str]:
     """The running components whose live state the undo would drop."""
     reader = getattr(session, "live_state_components", None)
-    return reader() if callable(reader) else []
+    try:
+        return reader() if callable(reader) else []
+    except Exception:  # noqa: BLE001 - the note is advice; the undo stands
+        return []
 
 
 @dataclass

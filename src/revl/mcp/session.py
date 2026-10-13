@@ -2306,11 +2306,16 @@ class Session:
 
     @staticmethod
     def _snapshot(res):
-        """A resource's `__revl_state__`, or None when it has none or is
+        """Whether a resource holds state: its `__revl_state__` (a Map's
+        emptiness, read without copying it), or None when it has none or is
         already closed (a closed resource holds nothing a cold start loses)."""
         if not hasattr(res, "__revl_state__"):
             return None
         try:
+            data = getattr(res, "data", None)
+            if isinstance(data, dict) and hasattr(res, "_check_open"):  # a Map
+                res._check_open("__revl_state__")
+                return bool(data)
             return res.__revl_state__()
         except Exception:  # noqa: BLE001 - a report, never a fault
             return None

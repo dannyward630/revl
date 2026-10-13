@@ -111,9 +111,10 @@ Because an undo is a change, its plan is computed like any change:
   that holds live state, a provider whose store is non-empty or a template with
   a stateful live instance, plus the components the target withdraws, with a
   `note` when any state is lost (issue #2346). The forward call that offered
-  the undo says the same in its `undoNote`. To keep the state, re-apply the
-  earlier source as a forward `revl_change` with `replace`, which hands state
-  off like any swap;
+  the undo says the same in its `undoNote`. A forward `revl_change` with
+  `replace` that re-applies the earlier source keeps the state of a component
+  that declares a `handoff` on both sides, and of a template's live instances;
+  any other component starts cold either way;
 * **the interim boundary crossings that no undo can un-emit** — §6.1.
 
 ## What no undo can un-emit (compensation is not inversion)

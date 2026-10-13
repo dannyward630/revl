@@ -1250,8 +1250,9 @@ dossier rides along: what unloads, what state drops, and the interim boundary
 crossings that no undo can un-emit ([generation-history.md](generation-history.md)).
 An undo starts the target cold and does not run a `handoff` in reverse, so every
 running component holding live state is listed in `dossier.stateDropped.components`
-with a `note` (issue #2346); to keep the state, re-apply the earlier source as a
-forward `revl_change` with `replace`, which hands state off like any swap.
+with a `note` (issue #2346). A forward `revl_change` with `replace` that re-applies
+the earlier source keeps the state a declared `handoff` (or a template's live
+instances) carries; any other component starts cold either way.
 The answer carries the `"disk": {"inSync", "stale"}` block (issue #2037): a
 revert of a change that had been exported leaves disk holding the retracted
 change, so `stale` names it and a `note` points at `revl_export`; a revert of a
