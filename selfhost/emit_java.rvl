@@ -28,7 +28,7 @@
 //     keyword renaming, `// (empty body)`); `_v3_stmt` (let/assign, return,
 //     if/while/for, bare-expr, assert); and the base `_expr` algebra (lit, name,
 //     var incl `None`->`Optional.empty()`, bin incl `??`/`==`/exact-arith/`/`/
-//     comparisons/`&&`, un incl `Math.negateExact`, the 2.0 call and the `fn`
+//     comparisons/`&&`, un incl `revlNeg`, the 2.0 call and the `fn`
 //     call with `Some`/`None`, the widen markers, field, index, ternary, list,
 //     the empty `maplit`, and non-float `${..}` interpolation).
 //
@@ -100,7 +100,7 @@
 //     so the `checked_*` builtin methods stay behind a loud
 //     `<<UNSUPPORTED-checked-div:..>>`; and the `revlDivFloor`/`revlDivEuclid`/`revlMod`
 //     int-arith block, so `div_floor`/`div_euclid`/`mod` stay behind a loud
-//     `<<UNSUPPORTED-int-arith:..>>` (`div_trunc` is inline `Math.divideExact` and IS
+//     `<<UNSUPPORTED-int-arith:..>>` (`div_trunc` is the `revlDivTrunc` stdlib group and IS
 //     covered);
 //   * functional record-update `{r | f = e}` — the JAVA reference itself RAISES on
 //     `record_update` (only python/typescript emit it), a structural exclusion;
@@ -309,9 +309,9 @@ fn java_bin_ops(op: Str) -> Str {
   return ""
 }
 fn exact_method(op: Str) -> Str {
-  if (op == "+") { return "addExact" }
-  if (op == "-") { return "subtractExact" }
-  return "multiplyExact"
+  if (op == "+") { return "revlAdd" }
+  if (op == "-") { return "revlSub" }
+  return "revlMul"
 }
 fn is_addsubmul(op: Str) -> Bool { return op == "+" || op == "-" || op == "*" }
 fn is_int_operand(opnd: Str) -> Bool { return opnd == "Int" || opnd == "Int32" }
@@ -541,7 +541,7 @@ fn render_bin(node: Any, ctx: Ctx, counter: Int) -> Rendered {
     return { text: `(((double) (${left})) / ((double) (${right})))`, counter: c }
   }
   if (is_addsubmul(op) && is_int_operand(opnd)) {
-    return { text: `Math.${exact_method(op)}(${left}, ${right})`, counter: c }
+    return { text: `${exact_method(op)}(${left}, ${right})`, counter: c }
   }
   // Java has NO relational operator on `String`: `(a < b)` reached javac as
   // "bad operand types for binary operator '<'", so a document that ordered
@@ -565,7 +565,7 @@ fn render_un(node: Any, ctx: Ctx, counter: Int) -> Rendered {
     return { text: `(~${r.text})`, counter: r.counter }
   }
   if (op == "-") {
-    if (is_int_operand(node_operands(node))) { return { text: `Math.negateExact(${r.text})`, counter: r.counter } }
+    if (is_int_operand(node_operands(node))) { return { text: `revlNeg(${r.text})`, counter: r.counter } }
     return { text: `(-${r.text})`, counter: r.counter }
   }
   return { text: `<<UNSUPPORTED-UN:${op}>>`, counter: r.counter }
@@ -633,10 +633,11 @@ fn v3_builtin(method: Str, target: Str, args: List[Str], recv: Str) -> Str {
     if (recv == "Str") { return `revlParseInt(${target})` }
     return `((long) (${target}))`
   }
-  if (method == "to_int32") { return `Math.toIntExact(${target})` }
-  // `div_trunc` truncates toward zero; `Math.divideExact` truncates identically
-  // and throws on the one overflow (`Int.MIN / -1`) plain `/` would wrap.
-  if (method == "div_trunc") { return `Math.divideExact(${target}, ${args[0]})` }
+  if (method == "to_int32") { return `revlToInt32(${target})` }
+  // `div_trunc` truncates toward zero; `revlDivTrunc` (Math.divideExact under
+  // it) truncates identically and faults on the one overflow (`Int.MIN / -1`)
+  // plain `/` would wrap.
+  if (method == "div_trunc") { return `revlDivTrunc(${target}, ${args[0]})` }
   if (method == "div_floor" || method == "div_euclid" || method == "mod") {
     return `<<UNSUPPORTED-int-arith:${method}>>`
   }
@@ -2307,7 +2308,7 @@ fn stdlib_block_header() -> List[Str] {
 // The helper group ORDER of `_stdlib_helper_source` (first-declaration order),
 // which is the order `_emit_stdlib_helpers` emits the selected groups in.
 fn stdlib_group_names() -> List[Str] {
-  return ["revlLength", "revlSlice", "revlIndexOf", "revlCharAt", "revlCharCodeAt", "revlConcat", "revlPush", "revlSplit", "revlJoin", "revlRepeat", "revlParseInt", "revlMapSet", "revlMapGet", "revlMapHas", "revlStrCmp", "revlMapRemove", "revlMapKeys"]
+  return ["revlLength", "revlSlice", "revlIndexOf", "revlCharAt", "revlCharCodeAt", "revlConcat", "revlPush", "revlSplit", "revlJoin", "revlRepeat", "revlParseInt", "revlMapSet", "revlMapGet", "revlMapHas", "revlStrCmp", "revlMapRemove", "revlMapKeys", "revlAdd", "revlSub", "revlMul", "revlNeg", "revlToInt32", "revlDivTrunc"]
 }
 
 // Each group VERBATIM (its own leading comment lines ride with it, so a group
@@ -2511,6 +2512,80 @@ fn stdlib_group_lines(name: Str) -> List[Str] {
       "    java.util.List<String> ks = new java.util.ArrayList<>(m.keySet());",
       "    ks.sort((a, b) -> revlStrCmp(a, b));",
       "    return java.util.List.copyOf(ks);",
+      "}",
+    ]
+  }
+  if (name == "revlAdd") {
+    return [
+      "// Int / Int32 overflow TRAPS (docs/arithmetic.md) and says so in revl's own",
+      "// words, `revl: Int overflow` / `revl: Int32 overflow`, as py/ts/go/rust do.",
+      "// Math.*Exact throws ArithmeticException with the JDK's text (`long",
+      "// overflow`), so each helper re-raises it; the `int` overloads serve Int32.",
+      "private static long revlAdd(long a, long b) {",
+      "    try { return Math.addExact(a, b); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int overflow\"); }",
+      "}",
+      "private static int revlAdd(int a, int b) {",
+      "    try { return Math.addExact(a, b); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+      "}",
+    ]
+  }
+  if (name == "revlSub") {
+    return [
+      "private static long revlSub(long a, long b) {",
+      "    try { return Math.subtractExact(a, b); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int overflow\"); }",
+      "}",
+      "private static int revlSub(int a, int b) {",
+      "    try { return Math.subtractExact(a, b); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+      "}",
+    ]
+  }
+  if (name == "revlMul") {
+    return [
+      "private static long revlMul(long a, long b) {",
+      "    try { return Math.multiplyExact(a, b); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int overflow\"); }",
+      "}",
+      "private static int revlMul(int a, int b) {",
+      "    try { return Math.multiplyExact(a, b); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+      "}",
+    ]
+  }
+  if (name == "revlNeg") {
+    return [
+      "private static long revlNeg(long a) {",
+      "    try { return Math.negateExact(a); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int overflow\"); }",
+      "}",
+      "private static int revlNeg(int a) {",
+      "    try { return Math.negateExact(a); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+      "}",
+    ]
+  }
+  if (name == "revlToInt32") {
+    return [
+      "// Int -> Int32 narrowing is checked: out of the int range faults.",
+      "private static int revlToInt32(long a) {",
+      "    try { return Math.toIntExact(a); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+      "}",
+    ]
+  }
+  if (name == "revlDivTrunc") {
+    return [
+      "// div_trunc: Math.divideExact truncates toward zero and faults on the one",
+      "// overflow (Int.MIN / -1); a zero divisor keeps the JDK's own fault.",
+      "private static long revlDivTrunc(long a, long b) {",
+      "    try { return Math.divideExact(a, b); }",
+      "    catch (ArithmeticException e) {",
+      "        if (b == 0L) { throw e; }",
+      "        throw new ArithmeticException(\"revl: Int overflow\");",
+      "    }",
       "}",
     ]
   }
@@ -3849,9 +3924,9 @@ test "bin-op table and exact-method map the arithmetic surface" {
   assert java_bin_ops("<=") == "<="
   assert java_bin_ops("/") == "/"
   assert java_bin_ops("&&") == "&&"
-  assert exact_method("+") == "addExact"
-  assert exact_method("-") == "subtractExact"
-  assert exact_method("*") == "multiplyExact"
+  assert exact_method("+") == "revlAdd"
+  assert exact_method("-") == "revlSub"
+  assert exact_method("*") == "revlMul"
 }
 
 test "keyword-colliding identifiers are renamed by appending underscore" {

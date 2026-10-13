@@ -25,7 +25,7 @@ Covered subset (what emits byte-identical):
     ``// (empty body)``); ``_v3_stmt`` (let/assign, return, if/while/for,
     bare-expr, assert); and the base ``_expr`` algebra (lit, name, var incl
     ``None`` -> ``Optional.empty()``, bin incl ``??``/``==``/exact-arith/``/``/
-    comparisons/``&&``, un incl ``Math.negateExact``, the 2.0 call and the
+    comparisons/``&&``, un incl ``revlNeg``, the 2.0 call and the
     ``fn`` call with ``Some``/``None``, the ``widen`` markers, field, index,
     ternary, list, empty ``maplit``, non-float ``${..}`` interpolation).
   * slice 2 (item 210) — the v3 TYPED-CORE: ``_emit_v3_types`` (a ``record`` type

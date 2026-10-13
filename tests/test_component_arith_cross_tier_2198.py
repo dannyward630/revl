@@ -26,9 +26,10 @@ goes red here:
   * the same with a module `fn` beside the component, which puts the
     document on each tier's combined emit path.
 
-The fault text is the host's (python and rust say `revl: Int overflow`, java's
-`Math.addExact` says `long overflow`, exactly as a module `fn` does on that
-tier), so the assertion is the fault itself plus the word that names it.
+The fault text is revl's own on every tier here (`revl: Int overflow`, and
+`revl: Int32 overflow` for Int32; java re-raises `Math.*Exact` in those words
+since #2381, as docs/arithmetic.md states), so the assertion is the fault
+itself plus the text that names it.
 """
 
 import pytest
@@ -178,14 +179,14 @@ lifecycle test "effect argument arithmetic values" {
 #: method -> (argument, the word the fault names). Each one is one past the
 #: edge, or a zero divisor, and must fault on every tier.
 FAULTS = {
-    "add": (INT_MAX, "overflow"),
-    "sub": (INT_MIN, "overflow"),
-    "mul": (INT_MAX, "overflow"),
-    "neg": (INT_MIN, "overflow"),
-    "add32": (I32_MAX, "overflow"),
-    "sub32": (I32_MIN, "overflow"),
-    "mul32": (I32_MAX, "overflow"),
-    "neg32": (I32_MIN, "overflow"),
+    "add": (INT_MAX, "revl: int overflow"),
+    "sub": (INT_MIN, "revl: int overflow"),
+    "mul": (INT_MAX, "revl: int overflow"),
+    "neg": (INT_MIN, "revl: int overflow"),
+    "add32": (I32_MAX, "revl: int32 overflow"),
+    "sub32": (I32_MIN, "revl: int32 overflow"),
+    "mul32": (I32_MAX, "revl: int32 overflow"),
+    "neg32": (I32_MIN, "revl: int32 overflow"),
     "rem": ("7, 0", "zero"),
 }
 

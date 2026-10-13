@@ -1601,7 +1601,7 @@ def test_every_bounded_tier_uses_the_same_trap_message():
                             ("go", 'panic("revl: Int overflow")'),
                             ("python", "revl: Int overflow"),
                             ("typescript", "throw new RangeError('revl: Int overflow')"),
-                            ("java", "Math.addExact")):
+                            ("java", 'throw new ArithmeticException("revl: Int overflow")')):
         emitted = _emit(backend, INT_OVERFLOW)
         assert needle in emitted, (backend, emitted[:400])
 
@@ -1667,7 +1667,7 @@ def test_bounded_tiers_emit_checked_int_negation():
     """The static half for go/java/ts: an Int negation renders through the
     tier's checked mechanism, never the host's wrapping unary minus."""
     assert "revlSub(0, " in _emit("go", NEG_INT_MIN)
-    assert "Math.negateExact(" in _emit("java", NEG_INT_MIN)
+    assert "revlNeg(" in _emit("java", NEG_INT_MIN)
     assert "revlI64(-" in _emit("typescript", NEG_INT_MIN)
 
 
@@ -1898,7 +1898,7 @@ def test_every_tier_imposes_the_i32_bound_on_arithmetic():
         "go": "revlAddI32",
         "python": "_revl_i32(",
         "typescript": "revlI32(",
-        "java": "Math.addExact",
+        "java": "revlAdd(",
         "wasm": "$int32_add",
     }
     for backend, needle in checks.items():
@@ -1917,7 +1917,7 @@ def test_narrowing_is_explicit_and_checked_on_every_tier():
         "go": "revlToI32",
         "python": "_revl_i32(",
         "typescript": "revlI32(Number(",
-        "java": "Math.toIntExact",
+        "java": "revlToInt32(",
         "wasm": "$int32_narrow",
     }
     for backend, needle in checks.items():

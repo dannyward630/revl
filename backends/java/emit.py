@@ -1481,8 +1481,9 @@ def _v3_builtin(method: object, target: str, args: list[str],
     # Euclidean remainder, which is non-negative for either sign of b.
     # Int/Int32 width conversions (docs/arithmetic.md). Widening Int32 -> Int is
     # an explicit `(long)` cast; narrowing Int -> Int32 goes through
-    # Math.toIntExact, which throws ArithmeticException out of the int range —
-    # the same fault the other Int32 operations give.
+    # `revlToInt32` (Math.toIntExact under it), which faults out of the int
+    # range with revl's own `revl: Int32 overflow`, like the other Int32
+    # operations.
     if method == "to_int":
         if recv == "Str":
             # Str.to_int (FR-9, docs/stdlib-2.0.md §Str.to_int): Long.parseLong
@@ -1492,20 +1493,20 @@ def _v3_builtin(method: object, target: str, args: list[str],
             return f"revlParseInt({target})"
         return f"((long) ({target}))"
     if method == "to_int32":
-        return f"Math.toIntExact({target})"
+        return f"revlToInt32({target})"
     if method == "div_trunc":
         # `div_trunc` truncates toward zero (Java `/` already does), but the
         # true quotient of `Int.MIN / -1` is 2^63 — one past Int.MAX — so it
         # must TRAP like every other Int overflow (docs/arithmetic.md, and the
         # reference py/go/rust/wasm all fault here). Plain `/` WRAPS back to
-        # Int.MIN with no trap — the #549 java divergence. `Math.divideExact`
-        # truncates identically and throws ArithmeticException on that one
-        # overflow (and on a zero divisor), matching the `Math.*Exact` family
-        # already used for `+`/`-`/`*`/unary minus.
-        return f"Math.divideExact({target}, {args[0]})"
+        # Int.MIN with no trap — the #549 java divergence. `revlDivTrunc`
+        # (`Math.divideExact` under it) truncates identically, faults on that
+        # one overflow with revl's `revl: Int overflow` (and on a zero
+        # divisor), matching `revlAdd`/`revlSub`/`revlMul`/`revlNeg`.
+        return f"revlDivTrunc({target}, {args[0]})"
     # `div_floor`, `div_euclid` and `mod` all go through a static helper
     # rather than an inline `Math.*` expression, for the same reason
-    # `div_trunc` reaches for `Math.divideExact`: the java primitives here are
+    # `div_trunc` reaches for `revlDivTrunc`: the java primitives here are
     # PARTIAL where revl's definitions are total, and each was answering a
     # value instead of trapping or answering the wrong value outright.
     #   * `Math.floorDiv(Int.MIN, -1)` is DOCUMENTED to overflow and return
@@ -1724,6 +1725,56 @@ def _stdlib_helper_source() -> list[str]:
         "    java.util.List<String> ks = new java.util.ArrayList<>(m.keySet());",
         "    ks.sort((a, b) -> revlStrCmp(a, b));",
         "    return java.util.List.copyOf(ks);",
+        "}",
+        "// Int / Int32 overflow TRAPS (docs/arithmetic.md) and says so in revl's own",
+        "// words, `revl: Int overflow` / `revl: Int32 overflow`, as py/ts/go/rust do.",
+        "// Math.*Exact throws ArithmeticException with the JDK's text (`long",
+        "// overflow`), so each helper re-raises it; the `int` overloads serve Int32.",
+        "private static long revlAdd(long a, long b) {",
+        "    try { return Math.addExact(a, b); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int overflow\"); }",
+        "}",
+        "private static int revlAdd(int a, int b) {",
+        "    try { return Math.addExact(a, b); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+        "}",
+        "private static long revlSub(long a, long b) {",
+        "    try { return Math.subtractExact(a, b); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int overflow\"); }",
+        "}",
+        "private static int revlSub(int a, int b) {",
+        "    try { return Math.subtractExact(a, b); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+        "}",
+        "private static long revlMul(long a, long b) {",
+        "    try { return Math.multiplyExact(a, b); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int overflow\"); }",
+        "}",
+        "private static int revlMul(int a, int b) {",
+        "    try { return Math.multiplyExact(a, b); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+        "}",
+        "private static long revlNeg(long a) {",
+        "    try { return Math.negateExact(a); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int overflow\"); }",
+        "}",
+        "private static int revlNeg(int a) {",
+        "    try { return Math.negateExact(a); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+        "}",
+        "// Int -> Int32 narrowing is checked: out of the int range faults.",
+        "private static int revlToInt32(long a) {",
+        "    try { return Math.toIntExact(a); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+        "}",
+        "// div_trunc: Math.divideExact truncates toward zero and faults on the one",
+        "// overflow (Int.MIN / -1); a zero divisor keeps the JDK's own fault.",
+        "private static long revlDivTrunc(long a, long b) {",
+        "    try { return Math.divideExact(a, b); }",
+        "    catch (ArithmeticException e) {",
+        "        if (b == 0L) { throw e; }",
+        "        throw new ArithmeticException(\"revl: Int overflow\");",
+        "    }",
         "}",
         "",
     ]
@@ -2397,12 +2448,14 @@ def _expr(
             # (`revlDiv(float64(a), float64(b))`).
             return f"(((double) ({left})) / ((double) ({right})))"
         if op in ("+", "-", "*") and node.get("operands") in ("Int", "Int32"):
-            # Int/Int32 overflow traps (docs/arithmetic.md); Math.*Exact throws
-            # ArithmeticException, which is exactly the fault we want. Each has
-            # an `int` overload as well as a `long` one, so an Int32 operand
-            # (a Java `int`) resolves to the 32-bit check with no extra code.
-            exact = {"+": "addExact", "-": "subtractExact", "*": "multiplyExact"}[op]
-            return f"Math.{exact}({left}, {right})"
+            # Int/Int32 overflow traps (docs/arithmetic.md). Math.*Exact throws
+            # ArithmeticException("long overflow"), the JDK's words, so the
+            # helpers re-raise it as revl's own `revl: Int overflow` (#2381),
+            # the text every other hosted tier gives. Each helper has an `int`
+            # overload as well as a `long` one, so an Int32 operand (a Java
+            # `int`) resolves to the 32-bit check and says `revl: Int32 overflow`.
+            helper = {"+": "revlAdd", "-": "revlSub", "*": "revlMul"}[op]
+            return f"{helper}({left}, {right})"
         if op in ("<", ">", "<=", ">=") and node.get("operands") == "Str":
             # Java has NO relational operator on `String`: `(a < b)` reached
             # javac as "bad operand types for binary operator '<'", so a
@@ -2427,10 +2480,11 @@ def _expr(
             return f"(~{operand})"
         if node.get("op") == "-":
             if node.get("operands") in ("Int", "Int32"):
-                # negating Long.MIN / Integer.MIN_VALUE overflows; Math.negateExact
-                # (long and int overloads) throws the same ArithmeticException as
-                # the other Int/Int32 operations (docs/arithmetic.md)
-                return f"Math.negateExact({operand})"
+                # negating Long.MIN / Integer.MIN_VALUE overflows; `revlNeg`
+                # (long and int overloads over Math.negateExact) raises the same
+                # revl-worded fault as the other Int/Int32 operations
+                # (docs/arithmetic.md)
+                return f"revlNeg({operand})"
             return f"(-{operand})"
         raise EmitError(f"unsupported unary operator {node.get('op')!r}")
 
@@ -3298,7 +3352,7 @@ def _uses_checked_div(ir: dict) -> bool:
 
 
 #: The named integer-division forms whose java lowering is a static helper
-#: (`div_trunc` stays inline: `Math.divideExact` is already total-or-throwing).
+#: (`div_trunc` stays a stdlib-block helper, `revlDivTrunc`, which these call).
 #: The two `checked_*` forms below CALL those helpers, so their presence pulls
 #: the block in as well.
 _INT_ARITH_METHODS = ("div_floor", "div_euclid", "mod",
@@ -3330,7 +3384,7 @@ def _emit_int_arith_helpers() -> list[str]:
 
     * `Math.floorDiv(Long.MIN_VALUE, -1)` is documented to overflow and return
       `Long.MIN_VALUE`. The true quotient is 2^63, one past Int.MAX, so it must
-      TRAP — which `Math.divideExact` does, and which py/ts/go/rust all did.
+      TRAP — which `revlDivTrunc` does, and which py/ts/go/rust all did.
     * div_euclid's negative-divisor arm was `-Math.floorDiv(a, -b)`. `-b` wraps
       for `b == Long.MIN_VALUE` and the leading `-` wraps for `b == -1`, so the
       one expression carried both a wrong answer and a missing trap. The shape
@@ -3347,12 +3401,12 @@ def _emit_int_arith_helpers() -> list[str]:
         "// unary minus and Math.abs are each partial at Long.MIN_VALUE, so",
         "// the Int.MIN edges are named here rather than wrapping silently.",
         "private static long revlDivFloor(long a, long b) {",
-        "    long q = Math.divideExact(a, b);",
+        "    long q = revlDivTrunc(a, b);",
         "    if (a % b != 0L && ((a < 0L) != (b < 0L))) { q -= 1L; }",
         "    return q;",
         "}",
         "private static long revlDivEuclid(long a, long b) {",
-        "    long q = Math.divideExact(a, b);",
+        "    long q = revlDivTrunc(a, b);",
         "    if (a % b < 0L) { q = b > 0L ? q - 1L : q + 1L; }",
         "    return q;",
         "}",
