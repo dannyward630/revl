@@ -2245,6 +2245,37 @@ def composition_digest(ir: dict) -> str:
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _wal_end_offset(handle) -> Optional[int]:
+    """The byte length of the open WAL ``handle`` before a record is appended,
+    or None when it has no file descriptor to measure."""
+    try:
+        return os.fstat(handle.fileno()).st_size
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _drop_unsynced_tail(handle, start: Optional[int]) -> None:
+    """Truncate a just-appended record whose fsync failed (issue #2345).
+
+    The caller is already raising the fsync failure, so this is best effort:
+    when the truncate fails too, the record stays, unsynced, and the run still
+    stops on the error being raised."""
+    if start is None:
+        return
+    try:
+        os.ftruncate(handle.fileno(), start)
+        handle.seek(0, os.SEEK_END)
+    except (OSError, ValueError):
+        return
+    try:
+        # make the cut itself durable, or a power loss could bring the record
+        # back; on a target that refused the record's fsync this fails too,
+        # and the run is stopping anyway
+        os.fsync(handle.fileno())
+    except (OSError, ValueError):
+        pass
+
+
 class WriteAheadLog:
     """A durable, append-only log of committed effects and their inverse
     descriptors (roadmap item 47).
@@ -2352,12 +2383,17 @@ class WriteAheadLog:
     def _write(self, record: dict) -> None:
         if self._handle is None:
             raise ReplayError("write-ahead log is not open — call open() first")
+        start = _wal_end_offset(self._handle)
         self._handle.write(json.dumps(record, sort_keys=True) + "\n")
         self._handle.flush()
         try:
             os.fsync(self._handle.fileno())
         except (OSError, ValueError) as error:
             if not self._allow_unsynced:
+                # issue #2345: a record that is not durable is not claimed. Cut
+                # it back out of the file, so neither this process nor a later
+                # reader acts on a record the run was told had failed.
+                _drop_unsynced_tail(self._handle, start)
                 raise ReplayError("write-ahead log fsync failed") from error
 
     def record_emission_outcome(self, seq: Optional[int], outcome: str,

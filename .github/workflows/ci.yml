@@ -529,6 +529,48 @@ jobs:
       - run: python3 tools/check_vision_claims.py --self-test
       - run: python3 tools/check_vision_claims.py --check
 
+  # issue #2333: the guards below need no `revl` install, toolchain or
+  # network: they read tracked repository text (the workflow, tests/ and
+  # tools/ sources, `git ls-files`) and, at most, build scratch git
+  # repositories under tmp_path. None imports `revl` or drives a tier runner.
+  # Before this job they ran only in `frontend`, which is main-only (#1679),
+  # so a change that broke one was first seen red on main.
+  #
+  # A job of its own, not a step of `lint`: every backend job `needs: lint`, so
+  # a slow step there delays every pull request's whole run. This job has no
+  # `needs` and nothing depends on it; it is non-required in branch protection
+  # (tests/test_required_checks_pinned.py) and is enforced by the drain, which
+  # waits for every non-heavy check. tests/test_pure_read_guards_job_2333.py
+  # pins the shape and the list.
+  pure-read-guards:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.12"
+      - run: pip install pytest==9.1.1 pyyaml==6.0.2
+      - run: >-
+          python3 -m pytest -q -p no:cacheprovider
+          tests/test_ci_backend_gate.py
+          tests/test_ci_census_stale_base_2165.py
+          tests/test_ci_pr_queue_split_1678.py
+          tests/test_ci_steps_are_independent.py
+          tests/test_env_gated_skips_run_somewhere.py
+          tests/test_every_test_file_runs_in_ci_1465.py
+          tests/test_frontend_asset_gate_runs_in_ci.py
+          tests/test_gate_crate_release_path.py
+          tests/test_gate_dependency_publish_ready.py
+          tests/test_java_javac_gate_runs_in_ci.py
+          tests/test_pure_read_guards_job_2333.py
+          tests/test_required_checks_pinned.py
+          tests/test_site_wheel_gate_runs_in_ci.py
+          tests/test_ts_demo_runs_in_ci.py
+          tests/test_ts_typecheck_gate_runs_in_ci.py
+          tests/test_windows_smoke_lane_1950.py
+          tests/test_workflow_action_pins.py
+
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -548,8 +590,14 @@ jobs:
     # tests that probe for go by hand. Every pytest step of a job that runs
     # setup-go must require go; tests/test_env_gated_skips_run_somewhere.py
     # ::test_every_pytest_step_in_a_job_that_installs_go_requires_go checks it.
+    #
+    # Issue #2210: rust is required too. This runner image ships cargo, and the
+    # cargo-backed tests (tests/test_component_name_2200.py, test_run_rust.py)
+    # resolve cordis-rs from crates.io. If cargo or that resolution ever goes
+    # missing, the repository-root conftest.py turns their skip into a failure
+    # instead of a green run that measured nothing.
     env:
-      REVL_REQUIRE_TIERS: "go"
+      REVL_REQUIRE_TIERS: "go,rust"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
@@ -557,6 +605,21 @@ jobs:
           # tests/test_landing_witness.py, which FAIL by name on a shallow
           # clone. They used to skip there, and a skip reads as a pass.
           fetch-depth: 0
+      # Issue #2210: rust is required here, and the cargo tests resolve cordis-rs
+      # (a crates.io dependency, see backends/rust/emit.cargo_toml) over the
+      # network. Cache the registry so one failed fetch does not turn a green job
+      # red. The key is the hash of every Cargo.toml and Cargo.lock in the tree,
+      # which are the manifests the rust tier resolves; the lock itself is
+      # generated at run time, so none is tracked.
+      - name: cache the cargo registry
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-v1-${{ runner.os }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-v1-${{ runner.os }}-
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
           python-version: ${{ matrix.python }}
@@ -886,9 +949,11 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     # Issue #2264: this job installs go, so go is required on every pytest
-    # step (see the `frontend` job for why).
+    # step (see the `frontend` job for why). Issue #2210: rust is required too,
+    # for the same reason (see `frontend`): this is the job that runs
+    # tests/test_component_name_2200.py when a pull request touches it.
     env:
-      REVL_REQUIRE_TIERS: "go"
+      REVL_REQUIRE_TIERS: "go,rust"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
@@ -898,6 +963,21 @@ jobs:
           # The base fetch below must not pass `--depth`: into a full clone
           # that re-shallows it.
           fetch-depth: 0
+      # Issue #2210: rust is required here, and the cargo tests resolve cordis-rs
+      # (a crates.io dependency, see backends/rust/emit.cargo_toml) over the
+      # network. Cache the registry so one failed fetch does not turn a green job
+      # red. The key is the hash of every Cargo.toml and Cargo.lock in the tree,
+      # which are the manifests the rust tier resolves; the lock itself is
+      # generated at run time, so none is tracked.
+      - name: cache the cargo registry
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-v1-${{ runner.os }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-v1-${{ runner.os }}-
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
           python-version: "3.12"
@@ -2045,6 +2125,21 @@ jobs:
       REVL_REQUIRE_TIERS: "go"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+      # Issue #2210: rust is required here, and the cargo tests resolve cordis-rs
+      # (a crates.io dependency, see backends/rust/emit.cargo_toml) over the
+      # network. Cache the registry so one failed fetch does not turn a green job
+      # red. The key is the hash of every Cargo.toml and Cargo.lock in the tree,
+      # which are the manifests the rust tier resolves; the lock itself is
+      # generated at run time, so none is tracked.
+      - name: cache the cargo registry
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-v1-${{ runner.os }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-v1-${{ runner.os }}-
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
           python-version: "3.12"
@@ -2135,8 +2230,8 @@ jobs:
       # something else. All three live in `tests/`, so they were collected by
       # `frontend` and `frontend-cordis`, and skipped nearly whole there,
       # because a tier executes only where its toolchain is installed and
-      # neither job installs node_modules, cargo or a JDK. This job installs
-      # all of them, so run the files HERE, where the skips actually go away.
+      # neither job runs `npm ci` or installs a JDK or a pinned rust toolchain.
+      # This job installs all of them, so run the files HERE, where the skips actually go away.
       # test_time_coeffect.py is in the list because it carries the 17th
       # REVL_CROSS_TIER_SLOW gate (the rust async-timer lifecycle), which had
       # the same problem and is not in the cross-tier file.
@@ -2181,6 +2276,7 @@ jobs:
           tests/test_realm_conformance.py
           tests/test_time_coeffect.py
           tests/test_1850_show_cross_tier.py
+          tests/test_2285_str_char_control_cross_tier.py
           -q
         env:
           # LIVE as of item 445. This turns on the rust and java probes, the
@@ -2201,10 +2297,12 @@ jobs:
           # that one class of skip into a failure. Only that class: a tier's
           # by-design refusal of a document still skips (revl.test.Absent).
           # go is required job-wide (issue #2264), and a step env replaces the
-          # job's value, so it is named again here. rust/java/wasm are not
-          # required yet; the reasons are enumerated in
-          # tests/test_env_gated_skips_run_somewhere.py.
-          REVL_REQUIRE_TIERS: "py,ts,go"
+          # job's value, so it is named again here. rust is required too
+          # (issue #2210): this job installs cargo, so a cordis-rs resolution
+          # failure or an unreachable index is a failure here, not a skip that
+          # reads green. java/wasm are not required yet; the reasons are
+          # enumerated in tests/test_env_gated_skips_run_somewhere.py.
+          REVL_REQUIRE_TIERS: "py,ts,go,rust"
       # The rest of the tier-execution suites, run where BOTH tiers exist.
       #
       # Issue #266: every one of these files calls `RUNNERS[tier]` and turns an
@@ -2227,8 +2325,11 @@ jobs:
           tests/test_163_match_payload_bind_scope.py
           tests/test_async_match_block_arm.py
           tests/test_cluster_c_emitter_hijack_553.py
+          tests/test_component_arith_cross_tier_2198.py
           tests/test_crypto_stdlib.py
+          tests/test_fn_param_call_signature_2311.py
           tests/test_go_component_checked_arith_2259.py
+          tests/test_go_component_int32_trap_2262.py
           tests/test_insert_if_absent.py
           tests/test_json_cross_tier_bytes.py
           tests/test_model_evidence_517.py
@@ -2236,12 +2337,13 @@ jobs:
           tests/test_run_ts_stdlib_fs_root.py
           tests/test_stdlib_version.py
           tests/test_total_field_surface.py
+          tests/test_ts_block_arm_record_capture_2297.py
           tests/test_ts_seam_int_1566.py
           tests/test_value_stdlib.py
           tests/test_verdict_test_count_2286.py
           -q
         env:
-          REVL_REQUIRE_TIERS: "py,ts,go"
+          REVL_REQUIRE_TIERS: "py,ts,go,rust"
       # ci/placement_smoke.sh boots examples/user_cache.rvl split py<->node,
       # py<->rust, py<->go and py<->java (`--once`: boot, cross the seam via a
       # probe, tear down, exit). It fails the build on a seam that will not come

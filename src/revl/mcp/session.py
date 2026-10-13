@@ -37,6 +37,7 @@ from . import operator as _operator
 from . import quorum as _quorum
 from . import identity as _identity
 from .approval import ApprovalRequired
+from .undo_record import undo_cold_start_note
 from .approval import _args_digest as _cache_args_digest
 
 
@@ -2296,6 +2297,59 @@ class Session:
             }
         return pre
 
+    @staticmethod
+    def _holds_state(resources) -> bool:
+        """True when a resource vector carries state a cold start loses: a
+        resource whose `__revl_state__` snapshot is non-empty. A resource with
+        no `__revl_state__` (a `Pool`) is transient, so it carries none."""
+        return any(Session._snapshot(res) for res in resources)
+
+    @staticmethod
+    def _snapshot(res):
+        """Whether a resource holds state: its `__revl_state__` (a Map's
+        emptiness, read without copying it), or None when it has none or is
+        already closed (a closed resource holds nothing a cold start loses)."""
+        if not hasattr(res, "__revl_state__"):
+            return None
+        try:
+            data = getattr(res, "data", None)
+            if isinstance(data, dict) and hasattr(res, "_check_open"):  # a Map
+                res._check_open("__revl_state__")
+                return bool(data)
+            return res.__revl_state__()
+        except Exception:  # noqa: BLE001 - a report, never a fault
+            return None
+
+    def live_state_components(self) -> list[str]:
+        """The running components whose live state a cold start would discard
+        (issue #2346): a provider whose activation frame holds non-empty state,
+        and a template with a live instance that does. `revl_undo` and
+        `revl_rollback` re-admit through `respawn`, which carries none of it,
+        so these are what such an undo drops. Read-only."""
+        driver = self._driver
+        if driver is None or self.ir is None:
+            return []
+        templates = set((self.ir.get("manifest") or {}).get("templates") or [])
+        held = set()
+        for comp in self.ir.get("components") or []:
+            name = comp.get("name")
+            if name in templates:
+                stateful = any(
+                    self._holds_state(self._instance_resources(handle))
+                    for handle in driver.runtime.live_instances(name))
+            else:
+                stateful = self._holds_state(
+                    self._frame_resources(driver.fibers.get(name)))
+            if stateful:
+                held.add(name)
+        return sorted(held)
+
+    @staticmethod
+    def _instance_resources(handle) -> list:
+        """The resources a live template instance acquired at activation."""
+        frame = handle._frame()
+        return list(frame._resources) if frame is not None else []
+
     def _restore_provider_state(self, new_ir: dict, pre: dict) -> dict:
         """Thread each captured provider state onto the successor that
         re-provides its key (item 53). Two passes — check the whole cohort,
@@ -2848,15 +2902,37 @@ class Session:
             "toGeneration": target["generation"],
             "admissible": p["admissible"],
             "unloads": p["cascade"]["withdrawn"],
-            "stateDropped": {
-                "provisions": p["provisions"]["withdrawn"],
-                "components": p["components"]["withdrawn"],
-                "teardownOrder": p["teardownOrder"],
-            },
+            "stateDropped": self._undo_state_dropped(p, target["generation"]),
             "cascade": p["cascade"],
             "provisions": p["provisions"],
             "unemittableCrossings": unemittable,
         }
+
+    def _undo_state_dropped(self, p: dict, to: int) -> dict:
+        """The dossier's `stateDropped` (issue #2346). An undo re-admits
+        through `respawn`, a cold start: a `handoff` is not run in reverse, so
+        a rollback never carries the generation it leaves into the one it
+        returns to (the F4 rule in `_plan_swap`). So besides the components
+        the target withdraws, every running component holding live state loses
+        it, and is named here, with a note that says so. A failure to read
+        the live state is said in the note, and never stops the undo."""
+        try:
+            held, unread = self.live_state_components(), None
+        except Exception as exc:  # noqa: BLE001 - a report, never a fault
+            held, unread = [], f"{type(exc).__name__}: {exc}"
+        out = {
+            "provisions": p["provisions"]["withdrawn"],
+            "components": sorted(set(p["components"]["withdrawn"]) | set(held)),
+            "teardownOrder": p["teardownOrder"],
+        }
+        if held:
+            out["note"] = undo_cold_start_note(held, to, done=True)
+        elif unread is not None:
+            out["note"] = (
+                f"the running components' live state could not be read "
+                f"({unread}), so a component whose state this cold start drops "
+                f"may be missing from `components`")
+        return out
 
     def undo(self, to: int | None = None) -> dict:
         """Return to an earlier generation — and be, itself, a gated change.
@@ -2910,6 +2986,9 @@ class Session:
                                    admitted_name(target["snapshot"]))
         except RevlError as error:
             diag = classify(error)
+            # nothing ran, so no state was dropped: the list stays as the
+            # plan, but the note saying it "is dropped" does not apply
+            dossier["stateDropped"].pop("note", None)
             return {
                 "undone": False,
                 "refused": True,

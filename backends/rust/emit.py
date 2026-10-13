@@ -2064,6 +2064,11 @@ def _component_needs_teardown(component: dict, witnessed: dict,
 # backends/go/emit.py's `_RECORD_MODE`.
 _RECORD_MODE = False
 
+# issue #2345: whether this emission carries the WAL sink (`_revl_record_preamble`).
+# Set by `_emit_components` before any component factory is emitted, so each
+# factory can open the sink eagerly. Reset per emit.
+_RECORD_SINK = False
+
 # issue #1369 (item 522 slice 3): the document's computer-use externs, by name,
 # and its provide methods that run in a UI scope, keyed by
 # `(component, key, method)`. Set per `emit()` from `_ui_transaction_facts`
@@ -4596,7 +4601,8 @@ def _map_value_expr_type(node: dict, var_types: dict, env: _Env) -> str | None:
         if method in ("length", "charCodeAt", "codepoint_at", "indexOf",
                       "to_int"):
             return "Int"
-        if method in ("charAt", "join", "repeat", "to_str", "slice"):
+        if method in ("charAt", "join", "repeat", "to_str", "to_char",
+                      "slice"):
             return "Str"
         if method == "split":
             return "List[Str]"
@@ -4862,7 +4868,8 @@ def _rust_render_pure_stmts(steps: list, env: _Env, scope: dict,
             arg_scope = dict(scope)
             for param in params:
                 arg_scope[param] = f"{param}.clone()"
-            parts.append(f"let _ = {_expr(step['expr'], env, arg_scope)};")
+            parts.append("let _ = %s;" % _journal_service_emit(
+                step.get("expr"), env, _expr(step['expr'], env, arg_scope)))
         elif kind == "break":
             parts.append("break;")
         elif kind == "continue":
@@ -5254,6 +5261,8 @@ def _method_body_lines(env: _Env, method: dict, out: list[str], indent: int) -> 
             env.v3_ctx().declared_skip = acquire_node
             acquire = _expr(acquire_node, env, acquire_rename)
             env.v3_ctx().declared_skip = None
+            if not _is_ui_crossing(acquire_node, env.v3_ctx()):
+                acquire = _journal_service_emit(acquire_node, env, acquire)
             compensations = _emit_compensations(step, env.compensated)
             if _is_ui_crossing(acquire_node, env.v3_ctx()):
                 # issue #1369: a computer-use crossing registers its own
@@ -5532,6 +5541,11 @@ def _emit_component_new(component: dict, services: dict, ir: dict | None = None)
     plugin_fn = "cordis::plugin_async::<{0}, _, _>" if uses_await else "cordis::plugin_sync::<{0}, _>"
     closure = "        |ctx, config| async move {" if uses_await else "        |ctx, config| {"
     out.append(f"pub fn {_snake_fn(name)}() -> cordis::PluginHandle {{")
+    if _RECORD_SINK:
+        # issue #2345: open the WAL (and make its header durable) when the
+        # component is built, before activation, so a log that cannot be
+        # written stops the run before the first host call, not after it.
+        out.append("    revl_wal_sink();")
     out.append(f"    {plugin_fn.format(config_ty)}(")
     out.append(f"        {_string(name)},")
     out.append(f"        cordis::{inject},")
@@ -5877,6 +5891,11 @@ def _emit_component(component: dict, services: dict, ir: dict | None = None) -> 
     plugin_fn = "cordis::plugin_async::<{0}, _, _>" if uses_await else "cordis::plugin_sync::<{0}, _>"
     closure = "        |ctx, config| async move {" if uses_await else "        |ctx, config| {"
     out.append(f"pub fn {_snake_fn(name)}() -> cordis::PluginHandle {{")
+    if _RECORD_SINK:
+        # issue #2345: open the WAL (and make its header durable) when the
+        # component is built, before activation, so a log that cannot be
+        # written stops the run before the first host call, not after it.
+        out.append("    revl_wal_sink();")
     out.append(f"    {plugin_fn.format(config_ty)}(")
     out.append(f"        {_string(name)},")
     out.append(f"        cordis::{inject},")
@@ -6152,7 +6171,8 @@ def _emit_compensation_registration(env: "_Env", compensate_node: dict, label_te
     level and `"self.ctx"` (fire-and-forget, `propagate=False`, matching every
     other method-body registration) inside a provide method."""
     pad = "    " * indent
-    call = _expr(compensate_node, env, rename=rename)
+    call = _journal_service_comp(compensate_node, env,
+                                 _expr(compensate_node, env, rename=rename))
     if env.v3_ctx().ui_scope:
         # issue #1369: inside a UI scope the entry is the scope's until the
         # call returns
@@ -6303,7 +6323,8 @@ def _emit_step(step: dict, env: _Env, out: list[str], indent: int) -> None:
         else:
             out.append(f"{pad}ctx.effect({label}, move || {{ {undo}; Ok(()) }})?;")
     elif kind == "emit":
-        out.append(f"{pad}let _ = {_expr(step['expr'], env)};")
+        out.append("%slet _ = %s;" % (pad, _journal_service_emit(
+            step.get("expr"), env, _expr(step['expr'], env))))
         # one compensation per crossing, registered after the fire: the
         # site-spelled clause, else the extern's own declared one (item 254,
         # issues #1592 and #1902).
@@ -6349,7 +6370,8 @@ def _emit_step(step: dict, env: _Env, out: list[str], indent: int) -> None:
             if em.get("step") != "emit":  # lowerer invariant (scope: emissions)
                 raise EmitError(
                     f"timer body carries emissions only, found {em.get('step')!r}")
-            out.append(f"{pad}    let _ = {_expr(em.get('expr'), env, rename=rename)};")
+            out.append("%s    let _ = %s;" % (pad, _journal_service_emit(
+                em.get("expr"), env, _expr(em.get('expr'), env, rename=rename))))
             for compensate_node in _emit_compensations(em, env.compensated):
                 out.append(f"{pad}    let _revl_teardown = revl_teardown_of(&_revl_ctx_t{n});")
                 _emit_compensation_registration(
@@ -6862,7 +6884,7 @@ _BUILTIN_RESULT = {
     "indexOf": "Int", "div_trunc": "Int", "div_floor": "Int",
     "div_euclid": "Int", "mod": "Int", "size": "Int",
     "charAt": "Str", "join": "Str", "repeat": "Str", "str": "Str",
-    "to_str": "Str",
+    "to_str": "Str", "to_char": "Str",
     "startsWith": "Bool", "endsWith": "Bool", "has": "Bool",
     "is_alnum": "Bool", "is_digit": "Bool", "is_alpha": "Bool",
     "is_space": "Bool",
@@ -8201,6 +8223,15 @@ def _v3_builtin(method: str, target: str, args: list[str],
         if recv == "Float":
             return f"revl_ftoa({target})"
         return f"({target}).to_string()"
+    # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+    # §Int.to_char): a one-code-point Str for a Unicode scalar value, "" for
+    # anything else. The receiver is bound once; `char::from_u32` refuses a
+    # surrogate and anything above U+10FFFF, and the i64 range check keeps a
+    # negative from wrapping into a valid u32.
+    if method == "to_char":
+        return (f"{{ let _cp: i64 = {target}; if _cp < 0 || _cp > 0x10FFFF "
+                "{ String::new() } else { char::from_u32(_cp as u32)"
+                ".map(|c| c.to_string()).unwrap_or_default() } }")
     # Single-character ASCII classification (item 233, docs/stdlib-2.0.md
     # §Str.is_alnum), mirroring the python backend's native forms
     # (backends/python/emit.py §is_digit/is_alpha/is_alnum/is_space). The
@@ -9144,7 +9175,107 @@ def _rust_extern_config_bind(ext: dict) -> str:
             f"{_string(name)}, {req_lit}, {def_lit});")
 
 
-def _emit_v3_externs(externs: list, types: dict) -> list[str]:
+def _service_emission(node, requires: dict):
+    """Issue #2345: the (key, method, service) of an `emit` that crosses
+    through a required service or an instance provision (the py tier's
+    `_ServiceProxy` and `_SpawnRecorder` paths), or None for an extern call,
+    which its own definition wrapper journals."""
+    if not isinstance(node, dict) or node.get("kind") != "call":
+        return None
+    callee = node.get("callee")
+    if isinstance(callee, dict):
+        target = callee.get("target")
+        if callee.get("kind") != "field" or not isinstance(target, dict) \
+                or target.get("kind") != "instance-get":
+            return None
+        service = target.get("service")
+        return (str(target.get("key") or "instance"), str(callee.get("name")),
+                service if isinstance(service, str) else None)
+    target = node.get("target")
+    if "method" not in node or not isinstance(target, dict) \
+            or target.get("kind") != "req":
+        return None
+    key = str(target.get("name") or "call")
+    service = (requires or {}).get(key)
+    return (key, str(node["method"]), service if isinstance(service, str) else None)
+
+
+def _has_service_emits(node) -> bool:
+    """Whether any `emit` in the components crosses through a service."""
+    if isinstance(node, dict):
+        if node.get("step") == "emit" and (
+                _service_emission(node.get("expr"), {})
+                or _service_emission(node.get("compensate"), {})):
+            return True
+        return any(_has_service_emits(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_service_emits(v) for v in node)
+    return False
+
+
+def _journal_service_emit(node, env, rendered: str) -> str:
+    """In record mode, wrap a service emission so its start record is durable
+    before the call and its outcome is written after (issue #2345). The result
+    is still an expression, so every `let _ = ...;` site keeps its shape."""
+    if not _RECORD_SINK:
+        return rendered
+    requires = getattr(env, "requires_raw", None)
+    if requires is None:
+        requires = (getattr(env, "component", None) or {}).get("requires") or {}
+    desc = _service_emission(node, requires)
+    if desc is None:
+        return rendered
+    key, method, service = desc
+    svc = f"Some({_string(service)})" if service else "None"
+    return (f"{{ let _revl_em = RevlEmission::start({_string(key)}, "
+            f"{_string(method)}, {svc}); let _revl_v = {rendered}; "
+            f"_revl_em.complete(); _revl_v }}")
+
+
+def _is_emission_method(services: dict, service, method: str) -> bool:
+    """Whether `service.method` is declared `emission` in the service table:
+    a compensation through a service is journalled only then, as py's
+    `_ServiceProxy` wraps only the service's `emission` methods."""
+    spec = (((services or {}).get(service) or {}).get("methods") or {}).get(method)
+    return bool(isinstance(spec, dict) and spec.get("emission"))
+
+
+def _journal_service_comp(node, env, rendered: str) -> str:
+    """A compensation through a service `emission` method, journalled like an
+    `emit` (issue #2345); any other compensation is left as it is."""
+    requires = getattr(env, "requires_raw", None) or {}
+    desc = _service_emission(node, requires)
+    if desc is None or not _is_emission_method(
+            getattr(env, "services", None) or {}, desc[2], desc[1]):
+        return rendered
+    return _journal_service_emit(node, env, rendered)
+
+
+def _journalled_emission(name: str, params: str, forward: str,
+                         returns: str) -> tuple[list[str], str]:
+    """Issue #2345: in record mode an `extern emission fn` is journalled before
+    its body runs, as the py tier journals a host-extern emission
+    (backends/python/replay.py, `Timeline.record_emission`). The declared name
+    becomes a wrapper that writes the durable start record
+    (`revl_record_emission_start`, which panics when the record cannot be made
+    durable), calls the body under an inner name, then settles the record.
+    Returns the wrapper lines and the inner name the body is emitted under."""
+    inner = f"_revl_emission_{name}"
+    return [
+        f"fn {name}({params}) -> {returns} {{",
+        f"    let _revl_em = RevlEmission::start({_string(name)}, "
+        f"{_string(name)}, None);",
+        f"    let _revl_out = {inner}({forward});",
+        "    _revl_em.complete();",
+        "    _revl_out",
+        "}",
+        "",
+    ], inner
+
+
+def _emit_v3_externs(externs: list, types: dict, journal: bool = False) -> list[str]:
+    """`journal` (record mode with components, issue #2345) wraps each
+    `extern emission fn` so its durable start record is written first."""
     out: list[str] = []
     # item 378 Stage 5: emit the config seam once, before the externs, when any
     # extern carries a config schema (byte-identical when none do).
@@ -9170,6 +9301,13 @@ def _emit_v3_externs(externs: list, types: dict) -> list[str]:
         # the declared name's signature under a private name and the public one
         # registers what it returns, so no call site changes.
         secret_return = bool(_SECRET_MODE and ext.get("secret_return"))
+        if journal and ext.get("class") == "emission":
+            wrapper, name = _journalled_emission(
+                name, params,
+                ", ".join(_ident(p.get("name"), "extern parameter name")
+                          for p in ext.get("params") or []),
+                returns)
+            out.extend(wrapper)
         if secret_return:
             impl = f"_revl_secret_{name}"
             forward = ", ".join(_ident(p.get("name"), "extern parameter name")
@@ -10313,20 +10451,49 @@ def _revl_record_preamble() -> list[str]:
         "/// flushed + fsync'd (`sync_all`) before the call that wrote it returns —",
         "/// the write-ahead discipline the py tier uses, so a record a caller saw",
         "/// acknowledged is on disk before the effect it describes is allowed to",
-        "/// matter. Mirrors the go tier's `revlWAL`.",
+        "/// matter. Mirrors the go tier's `revlWAL`. A failed write or fsync is",
+        "/// fatal (issue #2345): the process stops instead of running on with a",
+        "/// record that never became durable. `REVL_WAL_ALLOW_UNSYNCED=1` is the",
+        "/// explicit opt-out for a target that cannot fsync; it is stamped into the",
+        "/// log itself.",
         "struct RevlWal {",
         "    file: std::fs::File,",
         "    seq: u64,",
         "    seqs: Vec<u64>,",
+        "    unsynced: bool,",
         "}",
         "",
         "impl RevlWal {",
+        "    /// Append one record and fsync it. Any failure panics; only the visible",
+        "    /// `REVL_WAL_ALLOW_UNSYNCED` opt-out lets a failed fsync through.",
         "    fn write(&mut self, rec: &serde_json::Value) {",
         "        use std::io::Write;",
-        "        if let Ok(mut line) = serde_json::to_string(rec) {",
-        "            line.push('\\n');",
-        "            let _ = self.file.write_all(line.as_bytes());",
-        "            let _ = self.file.sync_all(); // fsync per record",
+        "        let mut line = serde_json::to_string(rec)",
+        '            .unwrap_or_else(|e| panic!("revl: write-ahead log record could not be encoded: {e}"));',
+        "        line.push('\\n');",
+        "        let start = self.file.metadata().map(|m| m.len()).ok();",
+        "        if let Err(e) = self.file.write_all(line.as_bytes()) {",
+        "            self.cut(start);",
+        '            panic!("revl: write-ahead log write failed: {e}");',
+        "        }",
+        "        if let Err(e) = self.file.sync_all() {",
+        "            if !self.unsynced {",
+        "                self.cut(start);",
+        '                panic!("revl: write-ahead log fsync failed: {e}");',
+        "            }",
+        "        }",
+        "    }",
+        "",
+        "    /// Drop a record whose write or fsync failed (issue #2345), as the py",
+        "    /// WriteAheadLog and the wasm drain do, so recovery reads it as absent,",
+        "    /// then fsync the cut so a power loss cannot bring it back. Best effort:",
+        "    /// the caller panics either way, and on a target that refused the",
+        "    /// record's fsync this fsync fails too.",
+        "    fn cut(&mut self, start: Option<u64>) {",
+        "        if let Some(start) = start {",
+        "            if self.file.set_len(start).is_ok() {",
+        "                let _ = self.file.sync_all();",
+        "            }",
         "        }",
         "    }",
         "}",
@@ -10348,13 +10515,22 @@ def _revl_record_preamble() -> list[str]:
         "                .create(true).write(true).append(true).open(&path)",
         "            {",
         "                Ok(f) => f,",
-        "                Err(_) => return None,",
+        '                Err(e) => panic!("revl: cannot open the write-ahead log REVL_WAL: {e}"),',
         "            };",
-        "            let mut wal = RevlWal { file, seq: 0, seqs: Vec::new() };",
-        "            wal.write(&serde_json::json!({",
+        '            let unsynced = std::env::var("REVL_WAL_ALLOW_UNSYNCED").ok().as_deref() == Some("1");',
+        "            let mut wal = RevlWal { file, seq: 0, seqs: Vec::new(), unsynced };",
+        "            let mut header = serde_json::json!({",
         '                "record": "header", "walVersion": 1, "generation": 1,',
         '                "guarantee": REVL_WAL_GUARANTEE,',
-        "            }));",
+        "            });",
+        "            if unsynced {",
+        '                eprintln!("warning: REVL_WAL_ALLOW_UNSYNCED=1 disables the WAL fsync guarantee");',
+        '                header["durability"] = serde_json::json!("unsynced-opt-out");',
+        "            }",
+        "            wal.write(&header);",
+        "            if unsynced {",
+        '                wal.write(&serde_json::json!({ "record": "durability-opt-out", "fromSeq": 0 }));',
+        "            }",
         "            Some(std::sync::Mutex::new(wal))",
         "        })",
         "        .as_ref()",
@@ -10383,6 +10559,82 @@ def _revl_record_preamble() -> list[str]:
         '            "call": call, "origin": call, "witness": serde_json::Value::Null,',
         '            "idempotency": serde_json::Value::Null,',
         "        }));",
+        "    }",
+        "}",
+        "",
+        "/// Journal one host-extern emission BEFORE its body runs (issue #2345), the",
+        "/// record the py tier writes for the same crossing: an `effect` of kind",
+        "/// `emission`, one-way, no inverse. Fsync'd before it returns, and a failed",
+        "/// fsync panics, so the host body never runs unless its start record is on",
+        "/// disk. Returns the record's seq, or `None` when `REVL_WAL` is unset.",
+        "pub fn revl_record_emission_start(key: &str, method: &str, service: Option<&str>) -> Option<u64> {",
+        "    let label = if key == method { key.to_string() } else { format!(\"{}.{}\", key, method) };",
+        "    let sink = revl_wal_sink()?;",
+        "    let mut wal = sink.lock().unwrap();",
+        "    let seq = wal.seq;",
+        "    wal.seq += 1;",
+        "    wal.write(&serde_json::json!({",
+        '        "record": "effect", "seq": seq, "component": serde_json::Value::Null,',
+        '        "stepIndex": serde_json::Value::Null, "kind": "emission", "label": label,',
+        '        "site": serde_json::Value::Null, "source": serde_json::Value::Null,',
+        '        "origin": {},',
+        '        "boundary": { "class": "emission", "referent": "process-crossing",',
+        '            "compensated": false, "detail": { "key": key, "method": method,',
+        '            "service": service, "args": [] } },',
+        '        "inverse": { "reconstructible": false,',
+        '            "reason": "an emission is a one-way crossing; it has no inverse" },',
+        "    }));",
+        "    Some(seq)",
+        "}",
+        "",
+        "/// Settle a journalled emission once its body returned. A body that panics",
+        "/// is settled as `emission-failed` by `RevlEmission`'s drop instead.",
+        "pub fn revl_record_emission_outcome(seq: Option<u64>, outcome: &str) {",
+        "    if let (Some(seq), Some(sink)) = (seq, revl_wal_sink()) {",
+        "        let mut wal = sink.lock().unwrap();",
+        '        wal.write(&serde_json::json!({ "record": outcome, "seq": seq }));',
+        "    }",
+        "}",
+        "",
+        "/// One journalled emission (issue #2345): `start` makes the start record",
+        "/// durable before the body runs, `complete` settles it. Dropped without",
+        "/// `complete` (the body panicked), it writes `emission-failed`, as the py",
+        "/// tier's `_call_within` does. Only the error type is kept: this tier has",
+        "/// no redaction funnel for a panic message.",
+        "pub struct RevlEmission { seq: Option<u64>, done: bool }",
+        "",
+        "impl RevlEmission {",
+        "    pub fn start(key: &str, method: &str, service: Option<&str>) -> Self {",
+        "        RevlEmission { seq: revl_record_emission_start(key, method, service), done: false }",
+        "    }",
+        "    pub fn complete(mut self) {",
+        "        self.done = true;",
+        '        revl_record_emission_outcome(self.seq, "emission-complete");',
+        "    }",
+        "}",
+        "",
+        "impl Drop for RevlEmission {",
+        "    fn drop(&mut self) {",
+        "        if self.done {",
+        "            return;",
+        "        }",
+        "        if let (Some(seq), Some(sink)) = (self.seq, revl_wal_sink()) {",
+        "            let mut wal = sink.lock().unwrap_or_else(|e| e.into_inner());",
+        "            let panicking = std::thread::panicking();",
+        '            let rec = serde_json::json!({ "record": "emission-failed", "seq": seq,',
+        '                "error": { "type": if panicking { "panic" } else { "early-return" } } });',
+        "            if panicking {",
+        "                // a second panic while unwinding aborts the process: write",
+        "                // best effort and let the body's panic carry on",
+        "                use std::io::Write;",
+        "                let mut line = serde_json::to_string(&rec).unwrap_or_default();",
+        "                line.push('\\n');",
+        "                let _ = wal.file.write_all(line.as_bytes());",
+        "                let _ = wal.file.sync_all();",
+        "            } else {",
+        "                wal.write(&rec);",
+        "            }",
+        "        }",
         "    }",
         "}",
         "",
@@ -10876,6 +11128,12 @@ def _emit_bridge(ir: dict) -> list[str]:
     return out
 
 
+def _has_emission_externs(externs: list) -> bool:
+    """Issue #2345: does the document declare an `extern emission fn`, which
+    record mode journals before its body runs?"""
+    return any(ext.get("class") == "emission" for ext in externs)
+
+
 def _uses_teardown(components: list, externs: list) -> bool:
     """item 243 Slice 2b: does any component need `RevlTeardown` (a
     `witnessed` extern call, or `emit ... compensate`, activation- or
@@ -10887,6 +11145,7 @@ def _uses_teardown(components: list, externs: list) -> bool:
 
 
 def _emit_components(ir: dict, components: list) -> list[str]:
+    global _RECORD_SINK
     out: list[str] = []
     out.extend(_emit_service_traits(ir.get("services") or {}, ir.get("types") or {}))
     out.extend(_emit_host_stubs(ir))
@@ -10911,11 +11170,16 @@ def _emit_components(ir: dict, components: list) -> list[str]:
         out.extend(_revl_teardown_preamble())
         if _UI_SCOPES:
             out.extend(_REVL_UI_TRANSACTION.splitlines() + [""])
-        if _RECORD_MODE:
-            # item 322 Slice 2: the durable WAL sink rides alongside the teardown
-            # accumulator (a witnessed transactional step needs both). Gated so a
-            # non-record emission — every existing golden — is byte-identical.
-            out.extend(_revl_record_preamble())
+    _RECORD_SINK = _RECORD_MODE and bool(components) and (
+        _uses_teardown(components, ir.get("externs") or [])
+        or _has_emission_externs(ir.get("externs") or [])
+        or _has_service_emits(components))
+    if _RECORD_SINK:
+        # item 322 Slice 2: the durable WAL sink rides alongside the teardown
+        # accumulator (a witnessed transactional step needs both). Issue #2345:
+        # also for a journalled `extern emission fn`. Gated so a non-record
+        # emission (every existing golden) is byte-identical.
+        out.extend(_revl_record_preamble())
     for component in components:
         out.extend(_emit_component_auto(component, ir.get("services") or {}, ir))
     out.extend(_emit_bridge(ir))
@@ -10957,7 +11221,8 @@ def _emit_v3(ir: dict) -> str:
     if types:
         out.extend(_emit_v3_types(types))
     if externs:
-        out.extend(_emit_v3_externs(externs, types))
+        out.extend(_emit_v3_externs(externs, types,
+                                    journal=_RECORD_MODE and bool(components)))
     if functions:
         out.extend(_emit_v3_functions(functions, types, externs, analyses))
     if tests:
@@ -11158,8 +11423,9 @@ def emit(ir: dict, record: bool = False) -> str:
     recording preamble and the per-descriptor `revl_record_transactional` calls.
     Mirrors backends/go/emit.py's `emit(..., record=...)`.
     """
-    global _RECORD_MODE, _SECRET_MODE, _JOURNAL_MODE
+    global _RECORD_MODE, _SECRET_MODE, _JOURNAL_MODE, _RECORD_SINK
     _RECORD_MODE = record
+    _RECORD_SINK = False
     if not isinstance(ir, dict):
         raise EmitError("IR document must be a dict")
     ir = _dedup_colour_erased_poly_externs(ir)  # item 388, stage 6

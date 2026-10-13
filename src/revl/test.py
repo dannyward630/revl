@@ -43,20 +43,16 @@ from .refusal import refusals
 
 BACKENDS = backends_root()
 
-_EMITTERS: dict[str, types.ModuleType] = {}
-
-
 def _emitter(backend: str) -> types.ModuleType:
-    """Load a backend emitter under a unique module name (a bare ``import
-    emit`` would collide across backends when more than one is loaded)."""
-    if backend not in _EMITTERS:
-        spec = importlib.util.spec_from_file_location(
-            f"revl_{backend}_emit", BACKENDS / backend / "emit.py")
-        assert spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        _EMITTERS[backend] = module
-    return _EMITTERS[backend]
+    """The backend emitter, from the one cached loader every caller of that tier
+    shares (`placement.backend_emit_module`, issue #2204): one module and one
+    `EmitError` per tier in the process, loaded under a unique name because a
+    bare ``import emit`` would collide across backends. `BACKENDS` is passed so
+    a repointed root is honoured. This site always cached its module, so the
+    shared loader changes who else holds it and not how often it is loaded."""
+    from .placement import backend_emit_module  # noqa: PLC0415 - off the compile graph
+
+    return backend_emit_module(backend, root=BACKENDS)
 
 
 def _fault(ir: dict, module=None) -> list:

@@ -1760,20 +1760,27 @@ def _tool_change(arguments: dict) -> dict:
             arguments = {**arguments, "add": {
                 "source": _change.component_source(vs, spec),
                 **({"target": spec["target"]} if spec.get("target") else {})}}
-        plan = None
+        plan = cold = None
         if intent == "withdraw":
             component, _ = _change._withdraw_spec(arguments["withdraw"])
-            plan = _change.cascade_of(_change.running_ir(SESSION), component)
+            ir, cold = _withdraw_ir(arguments)
+            plan = _change.cascade_of(ir, component)
         edit_arguments = {**_change.edit_arguments(intent, arguments, plan),
                           "commit": commit}
     except _change.ChangeError as error:
-        return _session_error(str(error), committed=False)
+        return _proposal.annotate(
+            SESSION, _session_error(str(error), committed=False),
+            speculative=not commit)
     verifier = (_change.gauntlet_verifier(SESSION)
                 if arguments.get("gauntlet") is True else None)
-    refused = (_change.cascade_refusal(arguments, plan)
+    # a cold refusal is answered before `_tool_edit`'s load gate on purpose:
+    # nothing is loaded by it, so there is nothing for that gate to decide
+    refused = (_change.cascade_refusal(arguments, plan, cold=cold)
                if intent == "withdraw" else None)
-    result = refused or _tool_edit(edit_arguments, verify=verifier,
-                                   caller="revl_change")
+    result = _proposal.annotate(
+        SESSION, refused or _tool_edit(edit_arguments, verify=verifier,
+                                       caller="revl_change"),
+        speculative=not commit)
     return _change.shape(intent, result, plan,
                          _change.withdrawn_names(edit_arguments), verifier)
 
@@ -1825,6 +1832,29 @@ def _tool_knowledge(arguments: dict) -> dict:
         raise _notes.NoteError("`op` is one of add, query, confirm, retire, supersede")
     except _notes.NoteError as error:
         return _session_error(str(error))
+
+
+def _withdraw_ir(arguments: dict) -> tuple[dict | None, bool]:
+    """The IR a withdrawal is planned against, and whether it is the carried
+    composition of a cold call (issue #2225). What runs, or a held draft, when
+    there is one; otherwise the `source`/`files`/`modules` the call carries,
+    compiled the way its load will compile them. The load itself runs later,
+    inside `_tool_edit`, so planning against the session alone planned against
+    nothing: `cascade: true` was dropped and nothing stranded was refused.
+    A carried set that does not compile plans nothing; the load reports why."""
+    from . import change as _change  # noqa: PLC0415
+
+    if SESSION.loaded or _draft.pending(SESSION) is not None:
+        return _change.running_ir(SESSION), False
+    source, files, _ = _candidate_of(arguments)
+    if source is None and not files:
+        return None, False
+    sent, _, _ = _canonical.prepare(arguments)
+    source, files, modules = _candidate_of(sent)
+    try:
+        return compile_under_authoring(source, files, modules=modules), True
+    except RevlError:
+        return None, True
 
 
 def _change_working_set() -> dict:
@@ -2095,7 +2125,9 @@ def _commit_held(arguments: dict) -> dict:
             lambda vs, config, record: _boot_draft(vs, config, record,
                                                    verify=verifier))
     else:
-        result = _proposal.commit(SESSION, verify=verifier)
+        result = _proposal.annotate(
+            SESSION, _proposal.commit(SESSION, verify=verifier),
+            speculative=False)
     return _change.shape("commit", result, None, [], verifier)
 
 
@@ -2122,6 +2154,13 @@ def _edit_loaded(arguments: dict, verify=None) -> dict:
     is what the edit builds on, and a commit is refused if it went stale."""
     # issue #2239: only a real `true`, or no `commit` at all, commits
     commit = arguments.get("commit", True) is True
+    # issue #2230: a refusal made while a proposal is held carries it
+    return _proposal.annotate(SESSION, _edit_loaded_result(arguments, verify,
+                                                           commit),
+                              speculative=not commit)
+
+
+def _edit_loaded_result(arguments: dict, verify, commit: bool) -> dict:
     base = _proposal.base(SESSION)
     if commit and base is not None and _proposal.stale(SESSION):
         return _session_error(_proposal.stale(SESSION), edited=False,
@@ -2141,7 +2180,13 @@ def _edit_loaded(arguments: dict, verify=None) -> dict:
             _proposal.discard(SESSION)
         return _proposal.keep(SESSION, result, arguments.get("replacing") or ())
     except _edit.EditError as error:
-        return _session_error(error, edited=False, swapped=False)
+        removed = (_proposal.removed_named(SESSION, arguments, error)
+                   if base is not None else None)
+        if removed is None:
+            return _session_error(error, edited=False, swapped=False)
+        # issue #2230: the name exists, in what runs; the proposal removed it
+        message, nxt = _proposal.removed_refusal(SESSION, removed)
+        return _session_error(message, next=nxt, edited=False, swapped=False)
     except SessionError as error:
         if not SESSION.loaded:
             return _session_error(NothingLoaded(str(error)))

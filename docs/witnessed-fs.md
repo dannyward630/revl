@@ -42,7 +42,7 @@ as item 243 rule 3 requires, which admits exactly `pure`/`acquire`) and is
 idempotent on replay (rule 5): once the world is already restored, a second run
 is a no-op, so an abort that crashes mid replay and a later `revl recover`
 cannot clobber. It is `acquire` rather than `pure` because it genuinely mutates
-the filesystem — it unlinks or renames real files — so `pure` would be a false
+the filesystem: it unlinks or renames real files, so `pure` would be a false
 statement of effect, invisible to the G8 audit and callable from any pure
 position. `acquire` states the effect and, being effect-position-bound, refuses
 a bare call from a plain `fn` (G4). The reversal is terminal, so each names a
@@ -86,11 +86,11 @@ The guard has three properties that make it real rather than decorative:
    and additionally requires them to be a sidecar this workspace itself
    produced. The inverses are `acquire` externs (they mutate, so `pure` would
    misreport their effect and leave them callable from any pure position); they
-   are effect-position-bound and carry no capability token — item 243 rule 3
-   leaves no capability-scoped spelling for an inverse — and are reconstructed
+   are effect-position-bound and carry no capability token (item 243 rule 3
+   leaves no capability-scoped spelling for an inverse) and are reconstructed
    from WAL data by `revl recover` with no revl source involved at all. Two
    things keep that safe: the effect gate (a bare inverse call from a plain `fn`
-   is refused, G4) and the shrunken authority — a sidecar we made, moved back
+   is refused, G4) and the shrunken authority: a sidecar we made, moved back
    inside the root we own.
 3. **The reversal machinery lives inside the root.** The session garbage dir
    (`.revl-fs-garbage`) and the preimage snapshots (`.revl-fs-preimage`) are
@@ -280,7 +280,7 @@ CommittedSidecarCleanup.run() -> CleanupOutcome  # .completed / .state / .code /
 `CommittedSidecarReceipt`: its private grant never leaves the runtime, so a host
 cannot forge one. The trusted commit path calls it *after* it holds the durable
 acknowledgment of the actual `Session.commit_confirm` that the finalizer declines
-to assume — that is where the acknowledgment is asserted, giving it one owner and
+to assume. That is where the acknowledgment is asserted, giving it one owner and
 one carrier rather than scattered host state. Minting validates the same
 argument shape the finalizer requires (64-lowercase-hex digest, nonnegative
 device/inode), so a receipt can never name a target the finalizer would only
@@ -291,14 +291,14 @@ A `CommittedSidecarCleanup` refuses to construct from anything that is not a
 runtime receipt (`ERECEIPT`), and a receipt is single-use: binding it to a handle
 consumes it, so one receipt authorizes cleanup of exactly the one sidecar it
 named. `run()` performs the same `finalize_committed_sidecar` under the same
-exclusivity contract — it makes **no** stronger atomicity claim against writers
-violating that exclusivity — but *reports* the result rather than raising:
+exclusivity contract (it makes **no** stronger atomicity claim against writers
+violating that exclusivity) but *reports* the result rather than raising:
 `CleanupOutcome(completed=True)` when the owned preimage was removed, or
 `completed=False` with the finalizer's own `(code, message, path)` when the
 sidecar is **unresolved** (missing evidence, a detectable mismatch, a lost root,
 or an unbound process). An explicit missing/mismatch failure stays unresolved; it
-is never silently reported as "already clean". Success is idempotent — a
-completed handle re-reports completed without a second filesystem touch — and an
+is never silently reported as "already clean". Success is idempotent: a
+completed handle re-reports completed without a second filesystem touch, and an
 unresolved handle stays live, so the host can drain cooperative actors and call
 `run()` again.
 
@@ -341,7 +341,7 @@ published. That removal was correct: an exported unconfined rename *is* that
 finding.
 What was left was a relative path guess into the install tree
 (`require("../../revl_fs_ts.ts")`, three candidates deep), which breaks whenever
-revl moves; revl-harness hit that three times.
+revl moves; a downstream project hit that three times.
 
 So the door is a revl one. The consumer asks revl for the decision and does its
 own reading with the plain host filesystem module in **legacy, unbound mode**.
@@ -379,7 +379,7 @@ consumer that reaches the jail on py and on ts importing nothing.
 
 The witnessed catalog above overwrites unconditionally: `write` truncates the
 target whatever its current state, and the `WriteWitness` records where the
-preimage went, not which inode the write landed on. A consumer (revl-harness)
+preimage went, not which inode the write landed on. A downstream consumer
 that guards reversible writes against external drift needs two things the host
 cannot add from outside, because anything it checks by name before the native
 open is re-derived from the name and a same-UID writer can swap the target in
@@ -397,15 +397,15 @@ fs.write(path, data: str, *, expect=<prior_digest | fs.ABSENT | None>) -> fs.Wri
 ```
 
 `expect=` is checked on the descriptor `open_confined_write` verified, **before**
-the snapshot and before the truncate, so a refusal never mutates the target —
+the snapshot and before the truncate, so a refusal never mutates the target, and
 there is no partial write:
 
-- `fs.ABSENT` — refuse (`EEXPECT`) if the target already exists; the existing
+- `fs.ABSENT`: refuse (`EEXPECT`) if the target already exists; the existing
   file is not overwritten.
-- a `"sha256:..."` digest (a prior receipt's `new_digest`) — refuse (`EEXPECT`)
+- a `"sha256:..."` digest (a prior receipt's `new_digest`): refuse (`EEXPECT`)
   unless the target currently exists and its content still hashes to it. A
   drifted or absent target leaves nothing changed.
-- `None` — no guard.
+- `None`: no guard.
 
 `WriteReceipt.prev_digest` is the original content's digest read through the held
 fd (or `None` for a created target), `new_digest` is the bytes just written, and

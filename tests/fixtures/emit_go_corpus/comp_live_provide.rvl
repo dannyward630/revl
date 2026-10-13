@@ -1,0 +1,60 @@
+// issue #2260: a document of services and components and nothing top-level
+// (no fn, type, extern or test) is the reference's LIVE stc-go module, not the
+// pure typed-core path or the combined one. Its own banner, an import block in
+// a fixed order, and the preambles in that path's order. This one reaches
+// every gate that path assembles from a provide-only component: the stdlib
+// builtins (`strings` and `unicode/utf8`), `Int.to_str` (`strconv`), the
+// checked Int `+ - *`, the Int32 narrow, true division, a Float `%` (`math`),
+// an `emit .. compensate ..` (the frame teardown preamble and its `time`,
+// `os` and `strconv` imports), `requires`, a `config` block and realm
+// placement through `isolate` and `intercept`.
+service Store {
+  fn count() -> Int
+  emission fn put(k: Str, v: Int) -> Int
+  emission fn drop(k: Str) -> Int
+}
+
+service Calc {
+  fn add(a: Int, b: Int) -> Int
+  fn grow(n: Int) -> Int
+  fn narrow(n: Int) -> Int32
+  fn quo(a: Int, b: Int) -> Float
+  fn frem(x: Float) -> Float
+  fn name(n: Int) -> Str
+  fn size(s: Str) -> Int
+  fn head(s: Str) -> Str
+  fn starts(s: Str) -> Bool
+}
+
+service Ledger {
+  emission fn record(k: Str, v: Int)
+  fn total() -> Int
+}
+
+component Adder provides calc: Calc {
+  config { step: Int = 2, tag: Str = "n" }
+  isolate calc in realm("math")
+
+  provide calc {
+    fn add(a, b) = a + b + config.step
+    fn grow(n) = n * n - 1
+    fn narrow(n) = n.to_int32()
+    fn quo(a, b) = a / b
+    fn frem(x) = x % 2.0
+    fn name(n) = `${config.tag}=${n.to_str()}`
+    fn size(s) = s.length()
+    fn head(s) = s.slice(0, 1)
+    fn starts(s) = s.startsWith(config.tag)
+  }
+}
+
+component Books requires store: Store provides ledger: Ledger {
+  intercept store with { audit: true, level: 2 }
+
+  provide ledger {
+    fn record(k, v) {
+      emit store.put(k, v) compensate store.drop(k)
+    }
+    fn total() = store.count()
+  }
+}

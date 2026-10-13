@@ -104,9 +104,9 @@
 
 ["function", "selfhost-emit-java-rvl-java-lit-only-null", "java_lit", 2, 2]
 
-["reason", "selfhost-emit-java-rvl-java-v3-type-residual", "selfhost/emit_java.rvl::java_v3_type: Residual null/empty type defaults require malformed type metadata; function types are explicitly refused; Result boxing is deferred. Unknown generic-head Object boxing cannot arise for a validated supported type."]
+["reason", "selfhost-emit-java-rvl-java-v3-type-residual", "selfhost/emit_java.rvl::java_v3_type: Residual null/empty type defaults require malformed type metadata; function types are explicitly refused; Result boxing is deferred."]
 
-["function", "selfhost-emit-java-rvl-java-v3-type-residual", "java_v3_type", 9, 9]
+["function", "selfhost-emit-java-rvl-java-v3-type-residual", "java_v3_type", 4, 4]
 
 ["reason", "selfhost-emit-java-rvl-let-keyword-only-defer", "selfhost/emit_java.rvl::let_keyword: Only <<DEFER-map-local-unpinned>> remains, the preexisting boundary for unannotated VALUE Map.empty inference. Annotated value Maps and inferred host Map.new are separate and covered."]
 
@@ -151,10 +151,6 @@
 ["reason", "selfhost-emit-java-rvl-method-simple-ok-the", "selfhost/emit_java.rvl::method_simple_ok: the residual `return false` rejects a multi-step legacy method, the documented simple-method admission boundary. The single-step non-return arm is reached by tests/fixtures/emit_java_refusals/deferred_emission_call.rvl (issue #1431), whose provide method is one `emit` step; valid bare void returns are accepted and covered."]
 
 ["function", "selfhost-emit-java-rvl-method-simple-ok-the", "method_simple_ok", 1, 1]
-
-["reason", "selfhost-emit-java-rvl-modern-supported-only-the", "selfhost/emit_java.rvl::modern_supported: Only the false return remains, propagating body_step_supported's existing rejection of setup, nonhost binds and unsupported methods/steps."]
-
-["function", "selfhost-emit-java-rvl-modern-supported-only-the", "modern_supported", 1, 1]
 
 ["reason", "selfhost-emit-java-rvl-newline-the-emitted-python", "selfhost/emit_java.rvl::newline: The emitted Python definition has zero Name-call sites; the newline constant is inlined into every production caller. Its retained wrapper is unreachable from emit_src."]
 

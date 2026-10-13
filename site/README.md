@@ -24,7 +24,7 @@ site/
 ## Run it locally
 
 The playground fetches a wheel and Pyodide's runtime, so serve over HTTP. The
-revl wheel is **not committed** — build it first:
+revl wheel is **not committed**, so build it first:
 
 ```
 python3 tools/check_site_wheel.py --write   # -> site/vendor/revl-<version>-...whl
@@ -59,10 +59,10 @@ Pyodide's WebLoop cannot do; live mode patches `Session._run` to
 disables itself elsewhere). cordis-py ships as its own wheel
 (`vendor/cordis-*.whl`, built from the `backends/python/setup.sh` clone at the
 tested pin), and `cordis.hmr`'s watchdog import gets an inert browser shim. The
-wheel declares its own requirements — `pyyaml` (imported at module scope by
+wheel declares its own requirements: `pyyaml` (imported at module scope by
 `cordis.include`) and `watchdog` (imported at module scope by `cordis.hmr`,
 which `cordis/__init__` imports, so the documented zero-dependency install does
-not work yet) — so a plain `pip install vendor/cordis-*.whl` yields a working
+not work yet). So a plain `pip install vendor/cordis-*.whl` yields a working
 `import cordis`. The browser installs it with dependency resolution off
 (`deps=False`): `pyyaml` comes from the Pyodide distribution by name and
 `watchdog` is not in it at all, so resolving against PyPI would fail the whole
@@ -96,7 +96,7 @@ the pane unbuild itself backwards, residue-free. `playground_host` is the one
 bridge module the shell's externs may import: three DOM operations, forwarded
 to `window.__metaHost`.
 
-## Regenerating the bundled assets
+## Regenerating the bundled assets (local preview only)
 
 ```
 python3 site/build.py     # revl + cordis wheels, examples.js
@@ -105,8 +105,12 @@ python3 site/build.py     # revl + cordis wheels, examples.js
 The cordis wheel needs the `backends/python/setup.sh` clone (or `CORDIS_PY`
 pointing at one).
 
-Only run this when `src/revl/` or the example set changes. The site touches
-nothing under `src/revl/`.
+This is for previewing locally. The deploy workflow builds the revl wheel and
+the examples itself on every push to main, so nothing the deploy builds is
+committed. The cordis runtime wheel (`site/vendor/cordis-*.whl`) is the
+exception: it is committed as an external pin, and `site/build.py` rebuilds it.
+Rerun the script locally when `src/revl/` or the example set changes. The site
+touches nothing under `src/revl/`.
 
 ## Honesty notes for edits
 
@@ -115,4 +119,4 @@ nothing under `src/revl/`.
   don't paraphrase.
 - The agent exchange shows the real G4 JSON diagnostic shape; the `revl_admit`
   reply is a condensed illustration of a plan verdict.
-- Guarantee cards mirror the G1–G8 table in `DESIGN.md`.
+- Guarantee cards mirror the G1 to G8 table in `DESIGN.md`.

@@ -1900,3 +1900,102 @@ def test_go_build_accepts_any_and_a_result_parameter_in_a_component_signature(sh
 
     _go_build(emit.emit(compile_source(_SIGNATURE_DOCS[shape], f"sig_{shape}.rvl")),
               f"signature-any-result-{shape}")
+
+
+# --- issue #2379: a `fail` message is data, not a format string
+#
+# The component `fail` step used to emit `fmt.Errorf(<message>)`, so a `%` in
+# the message was read as a verb and `disk 100% full %d` printed garbled text.
+
+_FAIL_PERCENT_SRC = """
+component Bad {
+  fail "disk 100% full %d"
+}
+"""
+
+_FAIL_CONCAT_SRC = """
+component Bad {
+  fail "disk " + "100%d"
+}
+"""
+
+_FAIL_PLAIN_SRC = """
+component Bad {
+  fail "plain"
+}
+"""
+
+
+def _fail_returns(src: str) -> list[str]:
+    from revl import compile_source  # noqa: PLC0415
+
+    code = emit.emit(compile_source(src, "fail_fmt.rvl"))
+    return [ln.strip() for ln in code.splitlines()
+            if ln.strip().startswith("return nil, fmt.Errorf(")]
+
+
+@pytest.mark.parametrize("src", [_FAIL_PERCENT_SRC, _FAIL_CONCAT_SRC])
+def test_a_fail_message_with_a_percent_is_not_a_go_format_string(src):
+    lines = _fail_returns(src)
+    assert len(lines) == 1, lines
+    assert lines[0].startswith('return nil, fmt.Errorf("%s", '), lines[0]
+
+
+def test_a_fail_message_without_a_percent_keeps_its_emitted_form():
+    assert _fail_returns(_FAIL_PLAIN_SRC) == ['return nil, fmt.Errorf("plain")']
+
+
+@pytest.mark.skipif(shutil.which("go") is None, reason="go is not installed")
+def test_go_returns_a_fail_message_with_a_percent_unchanged(tmp_path):
+    import os  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+
+    (line,) = _fail_returns(_FAIL_PERCENT_SRC)
+    (tmp_path / "go.mod").write_text("module failfmt\n\ngo 1.21\n", encoding="utf-8")
+    (tmp_path / "main.go").write_text(
+        'package main\n\nimport "fmt"\n\n'
+        "func run() (any, error) {\n\t%s\n}\n\n"
+        "func main() {\n\t_, err := run()\n\tfmt.Print(err.Error())\n}\n" % line,
+        encoding="utf-8")
+    env = dict(os.environ, GOCACHE=str(tmp_path / "gocache"), GOFLAGS="-mod=mod")
+    proc = subprocess.run(["go", "run", "."], cwd=tmp_path, env=env,
+                          capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "disk 100% full %d"
+
+
+_PERCENT_TEST_NAME_SRC = """
+service S { fn bump(x: Int) -> Int }
+component P provides s: S { provide s { fn bump(x) { return x + 1 } } }
+lifecycle test "disk 100% full %d" {
+  load P
+  let n = call s.bump(41)
+  assert n == 42
+  unload P
+  assert no_residue
+}
+"""
+
+
+def test_a_percent_in_a_lifecycle_test_name_is_not_a_go_format_verb():
+    from revl import compile_source  # noqa: PLC0415
+
+    src = emit.emit(compile_source(_PERCENT_TEST_NAME_SRC, "pct_name.rvl"))
+    # the lines that splice the name into the format string itself (the load
+    # and call failures pass it as a `%s` argument and are safe)
+    fatals = [ln.strip() for ln in src.splitlines()
+              if 'revlT.Fatalf("lifecycle test' in ln]
+    assert fatals, "no lifecycle Fatalf line was emitted"
+    # the assertion line and both residue lines
+    assert len(fatals) == 3, fatals
+    for ln in fatals:
+        assert "100%% full %%d" in ln and "100% full" not in ln, ln
+
+
+@pytest.mark.skipif(shutil.which("go") is None, reason="go is not installed")
+def test_go_runs_a_lifecycle_test_whose_name_has_a_percent():
+    from revl import compile_source  # noqa: PLC0415
+    from revl.test import RUNNERS  # noqa: PLC0415
+
+    status, message = RUNNERS["go"](compile_source(_PERCENT_TEST_NAME_SRC, "pct_name.rvl"))
+    assert status == "pass", message

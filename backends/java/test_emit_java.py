@@ -1483,7 +1483,7 @@ def test_renaming_collision_is_no_longer_lossy():
     src = _emit(ir)
     assert src.count("long double_(long n)") == 1
     assert src.count("long double__(long n)") == 1
-    assert "return Math.addExact(double_(n), double__(n));" in src
+    assert "return revlAdd(double_(n), double__(n));" in src
 
 
 def test_match_in_a_component_method_body():
@@ -2257,3 +2257,122 @@ def test_the_wal_arg_is_unwrapped_without_a_secret_declaration():
     src = _emit(_crashproof_ir(), record=True)
     assert "call.append(revlWalStr(args[i]));" in src   # the sink itself is on
     assert "revlRedactText(args[i])" not in src
+
+
+# --------------------------------------------------------------------------
+# Int / Int32 overflow wording (issue #2381, docs/arithmetic.md)
+# --------------------------------------------------------------------------
+
+_OVERFLOW_SOURCE = """
+fn add(a: Int, b: Int) -> Int { return a + b }
+fn sub(a: Int, b: Int) -> Int { return a - b }
+fn mul(a: Int, b: Int) -> Int { return a * b }
+fn neg(a: Int) -> Int { return -a }
+fn quo(a: Int, b: Int) -> Int { return a.div_trunc(b) }
+fn narrow(a: Int) -> Int32 { return a.to_int32() }
+fn add32(a: Int32, b: Int32) -> Int32 { return a + b }
+fn sub32(a: Int32, b: Int32) -> Int32 { return a - b }
+fn mul32(a: Int32, b: Int32) -> Int32 { return a * b }
+fn neg32(a: Int32) -> Int32 { return -a }
+"""
+
+
+def _outside_helpers(src: str) -> str:
+    """The emitted unit with the `revl*` helper declarations removed, so an
+    assertion about call sites cannot be satisfied by a helper's own body."""
+    return "\n".join(
+        line for line in src.splitlines()
+        if not re.match(r"\s*(private static|try \{|catch \(|\}|//)", line)
+        and "ArithmeticException" not in line
+        and "if (b == 0L)" not in line)
+
+
+def test_java_int_overflow_says_revl_int_overflow_2381():
+    """docs/arithmetic.md: every hosted tier raises `revl: Int overflow` (and
+    `revl: Int32 overflow` for Int32). Java's `Math.*Exact` throws
+    ArithmeticException with the JDK's own `long overflow`, so every Exact
+    call must sit behind a helper that re-raises it in revl's words; a bare
+    `Math.*Exact` at a call site is the defect."""
+    src = _emit(compile_source(_OVERFLOW_SOURCE))
+    calls = _outside_helpers(src)
+    assert not re.search(r"Math\.\w+Exact\(", calls), calls
+    for call in ("revlAdd(a, b)", "revlSub(a, b)", "revlMul(a, b)",
+                 "revlNeg(a)", "revlDivTrunc(a, b)", "revlToInt32(a)"):
+        assert call in calls, call
+    # both widths of every helper carry revl's wording, none the JDK's
+    for name, jdk in (("revlAdd", "addExact"), ("revlSub", "subtractExact"),
+                      ("revlMul", "multiplyExact"), ("revlNeg", "negateExact")):
+        assert f"private static long {name}(long a" in src
+        assert f"private static int {name}(int a" in src
+        assert f"Math.{jdk}(" in src
+    assert src.count('throw new ArithmeticException("revl: Int overflow")') == 5
+    assert src.count('throw new ArithmeticException("revl: Int32 overflow")') == 5
+    assert "long overflow" not in src and "integer overflow" not in src
+
+
+def test_java_overflow_helpers_are_emitted_only_where_called_2381():
+    """The helpers ride the stdlib block's reached-groups gate: a document
+    that adds but never narrows carries `revlAdd` and no `revlToInt32`."""
+    src = _emit(compile_source("fn add(a: Int, b: Int) -> Int { return a + b }"))
+    assert "private static long revlAdd(long a, long b)" in src
+    for other in ("revlSub", "revlMul", "revlNeg", "revlToInt32", "revlDivTrunc"):
+        assert other not in src, other
+
+
+def test_java_floor_and_euclid_division_trap_in_revl_words_2381():
+    """`div_floor` / `div_euclid` call `revlDivTrunc`, so their Int.MIN / -1
+    fault says `revl: Int overflow` too, and the helper is pulled in."""
+    src = _emit(compile_source(
+        "fn f(a: Int, b: Int) -> Int { return a.div_floor(b) + a.div_euclid(b) }"))
+    assert "long q = revlDivTrunc(a, b);" in src
+    assert "private static long revlDivTrunc(long a, long b)" in src
+    assert "Math.divideExact(a, b)" in src  # only inside revlDivTrunc
+    assert src.count("Math.divideExact(") == 1
+
+
+@pytest.mark.skipif(JAVAC is None or JAVA is None, reason=NO_JDK)
+def test_java_int_overflow_message_at_runtime_2381(tmp_path):
+    """The runtime half: each overflowing operation throws an exception whose
+    message is the one docs/arithmetic.md states. Needs a JDK, so CI runs it."""
+    out = _javac_compile(tmp_path, _emit(compile_source(_OVERFLOW_SOURCE)))
+    runner = tmp_path / "RunOverflow.java"
+    runner.write_text(
+        "import java.util.function.Supplier;\n"
+        "public class RunOverflow {\n"
+        "    static void expect(String label, Supplier<Object> op, String msg) {\n"
+        "        try { op.get(); }\n"
+        "        catch (ArithmeticException e) {\n"
+        "            if (msg.equals(e.getMessage())) { return; }\n"
+        "            System.out.println(label + \": got '\" + e.getMessage() + \"'\");\n"
+        "            System.exit(1);\n"
+        "        }\n"
+        "        System.out.println(label + \": no fault\");\n"
+        "        System.exit(1);\n"
+        "    }\n"
+        "    public static void main(String[] args) {\n"
+        "        long max = Long.MAX_VALUE, min = Long.MIN_VALUE;\n"
+        "        int imax = Integer.MAX_VALUE, imin = Integer.MIN_VALUE;\n"
+        "        String i64 = \"revl: Int overflow\", i32 = \"revl: Int32 overflow\";\n"
+        "        expect(\"add\", () -> revl.Components.add(max, 1L), i64);\n"
+        "        expect(\"sub\", () -> revl.Components.sub(min, 1L), i64);\n"
+        "        expect(\"mul\", () -> revl.Components.mul(max, 2L), i64);\n"
+        "        expect(\"neg\", () -> revl.Components.neg(min), i64);\n"
+        "        expect(\"quo\", () -> revl.Components.quo(min, -1L), i64);\n"
+        "        expect(\"narrow\", () -> revl.Components.narrow(max), i32);\n"
+        "        expect(\"add32\", () -> revl.Components.add32(imax, 1), i32);\n"
+        "        expect(\"sub32\", () -> revl.Components.sub32(imin, 1), i32);\n"
+        "        expect(\"mul32\", () -> revl.Components.mul32(imax, 2), i32);\n"
+        "        expect(\"neg32\", () -> revl.Components.neg32(imin), i32);\n"
+        "        System.out.println(\"OVERFLOW_OK\");\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    compiled = subprocess.run(
+        [JAVAC, "--release", "21", "-cp", str(out), "-d", str(out), str(runner)],
+        capture_output=True, text=True, timeout=600)
+    assert compiled.returncode == 0, compiled.stderr
+    run = subprocess.run([JAVA, "-cp", str(out), "RunOverflow"],
+                         capture_output=True, text=True, timeout=600)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "OVERFLOW_OK" in run.stdout

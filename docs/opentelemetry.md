@@ -63,7 +63,7 @@ The OpenTelemetry SDK is an **optional dependency**: the base `revl` install
 stays dependency-light and imports no OTel code on any core path.
 
 ```bash
-pip install revl[otel]
+pip install ".[otel]"          # from a checkout of the repository
 ```
 
 Point the exporter at a recorded trace:

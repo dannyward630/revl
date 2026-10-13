@@ -731,12 +731,16 @@ const revlWALGuarantee = "the WAL records each committed effect's step identity,
 // revlWAL is the process's durable append-only log. One line per record, JSON,
 // flushed + fsync'd before the call that wrote it returns — the write-ahead
 // discipline the py tier uses, so a record a caller saw acknowledged is on disk
-// before the effect it describes is allowed to matter.
+// before the effect it describes is allowed to matter. A failed write or fsync
+// is fatal (issue #2345): the process stops instead of running on with a record
+// that never became durable. REVL_WAL_ALLOW_UNSYNCED=1 is the explicit opt-out
+// for a target that cannot fsync; it is stamped into the log itself.
 type revlWAL struct {
-	mu   sync.Mutex
-	f    *os.File
-	seq  int
-	seqs []int
+	mu       sync.Mutex
+	f        *os.File
+	seq      int
+	seqs     []int
+	unsynced bool
 }
 
 var revlWALSink *revlWAL
@@ -750,23 +754,61 @@ func revlWALOpen() {
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return
+		panic("revl: cannot open the write-ahead log REVL_WAL: " + err.Error())
 	}
-	revlWALSink = &revlWAL{f: f}
-	revlWALSink.write(map[string]any{
+	unsynced := os.Getenv("REVL_WAL_ALLOW_UNSYNCED") == "1"
+	revlWALSink = &revlWAL{f: f, unsynced: unsynced}
+	header := map[string]any{
 		"record": "header", "walVersion": 1, "generation": 1,
 		"guarantee": revlWALGuarantee,
-	})
+	}
+	if unsynced {
+		os.Stderr.WriteString("warning: REVL_WAL_ALLOW_UNSYNCED=1 disables the WAL fsync guarantee\n")
+		header["durability"] = "unsynced-opt-out"
+	}
+	revlWALSink.write(header)
+	if unsynced {
+		revlWALSink.write(map[string]any{"record": "durability-opt-out", "fromSeq": 0})
+	}
 }
 
 func init() { revlWALOpen() }
 
+// write appends one record and fsyncs it. Any failure panics: a record the
+// caller cannot be sure is on disk must stop the run before the next effect,
+// never pass silently. Only the visible REVL_WAL_ALLOW_UNSYNCED opt-out lets a
+// failed fsync through.
 func (w *revlWAL) write(rec map[string]any) {
 	line, err := json.Marshal(rec)
 	if err != nil {
+		panic("revl: write-ahead log record could not be encoded: " + err.Error())
+	}
+	start := int64(-1)
+	if info, err := w.f.Stat(); err == nil {
+		start = info.Size()
+	}
+	if _, err := w.f.Write(append(line, '\n')); err != nil {
+		w.cut(start)
+		panic("revl: write-ahead log write failed: " + err.Error())
+	}
+	if err := w.f.Sync(); err != nil && !w.unsynced {
+		w.cut(start)
+		panic("revl: write-ahead log fsync failed: " + err.Error())
+	}
+}
+
+// cut drops a record whose write or fsync failed (issue #2345), as the py
+// WriteAheadLog and the wasm drain do, so recovery reads it as absent, then
+// fsyncs the cut so a power loss cannot bring it back. Best effort: the
+// caller panics either way, and on a target that refused the record's fsync
+// this fsync fails too.
+func (w *revlWAL) cut(start int64) {
+	if start < 0 {
 		return
 	}
-	_, _ = w.f.Write(append(line, '\n'))
+	if err := w.f.Truncate(start); err != nil {
+		return
+	}
 	_ = w.f.Sync()
 }
 
@@ -794,6 +836,89 @@ func revlRecordTransactional(receiver, method string, args []string) {
 		"record": "discharge-descriptor", "seq": seq, "entry": "transactional",
 		"call": call, "origin": call, "witness": nil, "idempotency": nil,
 	})
+}
+
+// revlRecordEmissionStart journals one host-extern emission BEFORE its body
+// runs (issue #2345), the record the py tier writes for the same crossing
+// (backends/python/replay.py, Timeline.record_emission): an `effect` of kind
+// `emission`, one-way, no inverse. It is fsync'd before it returns and a failed
+// fsync panics, so the host body never runs unless its start record is on disk.
+// Returns the record's seq, or -1 when REVL_WAL is unset.
+func revlRecordEmissionStart(key, method, service string) int {
+	if revlWALSink == nil {
+		return -1
+	}
+	label := key
+	if method != key {
+		label = key + "." + method
+	}
+	var svc any
+	if service != "" {
+		svc = service
+	}
+	w := revlWALSink
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	seq := w.seq
+	w.seq++
+	w.write(map[string]any{
+		"record": "effect", "seq": seq, "component": nil, "stepIndex": nil,
+		"kind": "emission", "label": label, "site": nil, "source": nil,
+		"origin": map[string]any{},
+		"boundary": map[string]any{
+			"class": "emission", "referent": "process-crossing", "compensated": false,
+			"detail": map[string]any{"key": key, "method": method, "service": svc, "args": []any{}},
+		},
+		"inverse": map[string]any{
+			"reconstructible": false,
+			"reason":          "an emission is a one-way crossing; it has no inverse",
+		},
+	})
+	return seq
+}
+
+// revlRecordEmissionOutcome settles a journalled emission once its body
+// returned (`emission-complete`), the record the py tier writes after the call.
+// A body that panics is settled as `emission-failed` instead
+// (revlEmissionFailedUnless); either way recover reports it as unresolved.
+func revlRecordEmissionOutcome(seq int, outcome string) {
+	revlWriteEmissionOutcome(seq, map[string]any{"record": outcome, "seq": seq})
+}
+
+func revlWriteEmissionOutcome(seq int, record map[string]any) {
+	if revlWALSink == nil || seq < 0 {
+		return
+	}
+	w := revlWALSink
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.write(record)
+}
+
+// revlEmissionFailedUnless is deferred right after the start record: when the
+// body panicked (ok still false) it writes `emission-failed`, as the py tier's
+// _call_within does, and the panic carries on. Only the error type is kept:
+// this tier has no redaction funnel for a panic message.
+func revlEmissionFailedUnless(seq int, ok *bool) {
+	if *ok {
+		return
+	}
+	revlWriteEmissionOutcome(seq, map[string]any{
+		"record": "emission-failed", "seq": seq,
+		"error": map[string]any{"type": "panic"},
+	})
+}
+
+// revlJournalEmission journals one emission made through a required service
+// (the py tier's _ServiceProxy path): durable start record, then the call,
+// then its outcome.
+func revlJournalEmission(key, method, service string, body func()) {
+	seq := revlRecordEmissionStart(key, method, service)
+	ok := false
+	defer revlEmissionFailedUnless(seq, &ok)
+	body()
+	ok = true
+	revlRecordEmissionOutcome(seq, "emission-complete")
 }
 
 // revlRecordDischarge writes the commit-path proof that every recorded

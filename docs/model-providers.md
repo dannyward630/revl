@@ -237,7 +237,7 @@ mode, whether it claims, and each gap below.
 
 ### The local grammar engine (optional)
 
-`pip install "revl[constrain]"` installs [llguidance](https://github.com/guidance-ai/llguidance).
+From a checkout of the repository, `pip install ".[constrain]"` installs [llguidance](https://github.com/guidance-ai/llguidance).
 It is never required. When it is installed:
 
 - every derived GBNF grammar a `gbnf` binding would claim is compiled by it

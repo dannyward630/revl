@@ -6,7 +6,7 @@ returns. This is the complete set, verified against `src/revl/mcp/server.py`
 query verbs appended to it).
 
 <!-- docgen:mcp-verb-count begin -->
-The server has exactly the verbs below, one section each (`python3 tools/docgen.py --show mcp-verb-count` counts them). By default `tools/list` advertises the core tier and `revl_verbs` returns the rest — or calls one, given `name` and `args`; see "Find a verb".
+The server has exactly the verbs below, one section each (`python3 tools/docgen.py --show mcp-verb-count` counts them). By default `tools/list` advertises the core tier and `revl_verbs` returns the rest - or calls one, given `name` and `args`; see "Find a verb".
 <!-- docgen:mcp-verb-count end -->
 
 Start the server with `revl mcp serve` (see [commands-reference.md](commands-reference.md#revl-mcp)
@@ -157,7 +157,10 @@ with no exact inverse says so: `undo: null` and an `undoReason` (an emission
 cannot be un-emitted, a halt or an approval is recorded evidence, and
 `revl_export` keeps no copy of the disk contents it replaced). `undoDepth` is how many changes
 `revl_step_back` with no arguments can still revert. A refused call changed
-nothing and carries no undo field.
+nothing and carries no undo field. The byte-for-byte promise covers sources and
+manifest, not running state: `revl_undo` starts the earlier generation cold, so
+when a running component holds live state the undo would drop, the response
+also carries an `undoNote` naming it (issue #2346).
 
 **Every response can say which compiler answered.** Since issue #2007, the
 `initialize` result's `serverInfo` block and every `revl_state` payload carry
@@ -311,7 +314,7 @@ and a test holds the two together. Every other verb is still served, and every
 one of them is **callable** without being listed: `revl_verbs` is itself a
 listed tool and takes `name` and `args`, so a call through it *is* the call it
 names (see below). A client that wants the whole list up front starts the
-server with `revl mcp serve --all-tools`, or sets `REVL_MCP_ALL_TOOLS=1` — that
+server with `revl mcp serve --all-tools`, or sets `REVL_MCP_ALL_TOOLS=1` - that
 costs about 22,800 extra cold-start tokens, where the hatch costs about a
 hundred. The core tier is `CORE` in `src/revl/mcp/disclosure.py`.
 
@@ -325,14 +328,14 @@ that topic's verbs; with `names` it returns those verbs' exact schemas. The
 schemas are the same objects the full list carries under `--all-tools`. An
 unknown topic or name is refused with `next` set to the no-argument call.
 
-With `name` and `args` it **calls** the verb `name` with the arguments `args` —
+With `name` and `args` it **calls** the verb `name` with the arguments `args` -
 the same handler, the same jail, authoring, operator and runtime gates, the
 same payload, the same `disk` block and `sessionState` footer as calling that
 verb directly. A verb that is not in the core tier is therefore one listed tool
 away, which is what issue #2073 is about: a function-calling model emits a call
 for a tool it was *shown*, so a schema returned as text is a document, not a
-tool. `revl_export` — the verb that writes the held source out, and so the one
-that prevents a silent no-op in an agent loop — is reachable this way.
+tool. `revl_export` - the verb that writes the held source out, and so the one
+that prevents a silent no-op in an agent loop - is reachable this way.
 
 A hatch that cannot name the verb it means refuses by name rather than
 answering the lookup: an unknown `name`, a missing `args`, or an `args` that is
@@ -463,13 +466,13 @@ check → admit → plan → swap into this one call; without it nothing is muta
 The acting, cross-host half of `revl_ship`: drive an admission-gated
 cross-machine reconfiguration of the running composition onto a second host
 (`via = ssh`) through the same leg `revl deploy` uses ([deploy.md](deploy.md),
-roadmap item 476, issue #830). Runs the deploy-map admission gate first —
+roadmap item 476, issue #830). Runs the deploy-map admission gate first -
 refusing a machine boundary without a pinned host key (`known_hosts`), an
-unknown `via`, a network provider, and so on — and reports the plan. Without
+unknown `via`, a network provider, and so on - and reports the plan. Without
 `apply`, or with `apply: false`, this is a REHEARSAL: it admits and plans and
 mutates NOTHING on either host. With `apply: true` it stages the attested
 bundle under each pinned host key and drives the coordinated
-PREPARE/COMMIT/ABORT protocol — the far host re-hashes the bytes it runs, the
+PREPARE/COMMIT/ABORT protocol - the far host re-hashes the bytes it runs, the
 conductor verifies the signed admission and COMMIT receipts, and a remote the
 conductor cannot settle on ABORT is `unresolved`, never a false rollback. The
 crossing is irreversible, so `apply: true` is additionally refused without the
@@ -584,8 +587,8 @@ change what the compiler sees and `formatted` is NOT returned ([fmt.md](fmt.md))
 What a diagnostic code means and how to fix it, the MCP twin of `revl explain`.
 The other half of a structured `revl_check` / `revl_admit` rejection, which
 already carries the code. Every code the compiler, the gate, the session and
-the HTTP faces emit has an entry — not only the design catalogue's, and
-barring the curriculum's reserved set noted below — and an unknown code
+the HTTP faces emit has an entry - not only the design catalogue's, and
+barring the curriculum's reserved set noted below - and an unknown code
 answers with the roster of known ones rather than with nothing.
 
 - Inputs: `code` (required; a diagnostic code such as `G4`, case-insensitive).
@@ -885,6 +888,21 @@ the proposal was built (another caller committed): it would undo that change.
 `revl_source {proposal: true}` reads the proposal. The loop is propose, verify,
 commit; `revl_export` writes the committed source to disk when you want a file.
 
+A change resolves the names it addresses against the held proposal, so a name
+a staged change removed (a withdrawal, say) is refused while the proposal is
+held, even though the running composition still has it (issue #2230). The
+refusal says so: it names what the held proposal removed, says the running
+composition still has the name, and gives the ways on: commit the proposal
+with `revl_change {commit: true}`, drop it with `{discard: true}`, or name a
+declaration the proposal still has. `next` holds the commit and the discard;
+a stale proposal cannot commit, so its refusal offers only the discard. A
+name neither has keeps the plain `no top-level declaration matches` refusal. Any refusal made while a
+proposal is held carries `proposal` (`{generation, replacing}`, plus
+`stale: true` when it can no longer commit) and `speculative`, as a proposal
+does, and its note says the held proposal is still held and unchanged as
+well as the running composition: a refusal never
+changes or drops the proposal.
+
 Make one change in ONE call (issue #1695). An agent names the intent; the
 server runs the loop an agent used to orchestrate itself (in a benchmark, eight
 calls for one change, five of them `revl_check` polls):
@@ -892,7 +910,12 @@ calls for one change, five of them `revl_check` polls):
 1. **load**, when nothing is loaded and `files`/`source` are given. A
    candidate with holes opens a draft, as `revl_load` does;
 2. **plan**: for a withdrawal, the cascade of components that would lose a
-   provider (`revl_query_withdraw`'s answer), reported whatever happens next;
+   provider (`revl_query_withdraw`'s answer), reported whatever happens next.
+   On a cold call the plan is read from the composition the call carries in
+   `files`/`source`/`modules`, so it matches what `revl_load` then the same
+   withdrawal would plan (issue #2225): `cascade: true` withdraws the whole
+   cascade, and a withdrawal that would strand a dependent is refused before
+   anything is loaded, with `loaded: false` and the same plan and hint;
 3. **apply** the change to a working copy of the server-side source, so
    nothing about the running composition has changed yet;
 4. **verify**: admission against the running composition, the lease and
@@ -1097,8 +1120,8 @@ names and no comments is about 300.
 - Reads the running composition as the session holds it (edits included).
   With nothing loaded, pass `files` or `source` to read from.
 
-**The packaged stdlib (issue #2173).** `stdlib/` ships in the wheel — 20
-modules — but it is not a loaded buffer, so the only declaration reader could
+**The packaged stdlib (issue #2173).** `stdlib/` ships in the wheel - 20
+modules - but it is not a loaded buffer, so the only declaration reader could
 not reach it: `revl_source {}` asked for a symbol name, and a name the session
 does not hold answered "nothing is loaded". The vocabulary was therefore
 readable only by an agent that already knew it.
@@ -1107,7 +1130,7 @@ readable only by an agent that already knew it.
   stdlib itself: `{kind: "stdlib", root, packaged, modules, builtin, hint}`,
   where each module carries its `path` (`stdlib/<name>.rvl`), `packaged: true`,
   and its exported `symbols` by kind (`fn`, `type`, `service`, `component`,
-  `extern`, ...). That is the whole vocabulary in one call — which modules
+  `extern`, ...). That is the whole vocabulary in one call - which modules
   exist and what each one declares.
 - The `builtin` entry is the base type surface (`Str`, `List`, `Map`, `Int`,
   `Value`, ...) as `typecheck` admits it. Those methods are built into the
@@ -1118,7 +1141,7 @@ readable only by an agent that already knew it.
   stdlib: a bare name when it is unique (`list_sort`), `<module>.rvl:Name`
   (`str.rvl:trim`), or a base type's method as `Str.concat` or
   `builtin:Str.concat`. A name the stdlib does not declare is refused by
-  naming the stdlib, its root and its module count — never with "nothing is
+  naming the stdlib, its root and its module count - never with "nothing is
   loaded", which would send the caller back to the search this ends.
 - A call that names a source (`files`, `source`, `modules`), a modifier
   (`with`, `comments`) or `proposal` and no `symbol` keeps the refusal it has
@@ -1147,7 +1170,7 @@ changed. A member that shares a line with anything else (`provide p { fn a() =
 edit still reaches it. The answer is
 `{symbol, kind, buffer, line, text}`, plus `deps` as a list of the same shape.
 
-- Inputs: `symbol` (optional — with no `symbol` and nothing else asked for,
+- Inputs: `symbol` (optional - with no `symbol` and nothing else asked for,
   it answers with the packaged stdlib's modules and symbols); `with`;
   `comments`; `proposal` (true: read your speculative proposal, issue #1696);
   `files` / `source` when nothing is loaded.
@@ -1167,18 +1190,18 @@ actions split three ways by their checked extern classification, and nothing at
 runtime can move an action between classes
 ([245-session-commit.md](design/245-session-commit.md), Decision 2):
 
-- **(a) witnessed-revertible** — an `effect` over a `witnessed` extern (item
+- **(a) witnessed-revertible** - an `effect` over a `witnessed` extern (item
   243). Runs freely mid-session; its declared inverse is registered on the
   activation frame. On commit it discharges (the mutation persists); on abort it
   replays (the mutation reverts).
-- **(b) deferrable** — an `emission` extern declared `deferred`
+- **(b) deferrable** - an `emission` extern declared `deferred`
   (`extern emission deferred fn send(...)`). The call does NOT fire the host
   body; it ENQUEUES a descriptor on the session's deferral queue and returns
   Unit. On commit the queue flushes FIFO (each host body fires once); on abort
   the queue is dropped and nothing fires. Because nothing crossed, the abort is
   exact by construction. A deferred emission must return Unit, may not declare
   `compensate` or `async`, and may not appear in a teardown slot (all checked).
-- **(c) immediate** — a plain `emission` extern. Fires at the call. On abort it
+- **(c) immediate** - a plain `emission` extern. Fires at the call. On abort it
   has already crossed; `compensate` (item 247) may offset it.
 
 The commit is two-step and hash-bound. `revl_commit` derives its gate target
@@ -1240,6 +1263,11 @@ gate a swap runs, so a target the current checker rejects is refused
 (`ok:false`, with the diagnostic) and the running composition is untouched. The
 dossier rides along: what unloads, what state drops, and the interim boundary
 crossings that no undo can un-emit ([generation-history.md](generation-history.md)).
+An undo starts the target cold and does not run a `handoff` in reverse, so every
+running component holding live state is listed in `dossier.stateDropped.components`
+with a `note` (issue #2346). A forward `revl_change` with `replace` that re-applies
+the earlier source keeps the state a declared `handoff` (or a template's live
+instances) carries; any other component starts cold either way.
 The answer carries the `"disk": {"inSync", "stale"}` block (issue #2037): a
 revert of a change that had been exported leaves disk holding the retracted
 change, so `stale` names it and a `note` points at `revl_export`; a revert of a

@@ -315,7 +315,32 @@ fn dollar_interp(text: Str) -> Bool {
 // the main loop tracks lines). Used to trim an interpolation body, which
 // the reference lexer does with str.strip().
 fn is_ws(c: Str) -> Bool {
-  return c.is_space()
+  if (c.is_space()) { return true }
+  return is_py_space_extra(code0(c))
+}
+
+// The characters Python's `str.isspace` reads as whitespace beyond the four
+// (space, tab, LF, CR) the `is_space` builtin covers: VT, FF, the four
+// separators 0x1c-0x1f, NEL, NBSP and the Unicode spaces. The reference lexer
+// skips any `isspace` character between tokens and between an `@backend` name
+// and its `{` (src/revl/lexer.py `lex`), so the self-host lexer must too
+// (issue #2343). None of them is a newline for line counting there either.
+fn is_py_space_extra(cc: Int) -> Bool {
+  if ((cc == 11) || (cc == 12)) { return true }
+  if ((cc >= 28) && (cc <= 31)) { return true }
+  if ((cc == 133) || (cc == 160) || (cc == 5760)) { return true }
+  if ((cc >= 8192) && (cc <= 8202)) { return true }
+  if ((cc == 8232) || (cc == 8233) || (cc == 8239)) { return true }
+  return (cc == 8287) || (cc == 12288)
+}
+
+// Whether the code point `cc` (its one-char text `c`) is `str.isspace`
+// whitespace. The extra set is only consulted below 32 or at 133 and above, so
+// printable ASCII pays one compare.
+fn is_py_space(c: Str, cc: Int) -> Bool {
+  if (c.is_space()) { return true }
+  if ((cc < 32) || (cc >= 133)) { return is_py_space_extra(cc) }
+  return false
 }
 
 fn trim(s: Str) -> Str {
@@ -524,9 +549,9 @@ fn step(source: Str, i: Int, line: Int) -> Step {
   let c = source.charAt(i)
   let cc = source.codepoint_at(i)
   if (cc == 10) { return { i: i + 1, line: line + 1, tok: none } }
-  // c is not newline here (the cc == 10 case returned), so the classifier
-  // builtin is exactly is_space(c) — call it directly, skipping the fn call.
-  if (c.is_space()) { return { i: i + 1, line: line, tok: none } }
+  // c is not newline here (the cc == 10 case returned). Every `str.isspace`
+  // character is skipped, as the reference lexer skips it (issue #2343).
+  if (is_py_space(c, cc)) { return { i: i + 1, line: line, tok: none } }
   if (source.slice(i, i + 2) == "//") {
     let sc = scan_comment(source, i)
     return { i: sc.j, line: line, tok: none }
@@ -701,10 +726,10 @@ fn step(source: Str, i: Int, line: Int) -> Step {
       var jb = i + 1
       while (jb < n1 && (source.charAt(jb).is_alnum() || source.charAt(jb) == "_")) { jb += 1 }
       let backend = source.slice(i + 1, jb)
+      // any `str.isspace` run before `{`, newlines included and in any order,
+      // as the reference's `while source[k].isspace()` reads it (issue #2343)
       var kb = jb
-      while (kb < n1 && source.codepoint_at(kb) != 10 && source.charAt(kb).is_space()) { kb += 1 }
-      // whitespace before `{` may include a newline
-      while (kb < n1 && source.codepoint_at(kb) == 10) { kb += 1 }
+      while (kb < n1 && is_py_space(source.charAt(kb), source.codepoint_at(kb))) { kb += 1 }
       if (kb < n1 && source.charAt(kb) == "{") {
         let hb = scan_host_body(source, kb)
         if (hb.j == 0 - 1) {

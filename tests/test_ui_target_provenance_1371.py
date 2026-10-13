@@ -560,9 +560,9 @@ def selfhost_admit():
     import importlib.util
     import types as _types
 
-    from revl import compile_files
+    from _compiled_ir import compiled_ir
 
-    ir = compile_files([str(ROOT / "selfhost" / "lower.rvl")])
+    ir = compiled_ir(ROOT / "selfhost" / "lower.rvl")
     spec = importlib.util.spec_from_file_location(
         "pyemit_ui_provenance_1371", ROOT / "backends" / "python" / "emit.py")
     module = importlib.util.module_from_spec(spec)

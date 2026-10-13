@@ -44,7 +44,7 @@ belongs.
    orchestrator's at merge: run the matching builder without `--check` and
    commit the regenerated crate. A red on the docs check is `make docs-gen`
    when a generated block is stale, or a missing section to write when a
-   coverage check names an undocumented subcommand or MCP verb — never a hand
+   coverage check names an undocumented subcommand or MCP verb; never a hand
    edit inside a `<!-- docgen:KEY -->` region, which the next generation
    overwrites.
 
@@ -388,9 +388,9 @@ entry when you add the action.
 `tools/check_wheel_manifest.py` runs in `lint` on every PR, in the release dry
 run, and in `publish.yml` immediately before the upload. It asserts that the
 built wheel's member list **equals** `git ls-files` of the trees
-`hatch_build.TREES` maps into it, plus the `.dist-info` — set equality, so an
-over-wide `exclude` is as red as an over-inclusion — and that the **sdist**
-carries no file the commit does not track. It exists because the
+`hatch_build.TREES` maps into it, plus the `.dist-info`: set equality, so an
+over-wide `exclude` is as red as an over-inclusion. It also asserts that the
+**sdist** carries no file the commit does not track. It exists because the
 wheel used to `force-include` `backends/` and `stdlib/` verbatim.
 `force-include` runs after file selection and is exempt from every exclude rule
 and from the ignore files, so the wheel contained whatever sat on the builder's
@@ -524,38 +524,31 @@ generator was skipped for a missing tool without `--allow-skip`.
 
 ## Merging
 
-The orchestrator merges when CI is green, and regenerates the site wheel if the
-change touched it. The gate crates are no longer on that list: `pre_pr.sh` checks
-both, so a drifted crate is the branch author's to fix before the PR opens. A
-branch is never merged on a local
+The orchestrator merges when CI is green. A branch is never merged on a local
 green alone, because a local green certifies only what actually ran on that
 machine at that moment.
 
-That regeneration is no longer only a habit. Issue #252: the committed
-playground/site wheel vendors all of `src/revl`, so it is stale after almost any
-source change, and it is deliberately not a per-PR gate (as one it reddened CI
-on every source change, which is an outage class rather than a defect). The
-merge-time assignment above was the whole of its ownership, and under the actual
-flow — agents run targeted tests, CI runs the matrix, the pipeline merges on
-green — nobody ran it, so the wheel was found stale three times in one day.
-`.github/workflows/site-wheel.yml` now runs `tools/check_site_wheel.py` on every
-push to main and weekly, and fails on main when the committed wheel does not
-match a fresh build. It never runs on a pull request, so no PR is red for not
-having rebuilt a deploy artifact. When it goes red, the fix is one command on a
-branch:
+The site wheel is not a merge-time chore. It is not committed: the pages
+workflow (`.github/workflows/pages.yml`) builds it from the sha being deployed
+on every push to main, so it cannot be stale and nobody regenerates it by hand.
+Issue #252 recorded why the committed copy failed: it vendored all of
+`src/revl`, so it was stale after almost any source change, and a refresh
+raced the merge queue. `.github/workflows/site-wheel.yml` checks that the build
+still works, on every push to main, weekly and on demand. It never runs on a
+pull request. For a local preview, `python3 tools/check_site_wheel.py --write`
+builds the wheel under `site/vendor/` (see `site/README.md`). The gate crates
+are checked by `pre_pr.sh`, so a drifted crate is the branch author's to fix
+before the PR opens.
 
-    python3 tools/check_site_wheel.py --write
-
-The same applies to the generated doc blocks, and for the same reason. Issue
+Generated doc blocks are different, because a stale one does fail CI. Issue
 #296: `docs/DOC-STATUS.md`'s `doc-status` block embeds a row per `docs/*.md`, so
 **any** landing that touches **any** doc re-stales it. Unlike the site
-wheel, `tools/docgen.py --check` *is* a per-PR gate (it runs in the required
+wheel check, `tools/docgen.py --check` *is* a per-PR gate (it runs in the required
 `frontend` job). So a stale block on main reddens every open PR at once, for a
 reason none of their authors caused. It was already stale at the merge commit
 that introduced the gate.
 
-So `make docs-gen` joins the site wheel and the gate crate as merge-time
-regeneration the orchestrator owns:
+So `make docs-gen` is merge-time regeneration the orchestrator owns:
 
     make docs-gen        # or: python3 tools/docgen.py --write
 
