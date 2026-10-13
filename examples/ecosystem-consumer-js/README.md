@@ -18,7 +18,8 @@ slices 0-2 landed in `crates/revl-gate-wasm`.
 at all. Everything that is not a refusal is escalated to the reference
 toolchain. The gate never confines its host.**
 
-The py gate (`pip install revl`, `revl.gate.admit`) is the full reference
+The py gate (installed from source or a git tag, for example
+`pip install "git+https://github.com/inso1337/revl@<tag>"`, then `revl.gate.admit`) is the full reference
 compiler, so it can both refuse and admit. This one cannot. It is
 `crates/revl-gate` compiled to wasm: the composition and guarantee layer
 (`G1`..`G4`, `A1`, `PRELUDE`, and parse failures as `BAD`) and **not** the

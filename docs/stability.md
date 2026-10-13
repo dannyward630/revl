@@ -65,7 +65,8 @@ silent change to the meaning of an existing v1 construct.
 
 **The package version.** revl is installed from source or from a git tag
 (`pip install "git+https://github.com/inso1337/revl@<tag>"`); it is not yet
-published on a package index, and the name `revl` on PyPI belongs to an unrelated
+published on a package index, and the name `revl` on PyPI
+([pypi.org/project/revl](https://pypi.org/project/revl/)) belongs to an unrelated
 project. Releases are cut from tags and gated on the same CI that gates `main`
 (see [.github/workflows/](../.github/workflows)), a tagged version is a claim
 that the full suite passed. Until the API surface below stabilizes, treat the
