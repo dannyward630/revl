@@ -4179,6 +4179,20 @@ def _host_type_of_acquire(acquire):
     return "any"
 
 
+def _go_fail_error(message, env: _Env) -> str:
+    """The error value a component `fail` returns (issue #2379).
+
+    The message is data, never a format string: a `%` in it must reach the
+    caller verbatim. A literal with no `%` keeps the bare `fmt.Errorf("...")`
+    form (it has no verb to misread, and the committed output stays as it was);
+    anything else goes through `"%s"`.
+    """
+    return ("fmt.Errorf(%s)" if (
+        isinstance(message, dict) and message.get("kind") == "lit"
+        and isinstance(message.get("value"), str) and "%" not in message["value"]
+    ) else 'fmt.Errorf("%%s", %s)') % _expr(message, env)
+
+
 def _emit_component_step(comp, step, services, env: _Env, out, indent=3):
     s = step.get("step")
     cname = _camel(comp["name"])
@@ -4376,7 +4390,7 @@ def _emit_component_step(comp, step, services, env: _Env, out, indent=3):
                 _emit_component_step(comp, sub, services, env, out, indent + 1)
         out.append("%s}" % pad)
     elif s == "fail":
-        out.append("%sreturn nil, fmt.Errorf(%s)" % (pad, _expr(step.get("message"), env)))
+        out.append("%sreturn nil, %s" % (pad, _go_fail_error(step.get("message"), env)))
     elif s == "provide":
         pname = step["name"]
         svc = step["service"]
@@ -4749,6 +4763,9 @@ def _emit_stc_lifecycle_tests(ir, out) -> None:
     for test in tests:
         tname = _go_v3_test_name(test.get("name") or "lifecycle", used)
         where = "lifecycle test %s" % _go_string(test["name"])
+        # `where` is also spliced into Fatalf format strings: a `%` in a test
+        # name must not read as a verb (issue #2379).
+        where_f = where.replace("%", "%%")
         env = _Env([], [], [])
         bind_types: dict[str, str] = {}
         out.append("func %s(revlT *testing.T) {" % tname)
@@ -4872,7 +4889,7 @@ def _emit_stc_lifecycle_tests(ir, out) -> None:
             elif kind == "assert":
                 out.append("\tif !(%s) {" % _go_lifecycle_assert(
                     step["expr"], bind_types, env, where))
-                out.append("\t\trevlT.Fatalf(%s)" % _go_string(where + ": assertion failed"))
+                out.append("\t\trevlT.Fatalf(%s)" % _go_string(where_f + ": assertion failed"))
                 out.append("\t}")
             elif kind == "assert_no_residue":
                 out.append("\t// R4 + R1: the composition must leave the live")
@@ -4886,7 +4903,7 @@ def _emit_stc_lifecycle_tests(ir, out) -> None:
                 out.append("\t}")
                 out.append("\tif !(len(root.Fibers()) == 0 && revlHostLive() == 0) {")
                 out.append("\t\trevlT.Fatalf(%s, len(root.Fibers()), revlHostLive())"
-                           % _go_string(where + ": residue — %d fiber(s), %d host resource(s) (R4/R1)"))
+                           % _go_string(where_f + ": residue — %d fiber(s), %d host resource(s) (R4/R1)"))
                 out.append("\t}")
                 # issue #2009: R4's host-MAP half. The two counters above prove
                 # every host object was RELEASED; they cannot see whether a
@@ -4897,7 +4914,7 @@ def _emit_stc_lifecycle_tests(ir, out) -> None:
                 # the py fold's `NotReversed`).
                 out.append("\tif misses := RevlJournalMisses(); len(misses) > 0 {")
                 out.append("\t\trevlT.Fatalf(%s, len(misses), misses)"
-                           % _go_string(where + ": residue — %d un-reversed host-map write(s) (R4): %v"))
+                           % _go_string(where_f + ": residue — %d un-reversed host-map write(s) (R4): %v"))
                 out.append("\t}")
             elif kind == "advance":
                 # item 102: drive the clock coeffect forward (go has the same
