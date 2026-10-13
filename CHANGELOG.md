@@ -3,12 +3,13 @@
 All notable changes to revl are recorded here. Versions follow the IR contract:
 a major version is an IR-breaking cut, a minor version adds without breaking.
 
-## 3.0.0 (unreleased) - the first working version
+## 0.3.0rc1 (unreleased) - the 0.3.0 release candidate
 
-v3.0 is the minimal clean, self-consistent six-tier cut plus the live-systems
-demo. The language is done: self-host front end, cross-tier execution,
-six-backend conformance, and per-tool-call agent effects on all six tiers. This
-release also folds in the full agent story and the standing correctness debt.
+0.3.0rc1 is the release candidate for revl 0.3.0. It is a beta: unreleased, and
+open to change before 0.3.0. It is the minimal clean, self-consistent six-tier
+cut plus the live-systems demo: self-host front end, cross-tier execution,
+six-backend conformance, and per-tool-call agent effects on all six tiers. It
+also folds in the full agent story and the standing correctness debt.
 
 ### The language
 
@@ -147,6 +148,18 @@ release also folds in the full agent story and the standing correctness debt.
   (#2320, closes #2313).
 - The grammar summary names `capability` and `grant` (#2370, closes #2280), and
   `Secret[T]` has a secret-value idiom served by `revl idiom` (#2331).
+- The ts tier renders a structural record type in a signature, so a block match
+  arm that captures a record no longer emits an unclosed parameter type, and a
+  list of a union is parenthesised (`(bigint | undefined)[]`). The self-host ts
+  emitter matches byte for byte (#2300, closes #2297).
+- The java tier boxes `Int32` and spells `Any` in v3 type arguments, so
+  `List[Int32]` and `List[Any]` compile, and a generic record declares and
+  applies its type parameters (#2426, closes #2303). Int and Int32 overflow on
+  java now fail with `revl: Int overflow` and `revl: Int32 overflow`, as
+  docs/arithmetic.md states for the other hosted tiers (#2425, closes #2381).
+- The go tier passes a component `fail` message to `fmt.Errorf` as an argument,
+  so a `%` in the message is returned verbatim instead of read as a format verb
+  (#2427, closes #2379).
 
 ### The agent story
 
@@ -249,6 +262,15 @@ release also folds in the full agent story and the standing correctness debt.
 
 - A cold `revl_change` withdraw is planned against the carried composition
   (#2406, closes #2225).
+- `revl_undo` still re-admits the target generation by a cold start, and now
+  says so: the undo dossier lists in `stateDropped.components` each running
+  component whose live state the rollback drops, with a note, and a forward call
+  whose undo is `revl_undo` carries an `undoNote` that says the same (#2422,
+  closes #2346).
+- A refusal made while a proposal is held names the held proposal. When the
+  running composition has a name that the held proposal removed, the message
+  lists what the proposal removed and how to proceed, and every such refusal
+  carries the `proposal` block (#2428, closes #2230).
 
 ### Placement and interop
 
@@ -520,6 +542,13 @@ but not seen. Every instance was closed. Representative fixes:
   (#768).
 - Licensing: AGPL-3.0 for the compiler, gate and tooling, MIT for what ships in
   your program, with a trademark policy (#1237).
+- Front-door docs for the release candidate (#2415, closes #2409, #2410, #2411,
+  #2412): the quickstart installs from a clone (`pip install -e .`) and no
+  longer points at the unrelated `revl` project on PyPI, the self-host numbers
+  come from docs/conformance.md, the commands and MCP reference documents
+  `revl export openapi`, `slo --seal`, `deploy --bundle` and
+  `import openapi --undo`, and public docs no longer name private downstream
+  projects.
 - Every `--backend` flag and tier alias map reads one tier list in
   `src/revl/tiers.py`, so a tier spelled one way is accepted or refused the same
   way by every command. `revl deploy --backend` is now validated (#2299, closes
@@ -542,10 +571,6 @@ checkout as scripted exit tests.
 Open at this release: the compiler admits a program that the target toolchain
 then rejects, or that it handles differently from the reference.
 
-- #2297 (ts): a block match arm that captures a record emits an unclosed
-  parameter type.
-- #2303 (java): `List[Int32]` and `List[Any]` in v3 signatures emit invalid
-  Java.
 - #2325 (java): generic variants, `Unit` type arguments and `Set`/`Stream`
   heads emit invalid Java.
 - #2328 (self-host rust): a type named `Box` is not renamed to `Box_` as the
@@ -571,7 +596,7 @@ shared emitter loader for test.py, gate.py and run_wasm (#2323).
 
 ### All pull requests in this release
 
-Every pull request squash-merged into main from the v2.0.0 point (commit a73dbbfa7, the rewritten form of 04fa2a00b) through origin/main at 2d9b9bcab is listed here, in ascending order.
+Every pull request squash-merged into main from the v2.0.0 point (commit a73dbbfa7, the rewritten form of 04fa2a00b) through origin/main at 631b77a79 is listed here, in ascending order.
 
 106, 114, 149, 154, 157, 199, 201, 205, 206, 208, 209, 212, 214, 215, 216, 219, 220, 221, 222, 227,
 229, 230, 231, 232, 235, 243, 246, 251, 265, 273, 288, 289, 292, 302, 306, 308, 321, 333, 334, 351,
@@ -637,9 +662,10 @@ Every pull request squash-merged into main from the v2.0.0 point (commit a73dbbf
 2175, 2176, 2177, 2178, 2179, 2180, 2182, 2185, 2186, 2220, 2221, 2226, 2227, 2228, 2233, 2235,
 2236, 2238, 2242, 2243, 2244, 2245, 2247, 2248, 2249, 2251, 2253, 2255, 2256, 2258, 2261, 2265,
 2266, 2267, 2268, 2269, 2270, 2271, 2272, 2273, 2274, 2278, 2279, 2282, 2283, 2288, 2290, 2291,
-2292, 2293, 2294, 2295, 2298, 2299, 2301, 2302, 2304, 2305, 2306, 2307, 2309, 2310, 2312, 2314,
-2318, 2319, 2320, 2323, 2326, 2327, 2330, 2331, 2338, 2340, 2354, 2355, 2357, 2365, 2369, 2370,
-2372, 2375, 2376, 2377, 2387, 2388, 2392, 2393, 2395, 2398, 2400, 2404, 2406
+2292, 2293, 2294, 2295, 2298, 2299, 2300, 2301, 2302, 2304, 2305, 2306, 2307, 2309, 2310, 2312,
+2314, 2318, 2319, 2320, 2323, 2326, 2327, 2330, 2331, 2338, 2340, 2354, 2355, 2357, 2365, 2369,
+2370, 2372, 2375, 2376, 2377, 2387, 2388, 2392, 2393, 2395, 2398, 2400, 2404, 2406, 2415, 2422,
+2425, 2426, 2427, 2428
 
 ## 2.0.0
 
