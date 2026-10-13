@@ -1962,8 +1962,9 @@ revl verify app.revlbundle --json    # CI: parse the per-tier verdict
 ### `revl deploy`
 
 Deploy a compiled composition across process seams with attested admission and
-coordinated rollback (roadmap item 118). Every seam is a local process seam
-today; cross-machine control-plane pieces are deliberately deferred.
+coordinated rollback (roadmap item 118). A target is deployed over the process
+boundary (`via = local`) or, under a pinned host key, across a machine boundary
+(`via = ssh`). Container launch orchestration is still to come.
 
 - `MAP` - the deploy/placement map (TOML or JSON): `[processes.<p>]` with an
   optional `[processes.<p>.deploy]` table per process.
@@ -1996,20 +1997,30 @@ Admission is the load-bearing half: the receiver re-hashes the IR and artifact
 bytes it will actually execute and verifies item 127's signed `evidence_bindings`
 chain (`source -> IR -> artifact -> policy -> evidence`) against a local trust
 store, never trusting a self-declared `backend`/`artifact_hash`. A machine
-boundary is refused outright, an unknown `via` is refused rather than read as
-local, and a container target is refused unless it is proven seam-free.
+target is admitted only for `via = ssh` with both a `host` and a `known_hosts`
+(the pinned host-key file): host-key checking is never trust-on-first-use, and
+any other machine target (including `via = peer`) is refused by name. An
+unknown `via` is refused rather than read as local, and a container target is
+refused unless it is proven seam-free.
 
-Without `--dry-run`, an admitted map is DEPLOYED over the process boundary
-(`via = local`): one participant per process is spawned and driven through the
-two-phase PREPARE/COMMIT protocol. The coordinator holds only an ordered commit
+Without `--dry-run`, an admitted map is DEPLOYED: one participant per process
+is driven through the two-phase PREPARE/COMMIT protocol. A `via = local`
+participant is a spawned child process. A map that admits a `via = ssh` target
+stages the `--bundle` onto each far host under its pinned host key and drives
+the same protocol over an ssh channel, so a mixed map of local and ssh targets
+deploys as one coordinated unit; such a deploy requires `--bundle`, and
+without one it is refused at the stage phase. The `--bundle` chain is verified
+in PREPARE before any boundary opens (`--dry-run` runs it too). For an ssh
+target the far host's `revl deploy-admit` runner also verifies the staged bytes
+against its own local trust store and returns a signed verdict. The coordinator holds only an ordered commit
 ledger and, on any COMMIT failure, drives ABORT in reverse ledger order so each
 participant runs its own local LIFO unwind - a participant it cannot reach is
 reported `unresolved`, never rolled back. The aggregate verdict is `applied`
 only when every participant applied, `aborted-clean` only when every committed
 participant rolled back clean, otherwise `aborted-with-residue`. Because
-admission supplies no seam set here, only a process-boundary target reaches the
-COMMIT path; the cross-machine / container launch orchestration and the
-host-side chain verify at admission are following slices.
+admission supplies no seam set here, a container target is refused, so only
+process-boundary and pinned ssh targets reach the COMMIT path; container launch
+orchestration is still to come.
 
 ```bash
 revl deploy deploy.toml --dry-run     # plan admission, stop before COMMIT
@@ -2046,8 +2057,8 @@ a request can ASK for admission but cannot supply the trust that would grant it.
 Locally the conductor spawns the `revl deploy-admit` runner as a local child
 process and speaks to it over stdin/stdout (`deploy.StdioRunnerTransport`);
 across a machine boundary it
-is the same command behind `ssh <host>`, which is a following slice together
-with the bundle staging and pinned SSH host key.
+is the same command behind `ssh <host>`, with the bundle staged onto the far
+host under a pinned SSH host key (`revl deploy`, `via = ssh`).
 
 ```bash
 # usually spawned by a transport, not by hand; driven over stdin/stdout:
@@ -2226,9 +2237,16 @@ subcommands.
   (item 254): attach a best-effort, audit-surface reversal to its emission. The
   verb picks the route: `PUT` restores the `GET` preimage, `DELETE` recreates
   from it, `POST` deletes what it created. A hard error on `PATCH`. Pair with
-  `--preimage` and `--undo-key`; repeatable.
+  `--preimage`, `--undo` and `--undo-key`; repeatable.
 - `--preimage OP=GETOP` - name the safe `GET` operation a compensate-grade `PUT`
   or `DELETE` reads its preimage from; repeatable.
+- `--undo OP=UNDOOP` - name the operation the reversal issues: the `PUT` that
+  writes the preimage back (the default for a `PUT`), the create a `DELETE`
+  recreates through, or the delete that removes what a `POST` created. It must
+  be an operation in the document whose verb fits the route (`PUT` for a
+  restore, `POST` or `PUT` for a recreate, `DELETE` for a delete of what was
+  created) and an `emission`, so one weakened with `--pure` cannot be an undo;
+  otherwise the promotion is refused. Repeatable.
 - `--undo-key OP=FIELD` - for a compensate-grade `POST`, the REQUIRED response
   field naming the resource it created, which the reversal delete is addressed
   by. Without it the compensation is unkeyed and refused; repeatable.

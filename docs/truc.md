@@ -109,7 +109,7 @@ manifest and source hashes.
 
 ```console
 $ truc ship greeter
-truc: published "greeter@1.1.0" (replacing 1.0.0) to registry "community" - …
+truc: published "greeter@1.1.0" (replacing 1.0.0) to registry "community" — …
 ```
 
 `[ship]` in `truc.toml` declares what the compiler cannot derive:
@@ -261,7 +261,7 @@ anything is admitted:
 
 ```console
 $ truc stack check
-truc: stack resolves - Demo (origin `.`, 2 rows)
+truc: stack resolves — Demo (origin `.`, 2 rows)
 ROWS
   .::@db                   PgDb  (trucs/pg_database/component.rvl)
   metrics_kit::@metrics    KitMetrics  (trucs/metrics_kit/component.rvl)
@@ -288,7 +288,7 @@ written to `build/assembly.json`; on any refusal nothing is written
 
 ```console
 $ truc apply
-truc: applied - the layer stack admitted through the gate [MEASURED …]; load order PgDb; wrote build/assembly.json
+truc: applied — the layer stack admitted through the gate [MEASURED …]; load order PgDb; wrote build/assembly.json
 ```
 
 `--trust-host-code` admits a layer that ships host code, changes the reported
@@ -403,8 +403,8 @@ implements this; it is the ordinary `assemble` loop pointed at truc itself.
 Two properties make it a fixpoint and not just a demo:
 
 - **Regenerate-or-red.** The self-assembly is pinned to a committed
-  composition, [`bootstrap/assembly.golden.json`](../src/revl/truc/bootstrap/assembly.golden.json)
-  - the eight components, their provide/inject wiring, and the load order the
+  composition, [`bootstrap/assembly.golden.json`](../src/revl/truc/bootstrap/assembly.golden.json),
+  which lists the eight components, their provide/inject wiring, and the load order the
   gate settled. `tests/test_truc_bootstrap.py` re-runs the assembly and asserts
   byte-equality with that golden. If truc's ability to assemble truc ever
   breaks or drifts, CI goes red - the same discipline as `registry.verify` and
