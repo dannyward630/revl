@@ -258,10 +258,10 @@ type StmtOut = { lines: List[Str], counter: Int }
 // `empty_lists` (issue #273) is the body-local `[]`-binding annotation table
 // `empty_list_types` computes; it rides on ACx because a `let` can sit at any
 // depth of the statement tree `v3_stmt` walks.
-type ACx = { in_async: Bool, in_arrow: Bool, ops: List[Str], async_names: List[Str], async_locals: List[Str], empty_lists: Map[Str, Str], routes: List[Str], test_mode: Bool, comps: List[Any] }
+type ACx = { in_async: Bool, in_arrow: Bool, ops: List[Str], async_names: List[Str], async_locals: List[Str], empty_lists: Map[Str, Str], routes: List[Str], req_keys: Map[Str, Str], test_mode: Bool, comps: List[Any] }
 
 // The sync, non-component context: the pure fn/test pass and every sync body.
-fn sync_acx() -> ACx { return { in_async: false, in_arrow: false, ops: [], async_names: [], async_locals: [], empty_lists: Map.empty(), routes: [], test_mode: false, comps: [] } }
+fn sync_acx() -> ACx { return { in_async: false, in_arrow: false, ops: [], async_names: [], async_locals: [], empty_lists: Map.empty(), routes: [], req_keys: Map.empty(), test_mode: false, comps: [] } }
 
 // The `"<reqKey>#<method>"` await-seed key.
 fn async_op_key(req_key: Str, method: Str) -> Str {
@@ -652,6 +652,11 @@ fn render_builtin(method: Str, target: Str, args: List[Str], arg_nodes: List[Any
   // scalar at index i, via the same astral-aware helper as `charCodeAt` (JS
   // `.charCodeAt` would answer a lone surrogate).
   if (method == "codepoint_at") { return { text: `revlCharCodeAt(${target}, ${args[0]})`, counter: counter } }
+  // The reverse of `codepoint_at` (issue #2285): a one-code-point Str for a
+  // Unicode scalar value, "" otherwise; the arrow binds the receiver once.
+  if (method == "to_char") {
+    return { text: `((n: bigint): string => (n < 0n || n > 0x10FFFFn || (n >= 0xD800n && n <= 0xDFFFn)) ? "" : String.fromCodePoint(Number(n)))(${target})`, counter: counter }
+  }
   if (method == "div_trunc") { return { text: `revlDivTrunc(${target}, ${args[0]})`, counter: counter } }
   if (method == "div_floor") { return { text: `revlDivFloor(${target}, ${args[0]})`, counter: counter } }
   if (method == "div_euclid") { return { text: `revlDivEuclid(${target}, ${args[0]})`, counter: counter } }
@@ -1004,7 +1009,7 @@ fn render_arrow(node: Any, counter: Int, acx: ACx) -> Rendered {
   // stays out of the arrow (its Promise flattens). `async_names`/`async_locals`
   // are inherited (the reference's `with_scope` leaves them untouched), so an
   // async callable invoked inside an async arrow is still awaited.
-  let body_acx = { in_async: is_async, in_arrow: true, ops: acx.ops, async_names: acx.async_names, async_locals: acx.async_locals, empty_lists: acx.empty_lists, routes: acx.routes, test_mode: acx.test_mode, comps: acx.comps }
+  let body_acx = { in_async: is_async, in_arrow: true, ops: acx.ops, async_names: acx.async_names, async_locals: acx.async_locals, empty_lists: acx.empty_lists, routes: acx.routes, req_keys: acx.req_keys, test_mode: acx.test_mode, comps: acx.comps }
   let br = expr(value_field(node, "body"), counter, body_acx)
   // Item 435(b): the `async` followed the DECLARED type, so `(msgs) =>
   // model.complete(msgs)` rendered `async (msgs: any) =>
@@ -1311,11 +1316,16 @@ fn expr_inner(node: Any, counter: Int, acx: ACx) -> Rendered {
     // re-resolves a live per-realm worker on every call (failover). The proxy
     // is a local `apply()` built; a provide method's `<key>.<op>(…)` closes
     // over it.
-    if (list_contains(acx.routes, rname)) {
-      return { text: "_revl_route_".concat(ident(rname)), counter: counter }
+    // issue #2384: a `req` names its requirement by the BINDING (the last
+    // segment of a namespaced key); `req_keys` maps it back to the wiring key,
+    // whose host spelling (`host_key`) is the member and the router name.
+    var rkey = rname
+    if (acx.req_keys.has(rname)) { rkey = map_get(acx.req_keys, rname) }
+    if (list_contains(acx.routes, rkey)) {
+      return { text: "_revl_route_".concat(ident(host_key(rkey))), counter: counter }
     }
     // Committed-view access: resolved through the fiber's snapshot (R3).
-    return { text: "ctx.".concat(ident(rname)), counter: counter }
+    return { text: "ctx.".concat(ident(host_key(rkey))), counter: counter }
   }
   // ---- slice-3 expr kinds ----
   // `fn` (`_fn_call`): a call to a top-level `fn`/`extern`, the component
@@ -1940,7 +1950,7 @@ fn emit_functions(functions: List[Any], async_names: List[Str]) -> List[Str] {
     let sync_base = sync_acx()
     var body_acx = { sync_base | empty_lists = elt }
     if (value_bool(value_field(fnode, "async"))) {
-      body_acx = { in_async: true, in_arrow: false, ops: [], async_names: async_names, async_locals: locals, empty_lists: elt, routes: [], test_mode: false, comps: [] }
+      body_acx = { in_async: true, in_arrow: false, ops: [], async_names: async_names, async_locals: locals, empty_lists: elt, routes: [], req_keys: Map.empty(), test_mode: false, comps: [] }
       out = out.push(`export async function ${name}(${params}): Promise<${returns}> {`)
     } else {
       out = out.push(`export function ${name}(${params}): ${returns} {`)
@@ -2398,7 +2408,7 @@ fn emit_externs(externs: List[Any], ui_externs: List[Str]) -> List[Str] {
       continue
     }
     if (!value_has(bodies, "ts")) {
-      out = out.push(`<<EXTERN-NO-TS-BODY:${name}>>`)
+      out = out.push(`<<UNSUPPORTED-EXTERN-NO-TS-BODY:${name}>>`)
     } else {
       // issue #1369: the wrapper is emitted only for an extern that HAS a body,
       // matching the reference (which refuses a bodyless one outright).
@@ -2813,7 +2823,7 @@ fn method_control(step: Any, level: Int, counter: Int, acx: ACx, frame_var: Str,
 // bind the body; the param TYPES come from the service declaration (arity must
 // agree). An operation the service declares `async` lowers to an `async` method
 // whose body renders in an async context (the await-seed's `ops`, item 219).
-fn provide_impl(step: Any, services: Any, ops: List[Str], routes: List[Str], known_types: List[Str], async_names: List[Str], comps: List[Any], comp_name: Str, units: List[Str], frame_var: Str, level: Int, counter: Int) -> StmtOut {
+fn provide_impl(step: Any, services: Any, ops: List[Str], routes: List[Str], req_keys: Map[Str, Str], known_types: List[Str], async_names: List[Str], comps: List[Any], comp_name: Str, units: List[Str], frame_var: Str, level: Int, counter: Int) -> StmtOut {
   let pad = ind(level)
   let svc_name = value_str(value_field(step, "service"))
   let declared = value_field(value_field(services, svc_name), "methods")
@@ -2850,10 +2860,10 @@ fn provide_impl(step: Any, services: Any, ops: List[Str], routes: List[Str], kno
     let is_async = value_bool(value_field(spec, "async"))
     var prefix = ""
     let sync_base = sync_acx()
-    var body_acx = { sync_base | routes = routes, comps = comps }
+    var body_acx = { sync_base | routes = routes, req_keys = req_keys, comps = comps }
     if (is_async) {
       prefix = "async "
-      body_acx = { in_async: true, in_arrow: false, ops: ops, async_names: async_names, async_locals: [], empty_lists: Map.empty(), routes: routes, test_mode: false, comps: comps }
+      body_acx = { in_async: true, in_arrow: false, ops: ops, async_names: async_names, async_locals: [], empty_lists: Map.empty(), routes: routes, req_keys: req_keys, test_mode: false, comps: comps }
     }
     out = out.push(`${pad}${prefix}${name}(${sig_parts.join(", ")}) {`)
     // A param the service declared `Secret[T]` is a declared DISCLOSURE
@@ -2912,16 +2922,16 @@ fn crossing_key_name(target: Any) -> Str {
 // this component's RAW name (for a compensation entry's `site`); `frame_var` is
 // the emitted `Frame` local (`$revl_frame`, "" when the component needs none) —
 // a compensation entry registers through it (item 243 Slice 2b).
-fn component_step(step: Any, services: Any, ops: List[Str], routes: List[Str], known_types: List[Str], async_names: List[Str], comps: List[Any], comp_name: Str, units: List[Str], frame_var: Str, level: Int, counter: Int) -> StmtOut {
+fn component_step(step: Any, services: Any, ops: List[Str], routes: List[Str], req_keys: Map[Str, Str], known_types: List[Str], async_names: List[Str], comps: List[Any], comp_name: Str, units: List[Str], frame_var: Str, level: Int, counter: Int) -> StmtOut {
   let pad = ind(level)
   let sync_base = sync_acx()
-  let a = { sync_base | routes = routes, comps = comps }
+  let a = { sync_base | routes = routes, req_keys = req_keys, comps = comps }
   let kind = value_str(value_field(step, "step"))
   if (kind == "let-effect" || kind == "effect") {
     let awaited = value_bool(value_field(step, "async"))
     var acquire_acx = a
     if (awaited && kind == "let-effect") {
-      acquire_acx = { in_async: true, in_arrow: false, ops: ops, async_names: async_names, async_locals: [], empty_lists: Map.empty(), routes: routes, test_mode: false, comps: comps }
+      acquire_acx = { in_async: true, in_arrow: false, ops: ops, async_names: async_names, async_locals: [], empty_lists: Map.empty(), routes: routes, req_keys: req_keys, test_mode: false, comps: comps }
     }
     let ar = expr(value_field(step, "acquire"), counter, acquire_acx)
     var out = []
@@ -2974,8 +2984,8 @@ fn component_step(step: Any, services: Any, ops: List[Str], routes: List[Str], k
   }
   if (kind == "provide") {
     let name = value_str(value_field(step, "name"))
-    var out = [`${pad}yield ctx.provide(${json_dumps(name)}, {`]
-    let pr = provide_impl(step, services, ops, routes, known_types, async_names, comps, comp_name, units, frame_var, level + 1, counter)
+    var out = [`${pad}yield ctx.provide(${json_dumps(host_key(name))}, {`]
+    let pr = provide_impl(step, services, ops, routes, req_keys, known_types, async_names, comps, comp_name, units, frame_var, level + 1, counter)
     out = out.concat(pr.lines)
     out = out.push(`${pad}} satisfies ${ident(value_str(value_field(step, "service")))})`)
     return { lines: out, counter: pr.counter }
@@ -2985,7 +2995,7 @@ fn component_step(step: Any, services: Any, ops: List[Str], routes: List[Str], k
     var out = [`${pad}if (${cr.text}) {`]
     var c = cr.counter
     for (s of value_list(value_field(step, "then"))) {
-      let r = component_step(s, services, ops, routes, known_types, async_names, comps, comp_name, units, frame_var, level + 1, c)
+      let r = component_step(s, services, ops, routes, req_keys, known_types, async_names, comps, comp_name, units, frame_var, level + 1, c)
       out = out.concat(r.lines)
       c = r.counter
     }
@@ -2993,7 +3003,7 @@ fn component_step(step: Any, services: Any, ops: List[Str], routes: List[Str], k
     if (els.length() > 0) {
       out = out.push(`${pad}} else {`)
       for (s of els) {
-        let r = component_step(s, services, ops, routes, known_types, async_names, comps, comp_name, units, frame_var, level + 1, c)
+        let r = component_step(s, services, ops, routes, req_keys, known_types, async_names, comps, comp_name, units, frame_var, level + 1, c)
         out = out.concat(r.lines)
         c = r.counter
       }
@@ -3033,7 +3043,7 @@ fn component_step(step: Any, services: Any, ops: List[Str], routes: List[Str], k
     out = out.push(`${pad}  if (host.Stream.isClosed(${item})) break`)
     if (gate != "") { out = out.push(`${pad}  if (!${gate}.admit(${item}, ${json_dumps(where)})) continue`) }
     for (inner of value_list(value_field(step, "body"))) {
-      let r = component_step(inner, services, ops, routes, known_types, async_names, comps, comp_name, units, frame_var, level + 1, c)
+      let r = component_step(inner, services, ops, routes, req_keys, known_types, async_names, comps, comp_name, units, frame_var, level + 1, c)
       out = out.concat(r.lines)
       c = r.counter
     }
@@ -3312,20 +3322,20 @@ fn component_lines(comp: Any, services: Any, known_types: List[Str], async_names
   if (value_keys(icept).length() > 0) {
     var inj_parts = []
     for (k of req_keys) {
-      inj_parts = inj_parts.push(`${json_dumps(k)}: ${json_dumps(value_field(icept, k))}`)
+      inj_parts = inj_parts.push(`${json_dumps(host_key(k))}: ${json_dumps(value_field(icept, k))}`)
     }
     out = out.push(`  inject: {${inj_parts.join(", ")}},`)
   } else {
     var inject_parts = []
     for (k of req_keys) {
-      inject_parts = inject_parts.push(json_dumps(k))
+      inject_parts = inject_parts.push(json_dumps(host_key(k)))
     }
     out = out.push(`  inject: [${inject_parts.join(", ")}],`)
   }
   let provide_keys = value_keys(value_field(comp, "provides"))
   if (provide_keys.length() > 0) {
     var pk = []
-    for (k of provide_keys) { pk = pk.push(json_dumps(k)) }
+    for (k of provide_keys) { pk = pk.push(json_dumps(host_key(k))) }
     out = out.push(`  provide: [${pk.join(", ")}],`)
   }
   // item 131: an async body colors `apply` `async` (and `await`s its
@@ -3395,7 +3405,7 @@ fn component_lines(comp: Any, services: Any, known_types: List[Str], async_names
     let strat = value_field(route, "strategy")
     var strategy = "undefined"
     if (!value_is_null(strat) && value_str(strat) != "") { strategy = json_dumps(strat) }
-    out = out.push(`    const _revl_route_${ident(k)} = revlRouter(ctx, ${json_dumps(k)}, [${realm_parts.join(", ")}], ${strategy})`)
+    out = out.push(`    const _revl_route_${ident(host_key(k))} = revlRouter(ctx, ${json_dumps(host_key(k))}, [${realm_parts.join(", ")}], ${strategy})`)
   }
   // One generator per body (LIFO teardown). An async body compiles to an async
   // generator (v1/A1) and its `ctx.effect(...)` is `await`ed inside the `async
@@ -3419,7 +3429,7 @@ fn component_lines(comp: Any, services: Any, known_types: List[Str], async_names
   let ops = async_ops_of(value_field(comp, "requires"), services)
   var c = counter
   for (step of body) {
-    let r = component_step(step, services, ops, route_keys, known_types, async_names, comps, raw_name, units, frame_var, 3, c)
+    let r = component_step(step, services, ops, route_keys, req_bindings(comp), known_types, async_names, comps, raw_name, units, frame_var, 3, c)
     out = out.concat(r.lines)
     c = r.counter
   }
@@ -3498,7 +3508,7 @@ fn context_augmentation(components: List[Any]) -> List[Str] {
   var out = ["declare module 'cordis' {", "  interface Context {"]
   var i = 0
   for (k of keys) {
-    out = out.push(`    ${k}: ${svcs[i]}`)
+    out = out.push(`    ${host_key(k)}: ${svcs[i]}`)
     i += 1
   }
   out = out.push("  }")
@@ -3671,26 +3681,30 @@ fn revl_int_arith_helper() -> Str {
 
 fn revl_str_helper() -> Str {
   var o = []
-  // The code-point decode is memoised in two slots (item 435(c)): every helper
-  // here measures or indexes `Array.from(s)`, so decoding per call made an
-  // index scan quadratic. Mirrors `_REVL_STR_HELPER` in
+  // The code-point view is memoised (item 435(c), issue #2313): a string with
+  // no surrogate unit is its own view, others decode through `Array.from`;
+  // strings of 64 units or more sit in an 8-slot least-recently-used cache, so
+  // an index scan stays linear whatever else the loop reads. Mirrors `_REVL_STR_HELPER` in
   // backends/typescript/emit.py byte for byte; `revlIndexOf` deliberately
   // keeps its own `Array.from` over a per-call substring.
-  o = o.push("let revlCpsK0: string | undefined")
-  o = o.push("let revlCpsV0: string[] = []")
-  o = o.push("let revlCpsK1: string | undefined")
-  o = o.push("let revlCpsV1: string[] = []")
-  o = o.push("function revlCps(s: string): string[] {")
-  o = o.push("  if (s === revlCpsK0) return revlCpsV0")
-  o = o.push("  if (s === revlCpsK1) {")
-  o = o.push("    const k = revlCpsK1, v = revlCpsV1")
-  o = o.push("    revlCpsK1 = revlCpsK0; revlCpsV1 = revlCpsV0")
-  o = o.push("    revlCpsK0 = k; revlCpsV0 = v")
-  o = o.push("    return v")
+  o = o.push("const revlCpsN = 8")
+  o = o.push("const revlCpsK: (string | undefined)[] = new Array<string | undefined>(revlCpsN).fill(undefined)")
+  o = o.push(`const revlCpsV: (string | string[])[] = new Array<string | string[]>(revlCpsN).fill("")`)
+  o = o.push("function revlCpsDecode(s: string): string | string[] {")
+  o = o.push("  for (let i = 0; i < s.length; i++) {")
+  o = o.push("    const u = s.charCodeAt(i)")
+  o = o.push("    if (u >= 0xD800 && u <= 0xDFFF) return Array.from(s)")
   o = o.push("  }")
-  o = o.push("  const v = Array.from(s)")
-  o = o.push("  revlCpsK1 = revlCpsK0; revlCpsV1 = revlCpsV0")
-  o = o.push("  revlCpsK0 = s; revlCpsV0 = v")
+  o = o.push("  return s")
+  o = o.push("}")
+  o = o.push("function revlCps(s: string): string | string[] {")
+  o = o.push("  if (s.length < 64) return revlCpsDecode(s)")
+  o = o.push("  let k = 0")
+  o = o.push("  while (k < revlCpsN && revlCpsK[k] !== s) k++")
+  o = o.push("  const v = k < revlCpsN ? revlCpsV[k] : revlCpsDecode(s)")
+  o = o.push("  if (k === revlCpsN) k--")
+  o = o.push("  for (; k > 0; k--) { revlCpsK[k] = revlCpsK[k - 1]; revlCpsV[k] = revlCpsV[k - 1] }")
+  o = o.push("  revlCpsK[0] = s; revlCpsV[0] = v")
   o = o.push("  return v")
   o = o.push("}")
   o = o.push(`function revlLen(x: string | ArrayLike<unknown>): bigint {`)
@@ -3702,9 +3716,9 @@ fn revl_str_helper() -> Str {
   o = o.push(`function revlSlice(x: unknown, a: bigint, b: bigint): string | Uint8Array | unknown[]`)
   o = o.push(`function revlSlice(x: unknown, a: bigint, b: bigint): string | Uint8Array | unknown[] {`)
   o = o.push("  const i = Number(a), j = Number(b)")
-  o = o.push(`  return typeof x === "string"`)
-  o = o.push(`    ? revlCps(x).slice(i, j).join("")`)
-  o = o.push(`    : (x as string | Uint8Array | unknown[]).slice(i, j)`)
+  o = o.push(`  if (typeof x !== "string") return (x as Uint8Array | unknown[]).slice(i, j)`)
+  o = o.push("  const v = revlCps(x)")
+  o = o.push(`  return typeof v === "string" ? v.slice(i, j) : v.slice(i, j).join("")`)
   o = o.push("}")
   o = o.push("function revlCharAt(s: string, i: bigint): string {")
   o = o.push("  const c = revlCps(s)[Number(i)]")
@@ -4422,7 +4436,7 @@ fn lifecycle_step(step: Any, services: Any, provided: Any, counter: Int, acx: AC
     }
     var await_kw = ""
     if (value_bool(value_field(method, "async"))) { await_kw = "await " }
-    let call = `root.${ident(key)}.${mname}(${args.join(", ")})`
+    let call = `root.${ident(host_key(key))}.${mname}(${args.join(", ")})`
     let bind = value_field(step, "bind")
     var line = `  ${await_kw}${call}`
     if (!value_is_null(bind)) { line = `  const ${ident(value_str(bind))} = ${await_kw}${call}` }
@@ -4511,6 +4525,165 @@ fn lifecycle_test_lines(tests: List[Any], services: Any, components: List[Any]) 
       out = out.push("  })")
       out = out.push("})")
       out = out.push("")
+    }
+  }
+  return out
+}
+
+// `_refuse_deferred_emissions`: a CALL to a `deferred` emission extern, in any
+// position inside a component, needs a session owner runtime this tier does
+// not have, so the reference refuses the document. The port names each
+// reached call, component first (issue #2353). A declared but never-called
+// deferred extern is not named, as on the reference. The flag and the class
+// are read through `flag_of` and `list_contains`: tools/selfhost_coverage.py
+// reads the inline spellings as a port, and a refusal is not one.
+fn flag_of(node: Any, field: Str) -> Bool { return value_bool(value_field(node, field)) }
+
+// `_refuse_validated_emissions`: a `validated` crossing (a service operation
+// or an extern) is a checked boundary this tier has no seam for, so the
+// reference refuses the document, declaration keyed. The port names each one
+// (issue #2367).
+// Both carriers go through one list, named as the reference names them
+// (`Service.op` for an operation, the bare name for an extern).
+fn validated_markers(ir: Any) -> List[Str] {
+  var wheres: List[Str] = []
+  var nodes: List[Any] = []
+  let services = value_field(ir, "services")
+  for (sname of value_keys(services)) {
+    let methods = value_field(value_field(services, sname), "methods")
+    for (mname of value_keys(methods)) {
+      wheres = wheres.push(`${sname}.${mname}`)
+      nodes = nodes.push(value_field(methods, mname))
+    }
+  }
+  for (e of value_list(value_field(ir, "externs"))) {
+    wheres = wheres.push(value_str(value_field(e, "name")))
+    nodes = nodes.push(e)
+  }
+  var out = []
+  var i = 0
+  while (i < nodes.length()) {
+    if (flag_of(nodes[i], "validated")) { out = out.push(`<<UNSUPPORTED-VALIDATED:${wheres[i]}>>`) }
+    i = i + 1
+  }
+  return out
+}
+
+// `_host_key` / `_check_host_keys`: a namespaced key's host spelling escapes
+// each `_` of a segment to `_u` and joins the segments on `__`, so an
+// unqualified key that already spells that image lands on the same host
+// identifier. The reference refuses the pair; the port names the second key
+// (issue #2367).
+fn host_key(key: Str) -> Str {
+  if (key.indexOf("::") < 0) { return key }
+  var parts = []
+  for (part of key.split("::")) { parts = parts.push(part.split("_").join("_u")) }
+  return parts.join("__")
+}
+
+// `_key_binding` / `req_keys`: a `req` IR node names a requirement by its
+// BINDING, the trailing segment of a (possibly namespaced) key. This maps each
+// binding of a component back to its wiring key (issue #2384).
+fn key_binding(key: Str) -> Str {
+  let parts = key.split("::")
+  return parts[parts.length() - 1]
+}
+
+fn req_bindings(comp: Any) -> Map[Str, Str] {
+  var out: Map[Str, Str] = Map.empty()
+  for (k of value_keys(value_field(comp, "requires"))) { out = out.set(key_binding(k), k) }
+  return out
+}
+
+fn host_key_collision_markers(ir: Any) -> List[Str] {
+  var seen: Map[Str, Str] = Map.empty()
+  var out = []
+  for (c of value_list(value_field(ir, "components"))) {
+    for (table of ["provides", "requires", "routes", "isolate", "intercept"]) {
+      for (k of value_keys(value_field(c, table))) {
+        let host = host_key(k)
+        if (seen.has(host)) {
+          if (map_get(seen, host) != k) { out = out.push(`<<UNSUPPORTED-HOST-KEY-COLLISION:${k}>>`) }
+        } else { seen = seen.set(host, k) }
+      }
+    }
+  }
+  return out
+}
+
+// `_refuse_required_stream`: a required `Stream[T]` coeffect has no lowering
+// on this tier, and the reference refuses the component by name (item 130
+// 6b). The port names each requirement (issue #2367).
+fn required_stream_markers(ir: Any) -> List[Str] {
+  var out = []
+  for (c of value_list(value_field(ir, "components"))) {
+    let rq = value_field(c, "requires")
+    for (k of value_keys(rq)) {
+      if (value_kind(value_field(rq, k)) == "str" && value_str(value_field(rq, k)).startsWith("Stream[")) {
+        out = out.push(`<<UNSUPPORTED-REQUIRED-STREAM:${value_str(value_field(c, "name"))}.${k}>>`)
+      }
+    }
+  }
+  return out
+}
+
+// `_reject_service_key`: a provide or require key becomes a `ctx.<key>`
+// property, so a key that is a cordis Context member (`CONTEXT_MEMBERS`), an
+// inherited JavaScript object member (`_JS_MEMBER_KEYS`) or `_`-prefixed
+// never reaches the injected service, and the reference refuses the document.
+// The port names each such key, requirement keys before provision keys as the
+// reference checks them (issue #2390).
+fn reserved_service_keys() -> List[Str] {
+  return [
+    "root", "fiber", "registry", "reflect", "events", "logger", "runtime",
+    "effect", "extend", "isolate", "intercept", "inject", "plugin",
+    "on", "once", "emit", "parallel", "serial", "bail", "waterfall",
+    "get", "set", "provide", "accessor", "mixin", "baseUrl",
+    "then", "catch", "finally",
+    "constructor", "prototype", "__proto__",
+    "toString", "toLocaleString", "valueOf",
+    "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable",
+    "__defineGetter__", "__defineSetter__",
+    "__lookupGetter__", "__lookupSetter__",
+    "length", "name", "apply", "call", "bind", "caller", "arguments"
+  ]
+}
+
+fn reserved_key_markers(ir: Any) -> List[Str] {
+  let reserved = reserved_service_keys()
+  var out = []
+  for (c of value_list(value_field(ir, "components"))) {
+    let cname = value_str(value_field(c, "name"))
+    for (table of ["requires", "provides"]) {
+      for (k of value_keys(value_field(c, table))) {
+        let host = host_key(k)
+        let mark = `<<UNSUPPORTED-RESERVED-SERVICE-KEY:${cname}.${k}>>`
+        if ((list_contains(reserved, host) || host.startsWith("_")) && !list_contains(out, mark)) {
+          out = out.push(mark)
+        }
+      }
+    }
+  }
+  return out
+}
+
+fn deferred_emission_markers(ir: Any) -> List[Str] {
+  var deferred = []
+  for (e of value_list(value_field(ir, "externs"))) {
+    if (list_contains(["emission"], value_str(value_field(e, "class"))) && flag_of(e, "deferred")) {
+      deferred = deferred.push(value_str(value_field(e, "name")))
+    }
+  }
+  var out = []
+  if (deferred.length() == 0) { return out }
+  for (c of value_list(value_field(ir, "components"))) {
+    let cname = value_str(value_field(c, "name"))
+    for (n of ir_nodes(c)) {
+      let name = value_str(value_field(n, "name"))
+      let mark = `<<UNSUPPORTED-DEFERRED-EMISSION:${cname}.${name}>>`
+      if (node_kind(n) == "fn" && list_contains(deferred, name) && !list_contains(out, mark)) {
+        out = out.push(mark)
+      }
     }
   }
   return out
@@ -4605,6 +4778,9 @@ pub fn emit_ts_src(ir: Any) -> Str {
   if (components.length() > 0 || value_keys(services).length() > 0) {
     out = out.concat(emit_component_tail(ir, async_names))
   }
+  out = out.concat(deferred_emission_markers(ir)).concat(validated_markers(ir))
+  out = out.concat(host_key_collision_markers(ir)).concat(required_stream_markers(ir))
+  out = out.concat(reserved_key_markers(ir))
   return py_rstrip(out.join(newline())).concat(newline())
 }
 
@@ -4653,12 +4829,12 @@ test "the await-seed awaits a req-keyed async op only in an async, non-arrow bod
   let call = { kind: "call", target: { kind: "req", name: "store" }, method: "get",
                args: [{ kind: "name", id: "k" }] }
   let ops = [async_op_key("store", "get")]
-  assert expr(call, 0, { in_async: true, in_arrow: false, ops: ops, async_names: [], async_locals: [], empty_lists: Map.empty(), routes: [], test_mode: false, comps: [] }).text
+  assert expr(call, 0, { in_async: true, in_arrow: false, ops: ops, async_names: [], async_locals: [], empty_lists: Map.empty(), routes: [], req_keys: Map.empty(), test_mode: false, comps: [] }).text
     == "(await ctx.store.get(k))"
   assert expr(call, 0, sync_acx()).text == "ctx.store.get(k)"
-  assert expr(call, 0, { in_async: true, in_arrow: true, ops: ops, async_names: [], async_locals: [], empty_lists: Map.empty(), routes: [], test_mode: false, comps: [] }).text
+  assert expr(call, 0, { in_async: true, in_arrow: true, ops: ops, async_names: [], async_locals: [], empty_lists: Map.empty(), routes: [], req_keys: Map.empty(), test_mode: false, comps: [] }).text
     == "ctx.store.get(k)"
-  assert expr(call, 0, { in_async: true, in_arrow: false, ops: [], async_names: [], async_locals: [], empty_lists: Map.empty(), routes: [], test_mode: false, comps: [] }).text
+  assert expr(call, 0, { in_async: true, in_arrow: false, ops: [], async_names: [], async_locals: [], empty_lists: Map.empty(), routes: [], req_keys: Map.empty(), test_mode: false, comps: [] }).text
     == "ctx.store.get(k)"
 }
 

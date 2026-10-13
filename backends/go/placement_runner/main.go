@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -175,6 +176,72 @@ func fatalLine(name string, fatal any) {
 	fmt.Fprintln(os.Stderr, "["+name+"] FATAL "+bridge.ScrubText(fmt.Sprint(fatal)))
 }
 
+// fatalBoot ends a boot that cannot be honoured, as the rust runner's
+// `fatal_boot` does (#2200): one scrubbed FATAL line on stderr, what did boot
+// disposed last first, exit 1. Every boot-failure arm goes through here so the
+// teardown they promise cannot drift apart (issues #2223, #2254). `os.Exit`,
+// not a panic or a return, so the teardown in main never prints `DOWN` for a
+// failed boot.
+//
+// `Dispose` only REQUESTS the teardown, so each one is awaited (bounded) or
+// `os.Exit` would kill the process before any inverse replayed. A fiber that
+// does not settle in time is reported as such, never as disposed. `Gone` also
+// returns for a fiber that had already FAILED, which replays nothing, so the
+// line names the state the fiber ended in. `log` is main's scrubbing
+// printer, passed in because it is a closure over the process name.
+func fatalBoot(name, message string, fibers []labeledFiber,
+	log func(channel, subject, detail string)) {
+	fatalLine(name, message)
+	bootCtx, bootCancel := stdctx.WithTimeout(stdctx.Background(), teardownBound())
+	for i := len(fibers) - 1; i >= 0; i-- {
+		disposeAwaited(bootCtx, fibers[i], log)
+	}
+	bootCancel()
+	os.Exit(1)
+}
+
+// defaultTeardownBound is how long the teardown waits for the disposes to
+// settle when REVL_TEARDOWN_GRACE is not set.
+const defaultTeardownBound = 5 * time.Second
+
+// teardownBound is the wait the teardown gives its disposes: the conductor's
+// REVL_TEARDOWN_GRACE (seconds, the variable the stranded-teardown report tells
+// a user to raise) when it is a positive finite number, else the default.
+func teardownBound() time.Duration {
+	raw := os.Getenv("REVL_TEARDOWN_GRACE")
+	if raw == "" {
+		return defaultTeardownBound
+	}
+	secs, err := strconv.ParseFloat(raw, 64)
+	if err != nil || !(secs > 0) || secs > 86400 {
+		return defaultTeardownBound
+	}
+	return time.Duration(secs * float64(time.Second))
+}
+
+// disposeAwaited disposes one fiber and waits (bounded by ctx) for the
+// teardown to settle, then logs what was confirmed: the inverses replayed, the
+// state the fiber ended in (`Gone` also returns for a fiber that had already
+// FAILED, which replays nothing), or that it did not settle in time. Shared by
+// the boot-failure path and the normal teardown so the two cannot drift
+// (issue #2336). It returns false only when the dispose did not settle in time:
+// the inverses may still be pending, so the caller must not call the unwind
+// complete (issue #2339).
+func disposeAwaited(ctx stdctx.Context, lf labeledFiber,
+	log func(channel, subject, detail string)) bool {
+	lf.fiber.Dispose()
+	if err := lf.fiber.Gone(ctx); err != nil {
+		log("swap", lf.label, "dispose NOT confirmed: "+err.Error())
+		return false
+	}
+	if state := lf.fiber.State(); state != stc.StateGone {
+		log("swap", lf.label, "dispose -> ended "+state.String())
+		return true
+	}
+	log("swap", lf.label, "dispose -> inverses replay (LIFO)")
+	return true
+}
+
 // guard returns the deferred function that funnels a failure of the goroutine
 // it is deferred in: one redacted line on stderr, then `os.Exit`, which runs NO
 // teardown and so reaches no `DOWN` — the conductor's clean-teardown signal
@@ -297,18 +364,24 @@ func main() {
 	for key, info := range s.Proxies {
 		client, err := bridge.NewClient(info.Socket)
 		if err != nil {
-			log("proxy", key, "dial failed: "+err.Error())
-			continue
+			// issue #2254: a proxy that cannot be reached leaves the
+			// composition short, in both modes, as the rust runner's proxy
+			// unwrap does. The fault sweep never targets a proxy, so `--once`
+			// gets no exception: a dead provider must not read as NO-RESIDUE.
+			fatalBoot(name, "proxy dial failed for key "+key+": "+err.Error(), fibers, log)
 		}
 		clients = append(clients, client)
 		comp, ok := emitted.RevlProxyComponent(key, info.Service, client)
 		if !ok {
-			log("proxy", key, "UNSUPPORTED service "+info.Service)
-			continue
+			// issue #2254: a proxy this build has no component for is the
+			// same spec/build mismatch as an unknown component (#2223).
+			fatalBoot(name, "unsupported proxy service "+info.Service+" for key "+
+				key+": the spec names a proxy this build does not have", fibers, log)
 		}
 		fiber := root.Load(comp)
 		if err := fiber.Ready(ready); err != nil {
-			log("proxy", key, "load error: "+err.Error())
+			// issue #2254: fatal in both modes, as for a failed dial above.
+			fatalBoot(name, "boot failed loading proxy for key "+key+": "+err.Error(), fibers, log)
 		}
 		fibers = append(fibers, labeledFiber{key + "-proxy", fiber})
 		log("proxy", key, "-> "+info.Socket+" ["+info.Service+"]")
@@ -327,25 +400,17 @@ func main() {
 			// loaded. Dispose what did boot, last first, print one scrubbed
 			// line on stderr and exit 1. `os.Exit`, not a panic or a return,
 			// so the teardown below never prints `DOWN` for a failed boot.
-			fatalLine(name, "unknown component "+cname+": the spec names a "+
-				"component this build does not have")
-			// `Dispose` only REQUESTS the teardown, so each one is awaited
-			// (bounded) or `os.Exit` would kill the process before any inverse
-			// replayed. A fiber that does not settle in time is reported as
-			// such, never as disposed.
-			bootCtx, bootCancel := stdctx.WithTimeout(stdctx.Background(), 5*time.Second)
-			for i := len(fibers) - 1; i >= 0; i-- {
-				fibers[i].fiber.Dispose()
-				if err := fibers[i].fiber.Gone(bootCtx); err != nil {
-					log("swap", fibers[i].label, "dispose NOT confirmed: "+err.Error())
-					continue
-				}
-				log("swap", fibers[i].label, "dispose -> inverses replay (LIFO)")
-			}
-			bootCancel()
-			os.Exit(1)
+			fatalBoot(name, "unknown component "+cname+": the spec names a "+
+				"component this build does not have", fibers, log)
 		}
 		if err := fiber.Ready(ready); err != nil {
+			// issue #2254: outside `--once` a failed activation is fatal, as
+			// in the rust runner. In `--once` mode the FAILED fiber is kept so
+			// the LIFO teardown and the no-residue proof the fault sweep reads
+			// still run; stc has already unwound its own effects.
+			if !s.Once {
+				fatalBoot(name, "boot failed loading "+cname+": "+err.Error(), fibers, log)
+			}
 			log("load", cname, "load error: "+err.Error())
 		}
 		fibers = append(fibers, labeledFiber{cname, fiber})
@@ -481,18 +546,16 @@ func main() {
 		}
 	}
 
-	// 6. teardown, consumers first (reverse load order). In once mode each
-	//    dispose is awaited out of the fiber registry, so the residue proof
-	//    below reads a settled runtime, not an in-flight one.
-	goneCtx, cancel := stdctx.WithTimeout(stdctx.Background(), 5*time.Second)
+	// 6. teardown, consumers first (reverse load order). Each dispose is
+	//    awaited (bounded) in both modes: the inverses of a held composition
+	//    must replay before `DOWN`, and in once mode the residue proof below
+	//    reads a settled runtime, not an in-flight one.
+	goneCtx, cancel := stdctx.WithTimeout(stdctx.Background(), teardownBound())
 	defer cancel()
+	var unconfirmed []string
 	for i := len(fibers) - 1; i >= 0; i-- {
-		fibers[i].fiber.Dispose()
-		if s.Once {
-			log("swap", fibers[i].label, "dispose -> inverses replay (LIFO)")
-			_ = fibers[i].fiber.Gone(goneCtx)
-		} else {
-			log("swap", fibers[i].label, "dispose")
+		if !disposeAwaited(goneCtx, fibers[i], log) {
+			unconfirmed = append(unconfirmed, fibers[i].label)
 		}
 	}
 	if listener != nil {
@@ -500,6 +563,16 @@ func main() {
 	}
 	for _, c := range clients {
 		c.Close()
+	}
+	// A dispose that did not settle may still have inverses pending, so this
+	// is not a finished unwind: no residue verdict and no `DOWN` (the
+	// conductor reads `DOWN` as proof the LIFO unwind completed), one scrubbed
+	// FATAL line naming the fibers, and a non-zero exit. `os.Exit` skips the
+	// deferred `cancel`, which is harmless at process end (issue #2339).
+	if len(unconfirmed) > 0 {
+		fatalLine(name, "teardown incomplete: dispose not confirmed before the bound expired for "+
+			strings.Join(unconfirmed, ", "))
+		os.Exit(1)
 	}
 
 	// 7. no-residue proof (once mode): after a full LIFO teardown the live

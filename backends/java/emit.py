@@ -60,6 +60,9 @@ CRATE = "cordis4j"
 # golden oracle + the selfhost mirror both run with record off, so neither
 # shifts). Mirrors backends/go/emit.py's `_RECORD_MODE`.
 _RECORD_MODE = False
+# issue #2345: set while a v3 document's record sink is emitted, so the
+# service-emission sites know the journalling helpers are present.
+_JOURNAL_SINK = False
 
 # issue #1369 (item 522 slice 3): the document's computer-use externs, by name,
 # and its provide methods that run in a UI scope, keyed by
@@ -1564,6 +1567,16 @@ def _v3_builtin(method: object, target: str, args: list[str],
         if recv == "Float":
             return f"revlFtoa({target})"
         return f"String.valueOf({target})"
+    # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+    # §Int.to_char): a one-code-point Str for a Unicode scalar value, "" for
+    # anything else. `Character.toChars` throws above U+10FFFF and hands back
+    # a lone surrogate for U+D800..U+DFFF, so the range is checked first; the
+    # lambda binds the receiver once.
+    if method == "to_char":
+        return ("((java.util.function.LongFunction<String>) (_cp) -> "
+                "(_cp < 0 || _cp > 0x10FFFF || (_cp >= 0xD800 && _cp <= 0xDFFF))"
+                " ? \"\" : new String(Character.toChars((int) _cp)))"
+                f".apply({target})")
     raise EmitError(f"unknown builtin method {method!r}")
 
 
@@ -3043,18 +3056,73 @@ def _empty_map_decl_type(node: dict, pins: dict | None) -> str:
     return "java.util.Map"
 
 
+def _empty_list_decl_type(value: dict) -> str:
+    """Declaration type for a local bound to an empty list literal (#2296).
+
+    A raw `java.util.List` iterates as `Object`, so `for (x of xs)` over an
+    annotated `var xs: List[Str] = []` bound `x` as `Object` and every use that
+    needs the element type (a call `f(x)` with a `Str` parameter, `x.slice`)
+    was rejected by javac. That is what made every program importing
+    stdlib/str.rvl uncompilable here: `dedent` accumulates into exactly such a
+    list and then loops over it. The annotation is on the literal as
+    `"expected"` (roadmap 76b), the same pin the empty-map case reads, so the
+    local declares as that precise type and the loop binding gets the element
+    type. An unannotated `var xs = []` names no type and keeps the raw list,
+    and so does an element type `_java_v3_type` cannot spell
+    (`_declarable_type`).
+    """
+    return _annotated_list_decl_type(value) or "java.util.List"
+
+
+#: The scalar leaves an empty list may declare precisely: every TYPE_MAP name
+#: whose boxed spelling is a Java type. `Int32` boxes to `int` and `Unit` to
+#: `void`, so both are left out.
+_DECLARABLE_SCALARS = frozenset(TYPE_MAP) - {"Int32", "Unit"}
+
+
+def _declarable_type(name: str) -> bool:
+    """True when `_java_v3_type` spells *name* as a real Java type (#2296).
+
+    An allowlist, not a denylist: `_java_v3_type` turns any name it does not
+    know into a bare identifier (`Int8`, `Duration`, `Set<Object>`), and
+    rejects a function type outright. So a leaf is declarable only when it is
+    a `_DECLARABLE_SCALARS` name or a type the document declares, nested only
+    under `List`, `Opt` and `Map`.
+    """
+    name = name.strip()
+    if "[" not in name:
+        return name in _DECLARABLE_SCALARS or name in _V3_DECLARED_TYPES
+    base = name[: name.index("[")]
+    args = _split_v3_types(name[name.index("[") + 1 : name.rindex("]")])
+    arity = {"List": 1, "Opt": 1, "Map": 2}.get(base)
+    return arity == len(args) and all(_declarable_type(a) for a in args)
+
+
+def _annotated_list_decl_type(value: dict) -> str | None:
+    """The precise `java.util.List<E>` an empty list literal's `expected` pin
+    names, or None when it names none this tier can declare (#2296)."""
+    expected = value.get("expected")
+    expected = expected.strip() if isinstance(expected, str) else ""
+    if not (expected.startswith("List[") and _declarable_type(expected)):
+        return None
+    return _java_v3_type(expected)
+
+
 def _let_keyword(node: dict, ctx: _V3Ctx | None = None,
                  pins: dict | None = None) -> str:
     """Declaration type for a v3 `let`/`var`.
 
     An empty list literal has no element type, and `var` would freeze it as
-    `List<Object>` — later pushes and the declared return type then fail to
-    unify. A raw `java.util.List` keeps javac's erasure in play (unchecked
-    warning, correct code); non-empty literals infer their element type.
+    `List<Object>`, so later pushes and the declared return type then fail to
+    unify. An annotated `var xs: List[Str] = []` carries its annotation on the
+    literal (`"expected"`), so it declares the precise `java.util.List<String>`
+    (`_empty_list_decl_type`, issue #2296). Without an annotation a raw
+    `java.util.List` keeps javac's erasure in play (unchecked warning, correct
+    code); non-empty literals infer their element type.
     """
     value = node.get("value")
     if isinstance(value, dict) and value.get("kind") == "list" and not value.get("items"):
-        return "java.util.List"
+        return _empty_list_decl_type(value)
     if isinstance(value, dict) and value.get("kind") == "maplit" and not value.get("entries"):
         return _empty_map_decl_type(node, pins)
     adt = _adt_binding_type(value, ctx)
@@ -3764,7 +3832,106 @@ def _java_extern_config_bind(ext: dict) -> str:
             f"_REVL_CFG_DEFAULTS_{suffix});")
 
 
-def _emit_v3_externs(externs: list) -> list[str]:
+def _journalled_emission(name: str, params: str, forward: str,
+                         ret: str) -> tuple[list[str], str]:
+    """Issue #2345: in record mode an `extern emission fn` is journalled before
+    its body runs, as the py tier journals a host-extern emission
+    (backends/python/replay.py, `Timeline.record_emission`). The declared name
+    becomes a wrapper that writes the durable start record
+    (`revlRecordEmissionStart`, which throws when the record cannot be made
+    durable), calls the body under an inner name, then settles the record.
+    Returns the wrapper lines and the inner name the body is emitted under."""
+    inner = f"_revl_emission_{name}"
+    lines = [f"public static {ret} {name}({params}) {{",
+             f"    int _revlEm = revlRecordEmissionStart({_string(name)}, "
+             f"{_string(name)}, null);"]
+    if ret == "void":
+        lines.append(f"    try {{ {inner}({forward}); }}")
+    else:
+        lines.append(f"    {ret} _revlOut;")
+        lines.append(f"    try {{ _revlOut = {inner}({forward}); }}")
+    lines.append("    catch (Throwable _revlT) "
+                 "{ revlRecordEmissionFailed(_revlEm, _revlT); throw _revlT; }")
+    lines.append('    revlRecordEmissionOutcome(_revlEm, "emission-complete");')
+    if ret != "void":
+        lines.append("    return _revlOut;")
+    lines.extend(["}", ""])
+    return lines, inner
+
+
+def _service_emission(node, requires: dict):
+    """Issue #2345: the (key, method, service) of an `emit` that crosses
+    through a required service or an instance provision (the py tier's
+    `_ServiceProxy` and `_SpawnRecorder` paths), or None for an extern call,
+    which its own definition wrapper journals."""
+    if not isinstance(node, dict) or node.get("kind") != "call":
+        return None
+    callee = node.get("callee")
+    if isinstance(callee, dict):
+        target = callee.get("target")
+        if callee.get("kind") != "field" or not isinstance(target, dict) \
+                or target.get("kind") != "instance-get":
+            return None
+        service = target.get("service")
+        return (str(target.get("key") or "instance"), str(callee.get("name")),
+                service if isinstance(service, str) else None)
+    target = node.get("target")
+    if "method" not in node or not isinstance(target, dict) \
+            or target.get("kind") != "req":
+        return None
+    key = str(target.get("name") or "call")
+    service = (requires or {}).get(key)
+    return (key, str(node["method"]), service if isinstance(service, str) else None)
+
+
+def _has_service_emits(node) -> bool:
+    """Whether any `emit` in the components crosses through a service."""
+    if isinstance(node, dict):
+        if node.get("step") == "emit" and (
+                _service_emission(node.get("expr"), {})
+                or _service_emission(node.get("compensate"), {})):
+            return True
+        return any(_has_service_emits(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_service_emits(v) for v in node)
+    return False
+
+
+def _journal_service_stmt(node, env, call: str) -> str:
+    """`call;`, or in record mode a block that makes the service emission's
+    start record durable before the call and writes its outcome after
+    (issue #2345), `emission-failed` when the call throws."""
+    if not _JOURNAL_SINK:
+        return f"{call};"
+    component = getattr(env, "component", None) or {}
+    desc = _service_emission(node, component.get("requires") or {})
+    if desc is None:
+        return f"{call};"
+    key, method, service = desc
+    svc = _string(service) if service else "null"
+    return (f"{{ int _revlEm = revlRecordEmissionStart({_string(key)}, "
+            f"{_string(method)}, {svc}); try {{ {call}; }} catch (Throwable _revlT) "
+            f"{{ revlRecordEmissionFailed(_revlEm, _revlT); throw _revlT; }} "
+            f"revlRecordEmissionOutcome(_revlEm, \"emission-complete\"); }}")
+
+
+def _is_emission_method(services: dict, service, method: str) -> bool:
+    """Whether `service.method` is declared `emission` in the service table:
+    a compensation through a service is journalled only then, as py's
+    `_ServiceProxy` wraps only the service's `emission` methods."""
+    spec = (((services or {}).get(service) or {}).get("methods") or {}).get(method)
+    return bool(isinstance(spec, dict) and spec.get("emission"))
+
+
+def _has_emission_externs(externs: list) -> bool:
+    """Issue #2345: does the document declare an `extern emission fn`, which
+    record mode journals before its body runs?"""
+    return any(ext.get("class") == "emission" for ext in externs)
+
+
+def _emit_v3_externs(externs: list, journal: bool = False) -> list[str]:
+    """`journal` (record mode with components, issue #2345) wraps each
+    `extern emission fn` so its durable start record is written first."""
     lines: list[str] = []
     # item 378 Stage 5: emit the config seam once, before the externs, when any
     # extern carries a config schema (byte-identical when none do).
@@ -3790,6 +3957,13 @@ def _emit_v3_externs(externs: list) -> list[str]:
         # keeps the declared name's signature under a private name and the
         # public one registers what it returns, so no call site changes.
         secret_return = bool(_SECRET_MODE and ext.get("secret_return"))
+        if journal and ext.get("class") == "emission":
+            wrapper, name = _journalled_emission(
+                name, params,
+                ", ".join(_ident(p.get("name"), "extern parameter name")
+                          for p in ext.get("params") or []),
+                ret)
+            lines.extend(wrapper)
         if secret_return:
             impl = f"_revl_secret_{name}"
             forward = ", ".join(_ident(p.get("name"), "extern parameter name")
@@ -6259,7 +6433,8 @@ def _map_value_expr_type(node: object, var_types: dict, env: _Env,
         if method in ("length", "charCodeAt", "codepoint_at", "indexOf",
                       "to_int"):
             return "Int"
-        if method in ("charAt", "join", "repeat", "to_str", "slice"):
+        if method in ("charAt", "join", "repeat", "to_str", "to_char",
+                      "slice"):
             return "Str"
         if method == "split":
             return "List[Str]"
@@ -7466,14 +7641,17 @@ private static java.nio.channels.FileChannel revlWalChannel;
 private static int revlWalSeq = 0;
 private static final java.util.List<Integer> revlWalSeqs = new java.util.ArrayList<>();
 private static final Object revlWalLock = new Object();
+private static boolean revlWalUnsynced = false;
 
 static {
     revlWalOpen();
 }
 
 // Wire the sink to REVL_WAL (unset -> no-op recording) and stamp the header.
-// Runs once at class load. A failed open leaves the sink null (recording is
-// silently off) rather than crashing a composition that only wanted to run.
+// Runs once at class load. A set REVL_WAL that cannot be opened, or a header
+// that cannot be made durable, fails class initialisation (issue #2345), so no
+// component body runs without its log. REVL_WAL_ALLOW_UNSYNCED=1 is the
+// explicit opt-out for a target that cannot fsync; it is stamped into the log.
 private static void revlWalOpen() {
     String path = System.getenv("REVL_WAL");
     if (path == null || path.isEmpty()) {
@@ -7483,28 +7661,71 @@ private static void revlWalOpen() {
         revlWalOut = new java.io.FileOutputStream(path, true);
         revlWalChannel = revlWalOut.getChannel();
     } catch (java.io.IOException open) {
-        revlWalOut = null;
-        revlWalChannel = null;
-        return;
+        throw new java.io.UncheckedIOException(
+                "revl: cannot open the write-ahead log REVL_WAL", open);
+    }
+    revlWalUnsynced = "1".equals(System.getenv("REVL_WAL_ALLOW_UNSYNCED"));
+    String durability = "";
+    if (revlWalUnsynced) {
+        System.err.println("warning: REVL_WAL_ALLOW_UNSYNCED=1 disables the WAL fsync guarantee");
+        durability = ",\"durability\":\"unsynced-opt-out\"";
     }
     revlWalWrite("{\"record\":\"header\",\"walVersion\":1,\"generation\":1,\"guarantee\":"
-            + revlWalStr(REVL_WAL_GUARANTEE) + "}");
+            + revlWalStr(REVL_WAL_GUARANTEE) + durability + "}");
+    if (revlWalUnsynced) {
+        revlWalWrite("{\"record\":\"durability-opt-out\",\"fromSeq\":0}");
+    }
 }
 
 // One durable JSON line: write, flush, and fsync (FileChannel.force(true))
 // before returning — the write-ahead discipline the py tier uses, so a record a
 // caller saw acknowledged is on disk before the effect it describes may matter.
+// A failed write or fsync throws: a record that never became durable must stop
+// the run, never pass silently. Only the REVL_WAL_ALLOW_UNSYNCED opt-out lets a
+// failed fsync through.
 private static void revlWalWrite(String json) {
     if (revlWalOut == null) {
         return;
     }
     synchronized (revlWalLock) {
+        long start = -1;
+        try {
+            start = revlWalChannel.size();
+        } catch (java.io.IOException size) {
+            start = -1;
+        }
         try {
             revlWalOut.write((json + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
             revlWalOut.flush();
-            revlWalChannel.force(true);
-        } catch (java.io.IOException ignored) {
+        } catch (java.io.IOException write) {
+            revlWalCut(start);
+            throw new java.io.UncheckedIOException("revl: write-ahead log write failed", write);
         }
+        try {
+            revlWalChannel.force(true);
+        } catch (java.io.IOException sync) {
+            if (!revlWalUnsynced) {
+                revlWalCut(start);
+                throw new java.io.UncheckedIOException("revl: write-ahead log fsync failed", sync);
+            }
+        }
+    }
+}
+
+// revlWalCut drops a record whose write or fsync failed (issue #2345), as the
+// py WriteAheadLog and the wasm drain do, so recovery reads it as absent, then
+// fsyncs the cut so a power loss cannot bring it back. Best effort: the caller
+// throws either way, and on a target that refused the record's fsync this
+// fsync fails too.
+private static void revlWalCut(long start) {
+    if (start < 0) {
+        return;
+    }
+    try {
+        revlWalChannel.truncate(start);
+        revlWalChannel.force(true);
+    } catch (java.io.IOException cut) {
+        // the record stays, unsynced; the run still stops on the caller's throw
     }
 }
 
@@ -7526,6 +7747,52 @@ public static void revlRecordTransactional(String receiver, String method, Strin
                 + ",\"origin\":" + call
                 + ",\"witness\":null,\"idempotency\":null}");
     }
+}
+
+// revlRecordEmissionStart journals one host-extern emission BEFORE its body
+// runs (issue #2345), the record the py tier writes for the same crossing
+// (backends/python/replay.py, Timeline.record_emission): an `effect` of kind
+// `emission`, one-way, no inverse. Fsync'd before it returns, and a failed fsync
+// throws, so the host body never runs unless its start record is on disk.
+// Returns the record's seq, or -1 when REVL_WAL is unset.
+public static int revlRecordEmissionStart(String key, String method, String service) {
+    if (revlWalOut == null) {
+        return -1;
+    }
+    synchronized (revlWalLock) {
+        int seq = revlWalSeq++;
+        String label = revlWalStr(key.equals(method) ? key : key + "." + method);
+        revlWalWrite("{\"record\":\"effect\",\"seq\":" + seq
+                + ",\"component\":null,\"stepIndex\":null,\"kind\":\"emission\",\"label\":" + label
+                + ",\"site\":null,\"source\":null,\"origin\":{}"
+                + ",\"boundary\":{\"class\":\"emission\",\"referent\":\"process-crossing\""
+                + ",\"compensated\":false,\"detail\":{\"key\":" + revlWalStr(key)
+                + ",\"method\":" + revlWalStr(method)
+                + ",\"service\":" + (service == null ? "null" : revlWalStr(service)) + ",\"args\":[]}}"
+                + ",\"inverse\":{\"reconstructible\":false,"
+                + "\"reason\":\"an emission is a one-way crossing; it has no inverse\"}}");
+        return seq;
+    }
+}
+
+// revlRecordEmissionOutcome settles a journalled emission once its body
+// returned. A body that throws is settled by revlRecordEmissionFailed instead.
+public static void revlRecordEmissionOutcome(int seq, String outcome) {
+    if (revlWalOut == null || seq < 0) {
+        return;
+    }
+    revlWalWrite("{\"record\":" + revlWalStr(outcome) + ",\"seq\":" + seq + "}");
+}
+
+// revlRecordEmissionFailed writes `emission-failed` for a body that threw, as
+// the py tier's _call_within does. Only the exception's type is kept: this tier
+// has no redaction funnel for its message.
+public static void revlRecordEmissionFailed(int seq, Throwable error) {
+    if (revlWalOut == null || seq < 0) {
+        return;
+    }
+    revlWalWrite("{\"record\":\"emission-failed\",\"seq\":" + seq
+            + ",\"error\":{\"type\":" + revlWalStr(error.getClass().getSimpleName().isEmpty() ? error.getClass().getName() : error.getClass().getSimpleName()) + "}}");
 }
 
 // revlRecordDischarge writes the commit-path proof that every recorded
@@ -7858,7 +8125,8 @@ def _method_body_lines(
                 # even when it throws
                 lines.append(f"{_ui_crossing_statement(stmt, v3_ctx, rename, env, lines)};")
                 continue
-            lines.append(f"{_site_compensated_call(stmt, v3_ctx, rename, env)};")
+            lines.append(_journal_service_stmt(
+                stmt.get("expr"), env, _site_compensated_call(stmt, v3_ctx, rename, env)))
             if stmt.get("compensate") is not None:
                 _emit_compensation_track(
                     lines, "", stmt["expr"], stmt["compensate"], v3_ctx, env, frame_expr,
@@ -7879,6 +8147,11 @@ def _method_body_lines(
                 # issue #274, one path over: this arm never went through
                 # `_let_keyword`, so `var m = Map.empty()` froze here too.
                 decl = _empty_map_decl_type(stmt, v3_ctx.map_locals)
+            elif (isinstance(raw, dict) and raw.get("kind") == "list"
+                    and not raw.get("items") and _annotated_list_decl_type(raw)):
+                # issue #2296, the same path: `var` froze an annotated
+                # `var xs: List[Str] = []` as `List<Object>` here.
+                decl = _annotated_list_decl_type(raw)
             else:
                 decl = _adt_binding_type(raw, v3_ctx) or "var"
             lines.append(f"{pad}{decl} {name} = {value};" if step == "let"
@@ -8060,6 +8333,15 @@ def _emit_compensation_track(
     ever violated (matching the honest-degrade spirit of the contract, not a
     reachable path)."""
     compensate_expr = _expr(compensate, v3_ctx, rename, env)
+    # issue #2345: a compensation through a service `emission` method is
+    # journalled like an `emit`; the lambda then takes a block body
+    desc = _service_emission(compensate, (getattr(env, "component", None) or {})
+                             .get("requires") or {})
+    if desc is not None and _is_emission_method(
+            getattr(env, "services", None) or {}, desc[2], desc[1]):
+        journalled = _journal_service_stmt(compensate, env, compensate_expr)
+        if journalled != f"{compensate_expr};":
+            compensate_expr = "{ " + journalled + " }"
     if frame_expr is None:  # pragma: no cover — _component_needs_frame forces frame_expr
         out.append(f"{pad}fx.track(Disposables.of(() -> {compensate_expr}));")
         return
@@ -8224,7 +8506,8 @@ def _emit_component_stmts(
             _emit_bracket_track(out, pad, step["acquire"], step["undo"], v3_ctx, env,
                                 frame_expr, None, step)
         elif kind == "emit":
-            out.append(f"{pad}{_site_compensated_call(step, v3_ctx, None, env)};")
+            out.append(pad + _journal_service_stmt(
+                step.get("expr"), env, _site_compensated_call(step, v3_ctx, None, env)))
             if step.get("compensate") is not None:
                 _emit_compensation_track(
                     out, pad, step["expr"], step["compensate"], v3_ctx, env, frame_expr)
@@ -8974,7 +9257,8 @@ def _emit_component(
             out.append(f"            undos.add(Disposables.of(() -> {_expr(step['undo'], None, None, env)}));")
             disposers.append("effect")
         elif kind == "emit":
-            out.append(f"            {_expr(step['expr'], None, None, env)};")
+            out.append("            " + _journal_service_stmt(
+                step.get("expr"), env, _expr(step['expr'], None, None, env)))
         elif kind == "provide":
             key = step.get("name")
             service = step.get("service")
@@ -9059,7 +9343,7 @@ def _emit_v1(ir: dict, package_name: str) -> str:
     if _uses_revl_frame(ir):
         out.extend(["    " + line if line else line for line in _emit_revl_frame_runtime(_declared_crossings_used(ir))])
         # item 322 Slice 2: the durable WAL sink rides alongside the
-        # teardown frame, but ONLY under `--record` — off, this whole block
+        # teardown frame, but ONLY under `--record`; off, this whole block
         # is absent and the output is byte-identical. Mirrors `_emit_v3`'s
         # splice: a witnessed step's `revlRecordTransactional` calls are
         # emitted from the SHARED `_emit_witnessed_step`, so every ir_version
@@ -9116,7 +9400,7 @@ def _emit_v2(ir: dict, package_name: str) -> str:
     if _uses_revl_frame(ir):
         out.extend(["    " + line if line else line for line in _emit_revl_frame_runtime(_declared_crossings_used(ir))])
         # item 322 Slice 2: the durable WAL sink rides alongside the
-        # teardown frame, but ONLY under `--record` — off, this whole block
+        # teardown frame, but ONLY under `--record`; off, this whole block
         # is absent and the output is byte-identical. Mirrors `_emit_v3`'s
         # splice: a witnessed step's `revlRecordTransactional` calls are
         # emitted from the SHARED `_emit_witnessed_step`, so every ir_version
@@ -9333,7 +9617,8 @@ def _emit_v3(ir: dict, package_name: str) -> str:
     if _uses_map_index(ir):
         out.extend(["    " + line if line else line for line in _emit_map_index_helper()])
     if externs:
-        out.extend(["    " + line if line else line for line in _emit_v3_externs(externs)])
+        out.extend(["    " + line if line else line for line in _emit_v3_externs(
+            externs, journal=_RECORD_MODE and bool(components))])
     if functions:
         out.extend(["    " + line if line else line for line in _emit_v3_functions(functions, types, externs)])
     if tests:
@@ -9355,11 +9640,16 @@ def _emit_v3(ir: dict, package_name: str) -> str:
                     for line in _emit_spawn_handle(with_get=_uses_instance_get(ir))])
     if _uses_revl_frame(ir):
         out.extend(["    " + line if line else line for line in _emit_revl_frame_runtime(_declared_crossings_used(ir))])
-        # item 322 Slice 2: the durable WAL sink rides alongside the teardown
-        # frame, but ONLY under `--record` — off, this whole block is absent and
-        # the output is byte-identical (the golden oracle + selfhost gate).
-        if _RECORD_MODE:
-            out.extend(["    " + line if line else line for line in _emit_record_sink()])
+    # item 322 Slice 2: the durable WAL sink rides alongside the teardown
+    # frame, but ONLY under `--record`; off, this whole block is absent and
+    # the output is byte-identical (the golden oracle + selfhost gate). Issue
+    # #2345: also for a journalled `extern emission fn`.
+    global _JOURNAL_SINK
+    _JOURNAL_SINK = bool(_RECORD_MODE and components and (
+        _uses_revl_frame(ir) or _has_emission_externs(externs)
+        or _has_service_emits(components)))
+    if _JOURNAL_SINK:
+        out.extend(["    " + line if line else line for line in _emit_record_sink()])
     for component in components:
         out.extend(["    " + line if line else line for line in _emit_component(
             component, services, types, functions, externs, components,
@@ -9586,7 +9876,7 @@ def emit(ir: dict, package_name: str = "revl", record: bool = False) -> str:
 
     _refuse_fault_tests(ir)
 
-    global _RECORD_MODE, _LIFECYCLE_MODE, _V3_DECLARED_TYPES, _SECRET_MODE
+    global _RECORD_MODE, _JOURNAL_SINK, _LIFECYCLE_MODE, _V3_DECLARED_TYPES, _SECRET_MODE
     global _JOURNAL_MODE
     global _STREAM_ITER_COUNTER
     _STREAM_ITER_COUNTER = 0
@@ -9619,6 +9909,7 @@ def emit(ir: dict, package_name: str = "revl", record: bool = False) -> str:
         )
     finally:
         _RECORD_MODE = saved
+        _JOURNAL_SINK = False
         _LIFECYCLE_MODE = saved_lifecycle
         _JOURNAL_MODE = saved_journal
         _V3_DECLARED_TYPES = saved_types

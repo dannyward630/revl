@@ -130,6 +130,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from revl import compile_files, compile_source  # noqa: E402
+from _compiled_ir import compiled_ir  # noqa: E402
 from revl.errors import RevlError  # noqa: E402
 
 CORPUS_DIR = ROOT / "tests" / "fixtures" / "emit_py_corpus"
@@ -242,7 +243,7 @@ CORPUS_EXTERN_AWARE = _corpus_params(EXTERN_DECL_GAP)
 # ---------------------------------------------------------------- harness
 
 def _exec_emitted() -> dict:
-    ir = compile_files([str(ROOT / "selfhost" / "lower.rvl")])
+    ir = compiled_ir(ROOT / "selfhost" / "lower.rvl")
     assert ir["ir_version"] == 3
     spec = importlib.util.spec_from_file_location(
         "pyemit_selfhost_lower_ir", ROOT / "backends" / "python" / "emit.py")

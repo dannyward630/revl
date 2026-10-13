@@ -40,9 +40,19 @@ uv venv && uv pip install -e ".[test]"
 .venv/bin/pytest tests/            # the frontend suite — should be green
 ```
 
-**The fast frontend loop.** The full suite is 1500+ tests (~60s); frontend-only
-work (parser, checker, lowering, docs, frontend-facing tests) does not need to
-pay for it every iteration. The same two files cover most of it:
+<!-- docgen:suite-size begin -->
+The root suite, `tests/`, defines more than 10,000 test
+functions (parametrization collects far more tests than that), and it
+takes tens of CI minutes of test time across the shards, the sum of
+`tests/shard_weights.json`. `tools/docgen.py --check` fails when either
+claim stops being true; `--show suite-size` prints the exact figures.
+<!-- docgen:suite-size end -->
+
+**The fast frontend loop.** A single local run of the whole suite takes hours
+on a loaded machine (253 test-minutes when issue #2217 measured it), so
+frontend-only work (parser, checker, lowering, docs,
+frontend-facing tests) does not pay for it every iteration. The same two files
+cover most of it:
 
 ```bash
 .venv/bin/pytest tests/test_frontend.py tests/test_doc_examples.py -q   # ~0.5s
@@ -50,12 +60,18 @@ pay for it every iteration. The same two files cover most of it:
 
 Before committing, run the tests your change affects, not the whole tree
 between every edit. The pre-commit hook already does this for you: it selects
-the affected tests with `tools/affected_tests.py`. When the selector reports
-`FULL` — or is unavailable — the hook gives that fallback a wall-clock ceiling
-(`REVL_HOOK_FULL_BUDGET`, default 60s) and skips it with the selector's reason
-and the `--no-verify` instruction, rather than running the whole suite to
-completion; the suite is CI's job, sharded there. For the fast inner-loop gate
-over the same selection, `make pre-merge-affected`.
+the affected tests with `tools/affected_tests.py` and reports how many passed.
+When the selector reports `FULL`, or is unavailable, the hook never runs the
+whole suite: it runs a defined core subset (`CORE_TESTS` in
+`tools/hooks/pre-commit`, override with `REVL_HOOK_CORE_TESTS`) under a
+wall-clock ceiling (`REVL_HOOK_FULL_BUDGET`, default 60s), and says the full
+suite did not run. If that subset fails, passes no test, or exceeds the
+ceiling, the commit is refused with the selector's reason and the
+`--no-verify` instruction. An affected selection whose every test skips (a
+machine without a backend's toolchain) does not block the commit, but the step
+prints `SKIPPED` and the hook ends with "ok, but the affected tests verified
+nothing". The full suite is CI's job, sharded there. For the fast inner-loop
+gate over the same selection, `make pre-merge-affected`.
 
 **Where the code lives (a two-minute map).** The compiler is `src/revl/`
 (`parser.py` → `typecheck.py` → `lower.py` → `apply.py`). The **emitters are
@@ -254,6 +270,7 @@ command, in order, reporting each step:
 | lint | `ruff check` (pinned `ruff==0.16.4` via `uvx` if not on `PATH`) |
 | census artifact | `tools/census_artifact.py --verify --strict` — CI's `census-artifact` job, run locally on the artifact's own input filter, so a diff that stales `docs/census-artifact/` reds here instead of on the PR. Adding a corpus document is enough to stale it (`corpus_dirs` includes `tests/fixtures`), and the test the selector used to pick for these paths skips the half that reds. The slowest step in this gate: a full census re-run, ~85 s on a shared dev box (issue #2103) |
 | formal | `sh formal/scripts/run_gate.sh` (lake build + the axioms gate; loud-skips without lake) |
+| ci-only suites | three kinds of CI step, read from `ci.yml` by `tools/ci_suites.py`: pytest on whole backend directories (`pytest backends/<tier>/`), vitest, and pytest under `REVL_CROSS_TIER_SLOW`, `REVL_SWEEP_ALL_TIERS` or a `REVL_REQUIRE_*` switch set by the step or its job (so the frontend job's `pytest tests/` under `REVL_REQUIRE_TIERS=go` is one). Each is opt-in by its CI job name and otherwise prints `SKIPPED (not opted in; CI job <job> runs it; opt in: --with=<job>)`. Opted in, it runs CI's command with CI's switches when the job's toolchain is present, else prints `SKIPPED` with what is missing (issue #2210) |
 
 Two properties make it trustworthy rather than theatre:
 
@@ -265,9 +282,12 @@ Two properties make it trustworthy rather than theatre:
   only the emit/golden half runs — which is the half that catches a stale golden
   or a respec'd emitter, the exact item-327 drift class. The typescript
   `vitest`/`tsc` suite needs `node_modules` and is not in the fast gate; its
-  pure-Python goldens are (the `backend-ts (golden drift)` step). Run the
-  runtime half yourself when you touch that tier
-  (`cd backends/typescript && npm ci && npx vitest run`).
+  pure-Python goldens are (the `backend-ts (golden drift)` step). The
+  toolchain-executing suites are still listed, one `SKIPPED` line each, and
+  run on request: `sh tools/pre_merge.sh --with=backend-typescript,conformance`,
+  `--with=all`, or `REVL_PREMERGE_WITH=all make pre-merge`.
+  `sh tools/pre_merge.sh --plan` prints what each step would run and runs
+  nothing.
 - **Nothing is a silent skip.** Every step is either *ran* (and must pass) or
   *skipped* with the reason printed (`SKIPPED (no backends/python/.venv — run sh
   backends/python/setup.sh)`), because a silent gap is precisely what let CI stay

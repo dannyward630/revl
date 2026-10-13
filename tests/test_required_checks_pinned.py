@@ -145,6 +145,11 @@ NOT_REQUIRED_CHECKS = {
     # advisory job, and it is one more reason it cannot be a required context
     # without first widening `if:` — a required context must report on the
     # queue.
+    # Issue #2333: the repository-text guards, in a job of their own so the
+    # backend jobs (which `need` lint) are not delayed by them. No `needs`, and
+    # nothing needs it; the drain waits for every non-heavy check, which is
+    # where it is enforced. Branch protection lists the seven contexts only.
+    "pure-read-guards": "pure-read guard tests; not a branch-protection context, enforced by the drain",
     "held-out": "item 537 held-out scoring; a scorer-touching diff is REFUSED by design, so it is advisory here and enforced in the promotion reward",
     # Container/privilege smoke that needs a Docker-capable runner; flaky as a
     # hard merge gate, run for signal not enforcement.

@@ -1,5 +1,7 @@
 ["decides_verdicts", "backends/python/emit.py"]
 
+["decides_verdicts", "tests/_compiled_ir.py"]
+
 ["decides_verdicts", "tests/test_selfhost_lower.py"]
 
 ["decides_verdicts", "tools/build_gate_crate.py"]
@@ -7,6 +9,8 @@
 ["decides_verdicts", "tools/gate_reference_census.py"]
 
 ["reference", "src/revl/__init__.py"]
+
+["reference", "src/revl/_doc_text.py"]
 
 ["reference", "src/revl/_paths.py"]
 
@@ -41,8 +45,6 @@
 ["reference", "src/revl/hostfile.py"]
 
 ["reference", "src/revl/hostref.py"]
-
-["reference", "src/revl/import_openapi.py"]
 
 ["reference", "src/revl/kernel_boundary.py"]
 

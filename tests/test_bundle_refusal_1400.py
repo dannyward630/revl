@@ -110,22 +110,6 @@ ABSENT_REASON = "emitter unavailable here"
 WASM_EMIT_ERROR = B._emitter("wasm").EmitError
 
 
-@pytest.fixture(autouse=True)
-def _restore_emitter_cache():
-    """`bundle._EMITTERS` is a module-global cache. A test that repoints
-    `_BACKENDS_ROOT` has to clear it to be served the tree it points at, so put
-    it back afterwards.
-
-    It is restored rather than cleared up front, and that matters: clearing it
-    reloads `emit.py` and produces a SECOND, unrelated `EmitError` class, which
-    `WASM_EMIT_ERROR` would then no longer match. That is the same fact the
-    `_refusal_class` docstring records, met here by accident first."""
-    saved = dict(B._EMITTERS)
-    yield
-    B._EMITTERS.clear()
-    B._EMITTERS.update(saved)
-
-
 def _write(tmp_path: Path, name: str, source: str) -> str:
     path = tmp_path / name
     path.write_text(source, encoding="utf-8")
@@ -188,7 +172,6 @@ def _backends_root_without(tmp_path: Path, missing: str) -> Path:
             (root / backend).mkdir()
             continue
         (root / backend).symlink_to(B._BACKENDS_ROOT / backend)
-    B._EMITTERS.clear()  # or the cache answers from the real tree
     return root
 
 

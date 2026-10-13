@@ -30,24 +30,32 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from revl import compile_source, idioms  # noqa: E402
+from revl import RevlError, compile_source, idioms  # noqa: E402
 from revl.admit_profile import AdmissionProfile  # noqa: E402
 from revl.mcp import fillspec  # noqa: E402
 from revl.mcp.server import handle  # noqa: E402
 
 ENTRIES = idioms.table()
 
-#: Idioms whose construct only exists beside host code, so an untrusted author
-#: (who may not declare an extern) cannot be admitted with them. `secret NAME
-#: for CAP` is refused unless an `extern emission[CAP]` body serves CAP (the key
-#: is injected into that body and nowhere else), and an extern needs a host
-#: body. The idiom is for an operator-trusted author; the admission test still
-#: pins that the refusal is the host-block one and nothing else.
-HOST_CODE_IDIOMS = frozenset({"secret"})
+#: Idioms an untrusted author cannot be admitted with, and the refusal each one
+#: must be refused for. `secret NAME for CAP` is refused unless an
+#: `extern emission[CAP]` body serves CAP (the key is injected into that body
+#: and nowhere else), and an extern needs a host body. `retention NAME { ... }`
+#: is authority (a deadline the author writes is a deadline it can extend), so
+#: the admission profile refuses the declaration itself (G-RETAIN).
+#: `secret-value` shows the declared `endorse[confidential]` downgrade, and an
+#: untrusted author may not declassify. All three are for an
+#: operator-trusted author; the admission test still pins that the refusal is
+#: exactly that one and nothing else.
+OPERATOR_ONLY_IDIOMS = {
+    "secret": "forbids new `extern`/host-block",
+    "retention": "forbids declaring a retention policy",
+    "secret-value": "forbids declassification",
+}
 
 
-def test_the_host_code_idioms_exist():
-    assert HOST_CODE_IDIOMS <= set(ENTRIES)
+def test_the_operator_only_idioms_exist():
+    assert set(OPERATOR_ONLY_IDIOMS) <= set(ENTRIES)
 
 
 def _compile(source, name, profile=None):
@@ -90,16 +98,69 @@ def test_every_idiom_compiles_with_no_hole(name):
 @pytest.mark.parametrize("name", sorted(ENTRIES))
 def test_every_idiom_admits_for_an_untrusted_author(name):
     """The profile the MCP server compiles agent text under, granted exactly
-    the services the idiom declares. No idiom needs host code except the ones
-    in `HOST_CODE_IDIOMS`, which are checked to be refused for exactly that."""
+    the services the idiom declares. The idioms in `OPERATOR_ONLY_IDIOMS` are
+    checked to be refused for exactly the reason named there."""
     ir = _compile(ENTRIES[name]["example"], name)
     granted = set(ir.get("services") or {})
     profile = AdmissionProfile.untrusted_author(granted)
-    if name in HOST_CODE_IDIOMS:
-        with pytest.raises(Exception, match="forbids new `extern`/host-block"):
+    if name in OPERATOR_ONLY_IDIOMS:
+        with pytest.raises(Exception, match=OPERATOR_ONLY_IDIOMS[name]):
             _compile(ENTRIES[name]["example"], name, profile=profile)
         return
     _compile(ENTRIES[name]["example"], name, profile=profile)
+
+
+# ---- 2b. the security declarations have an idiom (issue #2280) ------------------
+
+SECURITY_IDIOMS = ("secret", "secret-value", "capability", "grant", "retention")
+
+
+def test_every_security_declaration_form_has_an_idiom():
+    """`revl idiom` was a picture of the language with no security form in it,
+    so an agent hand-rolled what the language ships. Each declaration that
+    carries security meaning has one."""
+    assert set(SECURITY_IDIOMS) <= set(ENTRIES)
+
+
+def test_the_secret_value_idiom_declassifies_only_through_a_declared_slot():
+    """`Secret[T]` is the value-world form, not the bound `secret NAME for CAP`.
+    The idiom must compile (the declared `endorse[confidential]` slot admits the
+    downgrade), carry the confidential taint on its audit surface, and name the
+    bound key as the thing it is not."""
+    entry = ENTRIES["secret-value"]
+    ir = _compile(entry["example"], "secret-value")
+    comp = {c["name"]: c for c in ir["components"]}["Payer"]
+    assert "confidential" in (comp.get("taint") or {}).get("declassify", [])
+    assert "Secret[Str]" in entry["example"]
+    assert "secret NAME for CAP" in entry["summary"]
+    without_slot = entry["example"].replace("endorse[confidential] fn settle", "fn settle")
+    with pytest.raises(RevlError) as excinfo:
+        _compile(without_slot, "secret-value-no-slot")
+    assert excinfo.value.code == "G9"
+    assert "endorse[confidential]" in excinfo.value.message
+
+
+def test_the_capability_idiom_declares_binds_and_scopes():
+    example = ENTRIES["capability"]["example"]
+    ir = _compile(example, "capability")
+    assert "mail.send" in json.dumps(ir["capability_declarations"])
+    assert "emission[mail.send(account=" in example
+
+
+def test_the_grant_idiom_resolves_as_a_composition(tmp_path):
+    """A `grant` only means something once the fold has run, so compiling the
+    idiom is not enough: written into a real project it must widen exactly the
+    row it names, and be the base composition's own statement."""
+    sys.path.insert(0, str(ROOT / "tests"))
+    import test_composition_confinement as conf
+    from revl.composition import resolve_file
+    conf._grant_project(tmp_path)
+    doc = tmp_path / "base.rvl"
+    doc.write_text(ENTRIES["grant"]["example"])
+    table = resolve_file(str(doc), str(tmp_path))
+    records = next(r for r in table.rows if r.label == "records")
+    assert records.granted == ["approvals", "writer"]
+    assert records.provenance[-1][2] == "grant"
 
 
 # ---- 3. a fillSpec carries the idiom for its hole ------------------------------

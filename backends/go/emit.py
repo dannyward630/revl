@@ -507,6 +507,91 @@ def _req_field(name: str) -> str:
     return _lower_camel(_key_binding(name))
 
 
+#: The trapping Int operators of a component method body and the checked
+#: helper each one renders through (docs/arithmetic.md).
+_COMP_CHECKED_INT_OPS = {"+": "revlAdd", "-": "revlSub", "*": "revlMul"}
+
+#: The same for Int32: each traps at the i32 edge (issue #2262).
+_COMP_CHECKED_INT32_OPS = {"+": "revlAddI32", "-": "revlSubI32", "*": "revlMulI32"}
+
+
+def _comp_typed_arith(node, left: str, right: str, env: _Env):
+    """The component method body's rendering of an arithmetic `bin` node the
+    lowering annotated with `operands`, or None for the plain Go operator.
+
+    It keys on `operands` as the top-level fn renderer (`_go_v3_expr`) does,
+    so one expression means the same thing in a `fn` and in a provide method
+    (docs/arithmetic.md): Int `+ - *` trap on overflow (issue #2259), `/` is
+    true division answering a Float, and a Float `%` is IEEE `fmod`. Before
+    this arm the method body wrote the bare Go operator, so Int arithmetic
+    wrapped silently and `Int / Int` was integer division that did not build
+    into a `float64` return (issue #2198)."""
+    op = node.get("op")
+    operands = node.get("operands")
+    if operands == "Float":
+        # a mixed Int/Float operand widens, as the fn renderer's does
+        if _comp_infer(node.get("left"), env) in ("Int", "Int32"):
+            left = "float64(%s)" % left
+        if _comp_infer(node.get("right"), env) in ("Int", "Int32"):
+            right = "float64(%s)" % right
+    if op in _COMP_CHECKED_INT_OPS and operands == "Int":
+        return _comp_checked_int(_COMP_CHECKED_INT_OPS[op], left, right)
+    if op in _COMP_CHECKED_INT32_OPS and operands == "Int32":
+        return _comp_checked_int32(_COMP_CHECKED_INT32_OPS[op], left, right)
+    if op == "/" and operands in ("Int", "Int32", "Float"):
+        # Go `/` on two ints is integer division, and a constant zero divisor
+        # is a compile error where IEEE defines it, so the division goes
+        # through the runtime helper.
+        global _COMP_NEEDS_FLOAT_DIV
+        _COMP_NEEDS_FLOAT_DIV = True
+        if operands != "Float":
+            return "revlDiv(float64(%s), float64(%s))" % (left, right)
+        return "revlDiv(%s, %s)" % (left, right)
+    if op == "%" and operands == "Float":
+        # Go's `%` is not defined on float64 (issue #721).
+        global _COMP_NEEDS_FLOAT_REM
+        _COMP_NEEDS_FLOAT_REM = True
+        return "math.Mod(%s, %s)" % (left, right)
+    if operands == "Float":
+        return "(%s %s %s)" % (left, _V3_GO_BIN_OPS[op], right)
+    return None
+
+
+def _comp_checked_int(helper: str, left: str, right: str) -> str:
+    """Render a checked Int `+ - *` (or unary `-` as `0 - x`) in a component
+    method body.
+
+    The method renderer writes into an `_Env` rather than into the typed-core
+    ctx the prelude reads, so the flag the prelude consults is the component
+    one (issue #2198). `_PRIM` renders revl `Int` as Go's `int` on the
+    ir_version 1/2 component tier and as `int64` on the v3 one, and the checked
+    helpers are int64, so the narrow tier converts in and back out."""
+    global _COMP_NEEDS_OVERFLOW
+    _COMP_NEEDS_OVERFLOW = True
+    if _go_type("Int") == "int64":
+        return "%s(%s, %s)" % (helper, left, right)
+    return "int(%s(%s, %s))" % (helper, _comp_int64(left), _comp_int64(right))
+
+
+def _comp_checked_int32(helper: str, left: str, right: str) -> str:
+    """Render a checked Int32 `+ - *` (or unary `-` as `0 - x`) in a component
+    method body. Go's `int32` operators wrap; the helpers compute in int64 and
+    re-impose the bound through `revlToI32` (docs/arithmetic.md). Int32 is
+    `int32` on every component tier, so no conversion is needed (issue
+    #2262)."""
+    global _COMP_NEEDS_OVERFLOW32, _COMP_NEEDS_ARITH32
+    _COMP_NEEDS_OVERFLOW32 = True
+    _COMP_NEEDS_ARITH32 = True
+    return "%s(%s, %s)" % (helper, left, right)
+
+
+def _comp_int64(operand: str) -> str:
+    """Widen a narrow-tier `int` operand to the helpers' int64. An untyped
+    decimal constant (the `0` of unary minus, a literal operand) converts
+    implicitly in Go, so it is left as written."""
+    return operand if operand.isdigit() else "int64(%s)" % operand
+
+
 def _expr(node, env: _Env, expected=None) -> str:
     """Render one expression in a component/method body.
 
@@ -681,8 +766,12 @@ def _expr(node, env: _Env, expected=None) -> str:
         go_op = _V3_GO_BIN_OPS.get(op)
         if go_op is None:
             raise EmitError("unsupported binary operator: %r" % (op,))
-        return "(%s %s %s)" % (_expr(node["left"], env), go_op,
-                               _expr(node["right"], env))
+        left = _expr(node["left"], env)
+        right = _expr(node["right"], env)
+        typed = _comp_typed_arith(node, left, right, env)
+        if typed is not None:
+            return typed
+        return "(%s %s %s)" % (left, go_op, right)
     if kind == "un":
         operand = _expr(node.get("operand"), env)
         if node.get("op") == "!":
@@ -694,18 +783,11 @@ def _expr(node, env: _Env, expected=None) -> str:
             if node.get("operands") == "Int":
                 # `-x` is `0 - x`; negating Int.MIN overflows, so it traps
                 # through the same checked subtraction as any Int `-`
-                # (docs/arithmetic.md; wasm lowers `-x` the same way). The
-                # method renderer writes into this `_Env` rather than into the
-                # typed-core ctx the prelude reads, so the flag the prelude
-                # consults is the component one (issue #2198). `_PRIM` renders
-                # revl `Int` as Go's `int` on the ir_version 1/2 component
-                # tier and as `int64` on the v3 one, and the checked helper is
-                # int64, so the narrow tier converts in and back out.
-                global _COMP_NEEDS_OVERFLOW
-                _COMP_NEEDS_OVERFLOW = True
-                if _go_type("Int") == "int64":
-                    return "revlSub(0, %s)" % operand
-                return "int(revlSub(0, int64(%s)))" % operand
+                # (docs/arithmetic.md; wasm lowers `-x` the same way).
+                return _comp_checked_int("revlSub", "0", operand)
+            if node.get("operands") == "Int32":
+                # negating Int32.MIN overflows the same way (issue #2262)
+                return _comp_checked_int32("revlSubI32", "0", operand)
             return "(-%s)" % operand
         raise EmitError("unsupported unary operator: %r" % (node.get("op"),))
     if kind == "if":  # ternary
@@ -1268,6 +1350,12 @@ def _comp_infer(node, env: _Env):
             if isinstance(lt, str) and lt.startswith("Opt[") and lt.endswith("]"):
                 return lt[4:-1]
             return _comp_infer(node.get("right"), env) or lt
+        # `/` is true division and Float arithmetic answers a Float
+        # (docs/arithmetic.md), whatever the left operand's own type is.
+        if op == "/" and node.get("operands") in ("Int", "Int32", "Float"):
+            return "Float"
+        if op in ("+", "-", "*", "%") and node.get("operands") == "Float":
+            return "Float"
         return _comp_infer(node.get("left"), env) or _comp_infer(node.get("right"), env)
     if k == "un":
         return "Bool" if node.get("op") == "!" else _comp_infer(node.get("operand"), env)
@@ -1340,6 +1428,18 @@ _V3_OVERFLOW32_HELPER = """func revlToI32(v int64) int32 {
 }
 """
 
+# The trapping Int32 `+ - *` that narrow through `revlToI32`, for the same
+# component-only path (issue #2262). The typed-core assemblies write the same
+# three lines off `ctx.needs_overflow32`.
+_V3_ARITH32_HELPER = (
+    "func revlAddI32(a, b int32) int32 { return revlToI32(int64(a) + int64(b)) }\n"
+    "func revlSubI32(a, b int32) int32 { return revlToI32(int64(a) - int64(b)) }\n"
+    "func revlMulI32(a, b int32) int32 { return revlToI32(int64(a) * int64(b)) }")
+
+# `/` is true division (docs/arithmetic.md). A function, not an expression: Go
+# rejects a *constant* `1.0 / 0.0` at compile time, where IEEE defines +Inf.
+_REVL_DIV_HELPER = "func revlDiv(a, b float64) float64 { return a / b }"
+
 # The trapping `+ - *` on Int (docs/arithmetic.md), as a preamble. The pure
 # typed-core renderer writes this out of its own assembly off
 # `ctx.needs_overflow`; the component method renderer writes into an `_Env`,
@@ -1397,12 +1497,23 @@ _COMP_NEEDS_STRCONV = False
 # `ctx.needs_overflow32`; a method body reaches the same helper through this
 # flag, so a component-only document carries it too (issue #1347).
 _COMP_NEEDS_OVERFLOW32 = False
+# Trapping `+ - *` on Int32 in a component body: flags the checked
+# `revlAddI32`/`revlSubI32`/`revlMulI32` (and, through
+# `_COMP_NEEDS_OVERFLOW32`, the `revlToI32` they narrow with). Kept apart from
+# the narrow flag so a body that only calls `.to_int32()` emits as before
+# (issue #2262).
+_COMP_NEEDS_ARITH32 = False
 # Trapping `+ - *` on Int referenced by a component body: flags the checked
 # helpers `revlAdd`/`revlSub`/`revlMul`. The method renderer reaches them
 # through `_Env`, not through the typed-core ctx the prelude reads, so without
-# this flag a method body emitted the call and no definition — `undefined:
-# revlSub` (issue #2198).
+# this flag a method body emitted the call and no definition: Go reported
+# `undefined: revlSub` (issue #2198).
 _COMP_NEEDS_OVERFLOW = False
+# A true division `/` in a component body: flags `revlDiv`, the runtime float
+# division the pure typed-core path emits off `ctx.needs_float_div`. A Float
+# `%` flags the `math` import for `math.Mod` the same way (issue #2198).
+_COMP_NEEDS_FLOAT_DIV = False
+_COMP_NEEDS_FLOAT_REM = False
 # A `timer` step (item 57) in a component body: flags the clock coeffect +
 # timer scheduler preamble (_TIMER_PREAMBLE). Timers lower to a revertible
 # schedule whose inverse is cancellation, wired into the same effect ledger.
@@ -1543,6 +1654,12 @@ def _comp_builtin(method, recv_surface, target, args):
     # helper as charCodeAt.
     if method == "codepoint_at":
         return "revlStrCharCodeAt(%s, %s)" % (target, args[0])
+    # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+    # §Int.to_char): a one-code-point Str for a Unicode scalar value, "" for
+    # anything else. `string(rune(n))` would hand back U+FFFD for a surrogate
+    # or an out-of-range value, so the range is checked first.
+    if method == "to_char":
+        return "%s(%s)" % (_GO_TO_CHAR, target)
     # The prefix/suffix probes (FR-6, docs/stdlib-2.0.md §Str.startsWith).
     if method == "startsWith":
         return "strings.HasPrefix(%s, %s)" % (target, args[0])
@@ -2104,6 +2221,8 @@ def _emit_method_body(body, env: _Env, out, indent, ret_surface=None):
             env.declared_skip = step.get("expr")
             emit_call = _expr(step["expr"], env)
             env.declared_skip = None
+            if not _is_ui_crossing(step.get("expr"), env):
+                emit_call = _journal_service_emit(step.get("expr"), emit_call)
             if _is_ui_crossing(step.get("expr"), env):
                 # issue #1369: a computer-use crossing registers its own
                 # compensation, the site-spelled one or else the declared one,
@@ -2115,7 +2234,7 @@ def _emit_method_body(body, env: _Env, out, indent, ret_surface=None):
             # site-spelled clause, else the extern's own declared one (item
             # 254, issues #1592 and #1902).
             for comp_node in _emit_compensations(step):
-                compensate_call = _expr(comp_node, env)
+                compensate_call = _journal_service_comp(comp_node, _expr(comp_node, env))
                 key, method = _call_descriptor(comp_node)
                 frame = env.ui_scope or "%s.revlFrame" % env.receiver
                 # By-value capture for the offset, on the same footing as an
@@ -4172,14 +4291,15 @@ def _emit_component_step(comp, step, services, env: _Env, out, indent=3):
         # (Phase 1 first, in full, no matter what Phase 2 later does) —
         # `runCompensationPhase` drains the queue, best-effort and bounded,
         # via the goroutine-abandon pattern (go's per-tier obligation).
-        emit_call = _expr(step["expr"], env)
+        emit_call = _journal_service_emit(step.get("expr"),
+                                          _expr(step["expr"], env))
         # one compensation per crossing: the site-spelled clause, else the
         # emitted extern's own declared one (item 254, issues #1592 and
         # #1902), as the py reference registers it. The emission fires inside
         # it.
         compensations = _emit_compensations(step)
         for index, comp_node in enumerate(compensations):
-            compensate_call = _expr(comp_node, env)
+            compensate_call = _journal_service_comp(comp_node, _expr(comp_node, env))
             key, method = _call_descriptor(comp_node)
             out.append("%sif err := ctx.Effect(func() stc.Inverse {" % pad)
             if index == 0:
@@ -4227,7 +4347,8 @@ def _emit_component_step(comp, step, services, env: _Env, out, indent=3):
             if em.get("step") != "emit":  # lowerer invariant (scope: emissions)
                 raise EmitError("timer body carries emissions only, found %r"
                                 % (em.get("step"),))
-            out.append("%s\t%s" % (inner, _expr(em.get("expr"), env)))
+            out.append("%s\t%s" % (inner, _journal_service_emit(
+                em.get("expr"), _expr(em.get("expr"), env))))
             # an emitted extern that declares its own `compensate` registers it
             # on every firing, after the fire (item 254, issue #1592). A firing
             # runs after activation, so it parks on the frame exactly like a
@@ -4235,7 +4356,8 @@ def _emit_component_step(comp, step, services, env: _Env, out, indent=3):
             for comp_node in _emit_compensations(em):
                 key, method = _call_descriptor(comp_node)
                 out.append("%s\t_revlFrame.registerMethodCompensation(%s, %s, func() error { %s; return nil })"
-                           % (inner, _go_string(key), _go_string(method), _expr(comp_node, env)))
+                           % (inner, _go_string(key), _go_string(method),
+                              _journal_service_comp(comp_node, _expr(comp_node, env))))
                 _COMP_NEEDS_TEARDOWN = True
                 _COMP_NEEDS_METHOD_WITNESSED = True
         out.append("%s})" % inner)
@@ -6311,6 +6433,14 @@ _GO_CHECKED_DIV = ("checked_div_trunc", "checked_div_floor",
 _GO_DIV_ZERO_MSG = "revl: division by zero"
 
 
+# Int.to_char (issue #2285, docs/stdlib-2.0.md §Int.to_char) as a closure
+# applied to the receiver, so the receiver is evaluated once and no helper has
+# to be gated on use.
+_GO_TO_CHAR = ('func(n int64) string { if n < 0 || n > 0x10FFFF || '
+               '(n >= 0xD800 && n <= 0xDFFF) { return "" }; '
+               'return string(rune(n)) }')
+
+
 def _v3_builtin_ret_type(method, recv_type):
     if method in ("length", "indexOf", "charCodeAt", "codepoint_at",
                   "div_trunc", "div_floor", "div_euclid", "mod"):
@@ -6319,8 +6449,9 @@ def _v3_builtin_ret_type(method, recv_type):
     # type follows the receiver, exactly as the checker dispatches it.
     if method == "to_int":
         return "Opt[Int]" if recv_type == "Str" else "Int"
-    # The rendering builtin (docs/stdlib-2.0.md §Int.to_str).
-    if method == "to_str":
+    # The rendering builtin (docs/stdlib-2.0.md §Int.to_str), and its
+    # one-code-point sibling (issue #2285, §Int.to_char).
+    if method in ("to_str", "to_char"):
         return "Str"
     if method == "to_int32":
         return "Int32"
@@ -7152,6 +7283,10 @@ def _go_v3_builtin(ctx, method, target_node, target, args):
     # helper as charCodeAt.
     if method == "codepoint_at":
         return f"revlStrCharCodeAt({target}, {args[0]})"
+    # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+    # §Int.to_char), the same closure as the component tier.
+    if method == "to_char":
+        return f"{_GO_TO_CHAR}({target})"
     # The prefix/suffix probes (FR-6, docs/stdlib-2.0.md §Str.startsWith):
     # HasPrefix/HasSuffix compare bytes, and a code-point prefix of a UTF-8
     # string is exactly a byte prefix.
@@ -8286,7 +8421,92 @@ def _go_extern_config_bind(ext: dict) -> str:
             f"{_go_string(name)}, {req_lit}, {_go_literal(defaults)})")
 
 
-def _emit_v3_go_externs(externs: list, ctx: _V3GoCtx) -> list[str]:
+def _service_emission(node):
+    """Issue #2345: the (key, method, service) of an `emit` that crosses
+    through a required service or an instance provision (the py tier's
+    `_ServiceProxy` and `_SpawnRecorder` paths), or None for an extern call,
+    which its own definition wrapper journals."""
+    if not isinstance(node, dict) or node.get("kind") != "call":
+        return None
+    callee = node.get("callee")
+    if isinstance(callee, dict):
+        target = callee.get("target")
+        if callee.get("kind") != "field" or not isinstance(target, dict) \
+                or target.get("kind") != "instance-get":
+            return None
+        service = target.get("service")
+        return (str(target.get("key") or "instance"), str(callee.get("name")),
+                service if isinstance(service, str) else "")
+    target = node.get("target")
+    if "method" not in node or not isinstance(target, dict) \
+            or target.get("kind") != "req":
+        return None
+    key = str(target.get("name") or "call")
+    service = _REQ_SERVICE.get(key)
+    return (key, str(node["method"]), service if isinstance(service, str) else "")
+
+
+def _journal_service_emit(node, emit_call: str) -> str:
+    """In record mode, route a service emission through revlJournalEmission
+    so its start record is durable before the call (issue #2345)."""
+    desc = _service_emission(node) if _RECORD_MODE else None
+    if desc is None:
+        return emit_call
+    global _COMP_NEEDS_TEARDOWN
+    _COMP_NEEDS_TEARDOWN = True
+    key, method, service = desc
+    return "revlJournalEmission(%s, %s, %s, func() { %s })" % (
+        _go_string(key), _go_string(method), _go_string(service), emit_call)
+
+
+def _is_emission_method(services: dict, service, method: str) -> bool:
+    """Whether `service.method` is declared `emission` in the service table:
+    a compensation through a service is journalled only then, as py's
+    `_ServiceProxy` wraps only the service's `emission` methods."""
+    spec = (((services or {}).get(service) or {}).get("methods") or {}).get(method)
+    return bool(isinstance(spec, dict) and spec.get("emission"))
+
+
+def _journal_service_comp(node, call: str) -> str:
+    """A compensation through a service `emission` method, journalled like an
+    `emit` (issue #2345); any other compensation is left as it is."""
+    desc = _service_emission(node) if _RECORD_MODE else None
+    if desc is None or not _is_emission_method(_SERVICES, desc[2], desc[1]):
+        return call
+    return _journal_service_emit(node, call)
+
+
+def _emit_v3_go_journalled_emission(name: str, params: str, arg_list: str,
+                                     sig_ret: str) -> tuple[list[str], str]:
+    """Issue #2345: in record mode an `extern emission fn` is journalled before
+    its body runs. The declared name becomes a wrapper that writes the durable
+    start record (`revlRecordEmissionStart`, which panics when the record cannot
+    be made durable), calls the body under an inner name, then settles the
+    record. Every call site, statement or value position, goes through it.
+    Returns the wrapper lines and the inner name the body is emitted under."""
+    inner = f"revlEmission_{name}"
+    lines = [f"func {name}({params}){sig_ret} {{",
+             f"\t_revlEm := revlRecordEmissionStart("
+             f"{_go_string(name)}, {_go_string(name)}, \"\")",
+             "\t_revlOK := false",
+             "\tdefer revlEmissionFailedUnless(_revlEm, &_revlOK)"]
+    if sig_ret:
+        lines.append(f"\t_revlOut := {inner}({arg_list})")
+    else:
+        lines.append(f"\t{inner}({arg_list})")
+    lines.append("\t_revlOK = true")
+    lines.append('\trevlRecordEmissionOutcome(_revlEm, "emission-complete")')
+    if sig_ret:
+        lines.append("\treturn _revlOut")
+    lines.extend(["}", ""])
+    return lines, inner
+
+
+def _emit_v3_go_externs(externs: list, ctx: _V3GoCtx,
+                        journal: bool = False) -> list[str]:
+    """`journal` (record mode on the component tier, issue #2345) wraps each
+    `extern emission fn` so its durable start record is written first."""
+    global _COMP_NEEDS_TEARDOWN
     out: list[str] = []
     # item 378 Stage 5: emit the config seam once, before the externs, when any
     # extern carries a config schema (byte-identical when none do).
@@ -8323,6 +8543,12 @@ def _emit_v3_go_externs(externs: list, ctx: _V3GoCtx) -> list[str]:
         arg_list = ", ".join(
             _v3_ident(p.get("name"), "extern parameter")
             for p in ext.get("params") or [])
+        if journal and ext.get("class") == "emission":
+            # the WAL sink rides with the teardown preamble; ask for it
+            _COMP_NEEDS_TEARDOWN = True
+            wrapper, name = _emit_v3_go_journalled_emission(
+                name, params, arg_list, sig_ret)
+            out.extend(wrapper)
         if ext.get("secret_return") and ret:
             out.append(f"func {name}({params}){sig_ret} {{")
             out.append(f"\treturn revlSecretResult(revlSecret_{name}({arg_list}))")
@@ -8840,12 +9066,16 @@ const revlWALGuarantee = "the WAL records each committed effect's step identity,
 // revlWAL is the process's durable append-only log. One line per record, JSON,
 // flushed + fsync'd before the call that wrote it returns — the write-ahead
 // discipline the py tier uses, so a record a caller saw acknowledged is on disk
-// before the effect it describes is allowed to matter.
+// before the effect it describes is allowed to matter. A failed write or fsync
+// is fatal (issue #2345): the process stops instead of running on with a record
+// that never became durable. REVL_WAL_ALLOW_UNSYNCED=1 is the explicit opt-out
+// for a target that cannot fsync; it is stamped into the log itself.
 type revlWAL struct {
-	mu   sync.Mutex
-	f    *os.File
-	seq  int
-	seqs []int
+	mu       sync.Mutex
+	f        *os.File
+	seq      int
+	seqs     []int
+	unsynced bool
 }
 
 var revlWALSink *revlWAL
@@ -8859,23 +9089,61 @@ func revlWALOpen() {
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return
+		panic("revl: cannot open the write-ahead log REVL_WAL: " + err.Error())
 	}
-	revlWALSink = &revlWAL{f: f}
-	revlWALSink.write(map[string]any{
+	unsynced := os.Getenv("REVL_WAL_ALLOW_UNSYNCED") == "1"
+	revlWALSink = &revlWAL{f: f, unsynced: unsynced}
+	header := map[string]any{
 		"record": "header", "walVersion": 1, "generation": 1,
 		"guarantee": revlWALGuarantee,
-	})
+	}
+	if unsynced {
+		os.Stderr.WriteString("warning: REVL_WAL_ALLOW_UNSYNCED=1 disables the WAL fsync guarantee\\n")
+		header["durability"] = "unsynced-opt-out"
+	}
+	revlWALSink.write(header)
+	if unsynced {
+		revlWALSink.write(map[string]any{"record": "durability-opt-out", "fromSeq": 0})
+	}
 }
 
 func init() { revlWALOpen() }
 
+// write appends one record and fsyncs it. Any failure panics: a record the
+// caller cannot be sure is on disk must stop the run before the next effect,
+// never pass silently. Only the visible REVL_WAL_ALLOW_UNSYNCED opt-out lets a
+// failed fsync through.
 func (w *revlWAL) write(rec map[string]any) {
 	line, err := json.Marshal(rec)
 	if err != nil {
+		panic("revl: write-ahead log record could not be encoded: " + err.Error())
+	}
+	start := int64(-1)
+	if info, err := w.f.Stat(); err == nil {
+		start = info.Size()
+	}
+	if _, err := w.f.Write(append(line, '\\n')); err != nil {
+		w.cut(start)
+		panic("revl: write-ahead log write failed: " + err.Error())
+	}
+	if err := w.f.Sync(); err != nil && !w.unsynced {
+		w.cut(start)
+		panic("revl: write-ahead log fsync failed: " + err.Error())
+	}
+}
+
+// cut drops a record whose write or fsync failed (issue #2345), as the py
+// WriteAheadLog and the wasm drain do, so recovery reads it as absent, then
+// fsyncs the cut so a power loss cannot bring it back. Best effort: the
+// caller panics either way, and on a target that refused the record's fsync
+// this fsync fails too.
+func (w *revlWAL) cut(start int64) {
+	if start < 0 {
 		return
 	}
-	_, _ = w.f.Write(append(line, '\\n'))
+	if err := w.f.Truncate(start); err != nil {
+		return
+	}
 	_ = w.f.Sync()
 }
 
@@ -8903,6 +9171,89 @@ func revlRecordTransactional(receiver, method string, args []string) {
 		"record": "discharge-descriptor", "seq": seq, "entry": "transactional",
 		"call": call, "origin": call, "witness": nil, "idempotency": nil,
 	})
+}
+
+// revlRecordEmissionStart journals one host-extern emission BEFORE its body
+// runs (issue #2345), the record the py tier writes for the same crossing
+// (backends/python/replay.py, Timeline.record_emission): an `effect` of kind
+// `emission`, one-way, no inverse. It is fsync'd before it returns and a failed
+// fsync panics, so the host body never runs unless its start record is on disk.
+// Returns the record's seq, or -1 when REVL_WAL is unset.
+func revlRecordEmissionStart(key, method, service string) int {
+	if revlWALSink == nil {
+		return -1
+	}
+	label := key
+	if method != key {
+		label = key + "." + method
+	}
+	var svc any
+	if service != "" {
+		svc = service
+	}
+	w := revlWALSink
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	seq := w.seq
+	w.seq++
+	w.write(map[string]any{
+		"record": "effect", "seq": seq, "component": nil, "stepIndex": nil,
+		"kind": "emission", "label": label, "site": nil, "source": nil,
+		"origin": map[string]any{},
+		"boundary": map[string]any{
+			"class": "emission", "referent": "process-crossing", "compensated": false,
+			"detail": map[string]any{"key": key, "method": method, "service": svc, "args": []any{}},
+		},
+		"inverse": map[string]any{
+			"reconstructible": false,
+			"reason":          "an emission is a one-way crossing; it has no inverse",
+		},
+	})
+	return seq
+}
+
+// revlRecordEmissionOutcome settles a journalled emission once its body
+// returned (`emission-complete`), the record the py tier writes after the call.
+// A body that panics is settled as `emission-failed` instead
+// (revlEmissionFailedUnless); either way recover reports it as unresolved.
+func revlRecordEmissionOutcome(seq int, outcome string) {
+	revlWriteEmissionOutcome(seq, map[string]any{"record": outcome, "seq": seq})
+}
+
+func revlWriteEmissionOutcome(seq int, record map[string]any) {
+	if revlWALSink == nil || seq < 0 {
+		return
+	}
+	w := revlWALSink
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.write(record)
+}
+
+// revlEmissionFailedUnless is deferred right after the start record: when the
+// body panicked (ok still false) it writes `emission-failed`, as the py tier's
+// _call_within does, and the panic carries on. Only the error type is kept:
+// this tier has no redaction funnel for a panic message.
+func revlEmissionFailedUnless(seq int, ok *bool) {
+	if *ok {
+		return
+	}
+	revlWriteEmissionOutcome(seq, map[string]any{
+		"record": "emission-failed", "seq": seq,
+		"error": map[string]any{"type": "panic"},
+	})
+}
+
+// revlJournalEmission journals one emission made through a required service
+// (the py tier's _ServiceProxy path): durable start record, then the call,
+// then its outcome.
+func revlJournalEmission(key, method, service string, body func()) {
+	seq := revlRecordEmissionStart(key, method, service)
+	ok := false
+	defer revlEmissionFailedUnless(seq, &ok)
+	body()
+	ok = true
+	revlRecordEmissionOutcome(seq, "emission-complete")
 }
 
 // revlRecordDischarge writes the commit-path proof that every recorded
@@ -11363,6 +11714,8 @@ def _emit(ir: dict, package: str = "emitted", package_name: str | None = None,
     global _V3_MODE, _V3_TYPES, _V3_TYPED_COMPONENTS
     global _COMP_NEEDS_STDLIB, _COMP_NEEDS_MAP, _COMP_NEEDS_PARSE_INT
     global _COMP_NEEDS_STRCONV, _COMP_NEEDS_OVERFLOW32, _COMP_NEEDS_OVERFLOW
+    global _COMP_NEEDS_ARITH32
+    global _COMP_NEEDS_FLOAT_DIV, _COMP_NEEDS_FLOAT_REM
     global _COMP_NEEDS_TIMER, _TIMER_COUNTER, _STREAM_ITER_COUNTER
     global _WITNESSED_EXTERNS, _COMP_NEEDS_TEARDOWN, _WITNESSED_COUNTER
     global _COMPENSATED_EXTERNS
@@ -11432,7 +11785,10 @@ def _emit(ir: dict, package: str = "emitted", package_name: str | None = None,
     _COMP_NEEDS_PARSE_INT = False
     _COMP_NEEDS_STRCONV = False
     _COMP_NEEDS_OVERFLOW32 = False
+    _COMP_NEEDS_ARITH32 = False
     _COMP_NEEDS_OVERFLOW = False
+    _COMP_NEEDS_FLOAT_DIV = False
+    _COMP_NEEDS_FLOAT_REM = False
 
     # Emit the body first so `_COMP_NEEDS_STDLIB` settles before the import
     # block and preamble are assembled. For ir_version 1/2 no v3 feature is
@@ -11456,7 +11812,7 @@ def _emit(ir: dict, package: str = "emitted", package_name: str | None = None,
     externs = ir.get("externs") or []
     extern_ctx = _V3GoCtx(_V3_TYPES, ir.get("functions") or [], externs)
     if externs:
-        body.extend(_emit_v3_go_externs(externs, extern_ctx))
+        body.extend(_emit_v3_go_externs(externs, extern_ctx, journal=_RECORD_MODE))
     body.extend(_emit_services(ir.get("services", {})))
     _emit_keys(ir, body)
     _emit_realm_helper(ir, body)
@@ -11510,6 +11866,10 @@ def _emit(ir: dict, package: str = "emitted", package_name: str | None = None,
             out.append('\t"time"')
         out.append('\t"os"')
         out.append('\t"strconv"')
+    if _COMP_NEEDS_FLOAT_REM:
+        # `math.Mod` for a Float `%` in a method body; nothing else on this
+        # tier imports `math`, and Go rejects a repeated import.
+        out.append('\t"math"')
     if _COMP_NEEDS_STRCONV and not _COMP_NEEDS_TEARDOWN:
         # Int.to_str renders through strconv.FormatInt (item 434 (f)); the
         # teardown block above already imports strconv when it is present, and
@@ -11549,11 +11909,18 @@ def _emit(ir: dict, package: str = "emitted", package_name: str | None = None,
     if _COMP_NEEDS_OVERFLOW32:
         # `Int.to_int32` in a method body: the same checked narrow the pure
         # typed-core path emits off `ctx.needs_overflow32` (issue #1347).
+        if _COMP_NEEDS_ARITH32:
+            # Int32 `+ - *` or unary minus in a method body (issue #2262)
+            out.append(_V3_ARITH32_HELPER)
         out.append(_V3_OVERFLOW32_HELPER)
     if _COMP_NEEDS_OVERFLOW:
         # `Int` unary minus in a method body: the same checked subtraction the
         # pure typed-core path emits off `ctx.needs_overflow` (issue #2198).
         out.append(_V3_OVERFLOW_HELPER)
+        out.append("")
+    if _COMP_NEEDS_FLOAT_DIV:
+        # true division in a method body (issue #2198)
+        out.append(_REVL_DIV_HELPER)
         out.append("")
     if needs_result_preamble:
         # component tier keeps the sealed interface (see _COMP_RESULT_PREAMBLE):
@@ -12150,6 +12517,8 @@ def _emit_v3_combined(ir: dict, package: str, placement: bool = True) -> str:
     global _V3_MODE, _V3_TYPES, _V3_TYPED_COMPONENTS
     global _COMP_NEEDS_STDLIB, _COMP_NEEDS_MAP, _COMP_NEEDS_PARSE_INT
     global _COMP_NEEDS_STRCONV, _COMP_NEEDS_OVERFLOW32, _COMP_NEEDS_OVERFLOW
+    global _COMP_NEEDS_ARITH32
+    global _COMP_NEEDS_FLOAT_DIV, _COMP_NEEDS_FLOAT_REM
     global _COMP_NEEDS_TIMER, _TIMER_COUNTER, _COMP_NEEDS_STREAM
     global _COMP_NEEDS_STREAM_DRAIN, _COMP_NEEDS_STREAM_EVENT
     global _STREAM_ITER_COUNTER
@@ -12175,7 +12544,10 @@ def _emit_v3_combined(ir: dict, package: str, placement: bool = True) -> str:
     _COMP_NEEDS_PARSE_INT = False
     _COMP_NEEDS_STRCONV = False
     _COMP_NEEDS_OVERFLOW32 = False
+    _COMP_NEEDS_ARITH32 = False
     _COMP_NEEDS_OVERFLOW = False
+    _COMP_NEEDS_FLOAT_DIV = False
+    _COMP_NEEDS_FLOAT_REM = False
     _COMP_NEEDS_TIMER = False
     _TIMER_COUNTER = 0
     _STREAM_ITER_COUNTER = 0
@@ -12223,7 +12595,7 @@ def _emit_v3_combined(ir: dict, package: str, placement: bool = True) -> str:
     if types:
         body.extend(_emit_v3_go_types(types))
     if externs:
-        body.extend(_emit_v3_go_externs(externs, ctx))
+        body.extend(_emit_v3_go_externs(externs, ctx, journal=_RECORD_MODE))
     if functions:
         body.extend(_emit_v3_go_functions(functions, ctx))
     pure_tests = [t for t in tests if not t.get("lifecycle")]
@@ -12322,7 +12694,7 @@ def _emit_v3_combined(ir: dict, package: str, placement: bool = True) -> str:
         imports.append('\t"math"')
         imports.append('\t"strconv"')
         imports.append('\t"strings"')
-    if ctx.needs_float_rem:
+    if ctx.needs_float_rem or _COMP_NEEDS_FLOAT_REM:
         imports.append('\t"math"')
     if ctx.needs_strconv or _COMP_NEEDS_STRCONV:
         imports.append('\t"strconv"')
@@ -12380,8 +12752,8 @@ def _emit_v3_combined(ir: dict, package: str, placement: bool = True) -> str:
         out.append("")
     if ctx.needs_any_index:
         out.append(_V3_ANY_INDEX_HELPER)
-    if ctx.needs_float_div:
-        out.append("func revlDiv(a, b float64) float64 { return a / b }")
+    if ctx.needs_float_div or _COMP_NEEDS_FLOAT_DIV:
+        out.append(_REVL_DIV_HELPER)
         out.append("")
     if ctx.needs_float_lit:
         out.append("func revlF(v float64) float64 { return v }")

@@ -82,7 +82,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import importlib.util
 import json
 import os
 import shutil
@@ -202,23 +201,18 @@ def _manifest_text(norm_ir: dict) -> str:
 
 # --------------------------------------------------------------- backend emit
 
-_EMITTERS: dict = {}
-
-
 def _emitter(backend: str):
-    """Load a backend emitter module under a unique name (a bare `import emit`
-    collides across backends). Mirrors `revl.test._emitter`."""
-    if backend not in _EMITTERS:
-        path = _BACKENDS_ROOT / backend / "emit.py"
-        if not path.exists():
-            return None
-        spec = importlib.util.spec_from_file_location(f"revl_bundle_{backend}_emit", path)
-        if spec is None or spec.loader is None:
-            return None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        _EMITTERS[backend] = module
-    return _EMITTERS[backend]
+    """The backend's emitter module, or None when `_BACKENDS_ROOT` has none.
+
+    A bare `import emit` collides across backends, so this is the one module
+    every loader in the process shares (`placement.backend_emit_module`, under
+    the name `revl_<backend>_emit`), and its `EmitError` is the class the
+    tier's other callers catch (issue #2204)."""
+    if not (_BACKENDS_ROOT / backend / "emit.py").exists():
+        return None
+    from .placement import backend_emit_module  # noqa: PLC0415 - off the compile graph
+
+    return backend_emit_module(backend, root=_BACKENDS_ROOT)
 
 
 # The three-way emitter outcome (absent / refused / faulted) is decided the same

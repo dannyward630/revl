@@ -323,6 +323,7 @@ CORPUS = [
     # an open gap (`selfhost_blind_spots.json`), and those two oracle modules
     # say why in their own `CORPUS` comment.
     "../emit_py_corpus/ui_transaction_unit.rvl",
+    "to_char.rvl",  # Int.to_char, the primitive behind str_char (issue #2285)
 ]
 
 def _load_reference_emit():
@@ -383,6 +384,143 @@ def test_selfhosted_ts_emitter_is_byte_identical(emitted, reference, rel):
         f"self-hosted TS emitter diverged from the reference on {rel}\n"
         f"--- lengths ref={len(want)} got={len(got)} ---"
     )
+
+
+# Issue #2384: a namespaced provision key with no collision. The reference
+# spells `acme::greeter` as the host identifier `acme__greeter` (issue #1914's
+# `_host_key`) at every place a key becomes a host name: the context
+# augmentation, the inject and provide lists, `ctx.provide`, the `req` member
+# (named by its binding, the last segment), the router proxy and a lifecycle
+# test's `root.<key>` call. The port carried the qualified key verbatim, so
+# each document below emitted `acme::greeter` where the reference emits
+# `acme__greeter`, with no marker. `unqualified` is the positive control: the
+# same wiring without namespacing, byte-equal before and after.
+NAMESPACED_KEYS = {
+    "provide_require_lifecycle": """service Greeter { fn hello(name: Str) -> Str }
+service Client { fn greet(name: Str) -> Str }
+
+component AcmeGreeter provides acme::greeter: Greeter {
+  provide acme::greeter { fn hello(name) = "acme " + name }
+}
+
+component GlobexGreeter provides globex::my_greeter: Greeter {
+  provide globex::my_greeter { fn hello(name) = "globex " + name }
+}
+
+component AcmeClient requires acme::greeter: Greeter provides acme::client: Client {
+  provide acme::client { fn greet(name) = greeter.hello(name) }
+}
+
+component GlobexClient requires globex::my_greeter: Greeter provides globex_client: Client {
+  provide globex_client { fn greet(name) = my_greeter.hello(name) }
+}
+
+lifecycle test "each namespace answers for itself" {
+  load AcmeGreeter
+  load GlobexGreeter
+  load AcmeClient
+  load GlobexClient
+  let a = call acme::client.greet("x")
+  let g = call globex_client.greet("x")
+  assert a == "acme x"
+  assert g == "globex x"
+  unload GlobexClient
+  unload AcmeClient
+  unload GlobexGreeter
+  unload AcmeGreeter
+  assert no_residue
+}
+""",
+    "routed": """service Worker { fn call(request: Int) -> Int }
+service Front { fn ask(q: Int) -> Int }
+
+component W1 provides acme::worker: Worker {
+  isolate acme::worker in realm("w1")
+  provide acme::worker { fn call(request) = request + 1 }
+}
+
+component W2 provides acme::worker: Worker {
+  isolate acme::worker in realm("w2")
+  provide acme::worker { fn call(request) = request + 2 }
+}
+
+component Router requires acme::worker: Worker provides front: Front {
+  isolate acme::worker in realms("w1", "w2") strategy(least_loaded)
+  provide front { fn ask(q) = worker.call(q) }
+}
+""",
+    "intercept": """fn zero() -> Int { return 0 }
+
+service Db { fn q() -> Int }
+service Api { fn run() -> Int }
+
+component App requires acme::db: Db provides api: Api {
+  intercept acme::db with { tag: "primary", tier: 2 }
+  provide api { fn run() = db.q() }
+}
+""",
+}
+
+UNQUALIFIED_CONTROL = """service Greeter { fn hello(name: Str) -> Str }
+service Client { fn greet(name: Str) -> Str }
+
+component AcmeGreeter provides greeter: Greeter {
+  provide greeter { fn hello(name) = "acme " + name }
+}
+
+component AcmeClient requires greeter: Greeter provides client: Client {
+  provide client { fn greet(name) = greeter.hello(name) }
+}
+
+lifecycle test "an unqualified key answers" {
+  load AcmeGreeter
+  load AcmeClient
+  let a = call client.greet("x")
+  assert a == "acme x"
+  unload AcmeClient
+  unload AcmeGreeter
+  assert no_residue
+}
+"""
+
+
+@pytest.mark.parametrize("case", [*sorted(NAMESPACED_KEYS), "unqualified"])
+def test_a_namespaced_key_is_mangled_as_the_reference_mangles_it(
+        emitted, reference, tmp_path, case):
+    """The port's output for a namespaced key equals the reference bytes."""
+    source = NAMESPACED_KEYS.get(case, UNQUALIFIED_CONTROL)
+    path = tmp_path / f"{case}.rvl"
+    path.write_text(source)
+    ir = compile_files([str(path)])
+    want = reference.emit(ir)
+    if case != "unqualified":
+        assert "acme__" in want  # the reference mangled it
+    assert emitted["emit_ts_src"](ir) == want
+
+
+def test_a_reserved_service_key_is_refused_by_name(emitted, reference):
+    """`tests/fixtures/emit_ts_refusals/reserved_service_key.rvl` (issue
+    #2390): the reference refuses a provide or require key that cannot be a
+    `ctx.<key>` property, and the port names every such key."""
+    ir = compile_files([str(REFUSALS_DIR / "reserved_service_key.rvl")])
+    with pytest.raises(reference.EmitError,
+                       match="is not host-safe on the ts tier"):
+        reference.emit(ir)
+    got = emitted["emit_ts_src"](ir)
+    for where in ("Then.then", "Logger.logger", "Ctor.constructor"):
+        assert f"<<UNSUPPORTED-RESERVED-SERVICE-KEY:{where}>>" in got
+    assert got.count("<<UNSUPPORTED-RESERVED-SERVICE-KEY:") == 3
+
+
+def test_an_ordinary_service_key_carries_no_reserved_marker(
+        emitted, reference, tmp_path):
+    """The positive control for issue #2390: ordinary keys keep the bytes."""
+    path = tmp_path / "ordinary.rvl"
+    path.write_text(UNQUALIFIED_CONTROL)
+    ir = compile_files([str(path)])
+    got = emitted["emit_ts_src"](ir)
+    assert "<<UNSUPPORTED" not in got
+    assert got == reference.emit(ir)
 
 
 def test_selfhosted_ts_emitter_output_header_and_helpers(emitted):
@@ -563,6 +701,100 @@ def test_a_host_identifier_collision_is_refused_by_name(reference):
     with pytest.raises(reference.EmitError,
                        match="both spell the host identifier"):
         reference.emit(ir)
+
+
+# issue #2353: documents the reference refuses for the whole tier, which the
+# port used to answer with output carrying no `<<UNSUPPORTED` marker. An extern
+# with no `@ts` body is named where the extern would be; a CALL to a
+# `deferred` emission is named once per component and call.
+NO_TS_BODY_REFUSALS = [
+    ("examples/evolve_loop.rvl", "host_propose"),
+    ("examples/placement/gate_provider.rvl", "host_gate_admit"),
+    ("tests/fixtures/model_reach_crossing/ok_extern_block_value.rvl", "run_tool"),
+    ("tests/fixtures/model_reach_crossing/ok_extern_no_block.rvl", "run_tool"),
+    ("tests/fixtures/model_reach_crossing/ok_helper_no_block.rvl", "run_tool"),
+    ("tests/fixtures/service_typed_params/ok_param_no_approval.rvl", "charge"),
+    ("tests/fixtures/emit_wasm_refusals/ui_transaction_unit.rvl", "read_pane"),
+]
+DEFERRED_EMISSION_REFUSALS = [
+    "tests/fixtures/deferred_reach/ok_emit_step.rvl",
+    "tests/fixtures/deferred_reach/ok_emit_tail.rvl",
+    "tests/fixtures/deferred_reach/ok_plain_value_in_fn_body.rvl",
+] + [f"tests/fixtures/emit_{t}_refusals/deferred_emission_call.rvl"
+     for t in ("go", "java", "rust", "ts", "wasm")]
+
+
+@pytest.mark.parametrize("rel, extern", NO_TS_BODY_REFUSALS,
+                         ids=[rel for rel, _ in NO_TS_BODY_REFUSALS])
+def test_an_extern_with_no_ts_body_is_a_named_refusal(emitted, reference, rel, extern):
+    ir = compile_files([str(ROOT / rel)])
+    with pytest.raises(reference.EmitError,
+                       match=f"extern `{extern}` has no @ts body"):
+        reference.emit(ir)
+    got = emitted["emit_ts_src"](ir)
+    assert f"<<UNSUPPORTED-EXTERN-NO-TS-BODY:{extern}>>" in got
+
+
+@pytest.mark.parametrize("rel", DEFERRED_EMISSION_REFUSALS)
+def test_a_called_deferred_emission_is_a_named_refusal(emitted, reference, rel):
+    ir = compile_files([str(ROOT / rel)])
+    with pytest.raises(reference.EmitError,
+                       match="Agent: `deferred` emission `deliver` needs a session owner"):
+        reference.emit(ir)
+    assert "<<UNSUPPORTED-DEFERRED-EMISSION:Agent.deliver>>" in emitted["emit_ts_src"](ir)
+
+
+def test_a_declared_but_uncalled_deferred_emission_is_not_named(emitted, reference,
+                                                                tmp_path):
+    """The refusal is call-site keyed on the reference: the same extern with
+    nothing calling it emits, and the port agrees byte for byte."""
+    src = (ROOT / "tests" / "fixtures" / "emit_ts_refusals"
+           / "deferred_emission_call.rvl").read_text()
+    doc = tmp_path / "uncalled.rvl"
+    doc.write_text(src.replace("{ emit deliver(sink, msg) }", "{ return }"))
+    ir = compile_files([str(doc)])
+    got = emitted["emit_ts_src"](ir)
+    assert "<<UNSUPPORTED" not in got
+    assert got == reference.emit(ir)
+
+
+# issue #2367: the remaining reference refusals this port answered without an
+# `<<UNSUPPORTED` marker. A `validated` crossing is named by declaration, a
+# namespaced key whose host spelling another key already holds by key, and a
+# required `Stream[T]` coeffect by its requirement.
+REFUSAL_FIXTURES = ROOT / "tests" / "fixtures"
+NAMED_REFUSALS = [
+    *[(f"emit_{t}_refusals/validated_emission_operation.rvl",
+       "needs the response-validation", "<<UNSUPPORTED-VALIDATED:Model.complete>>")
+      for t in ("go", "java", "rust", "ts", "wasm")],
+    *[(f"emit_{t}_refusals/host_identifier_collision.rvl",
+       "both spell the", "<<UNSUPPORTED-HOST-KEY-COLLISION:acme::greeter>>")
+      for t in ("go", "java", "py", "rust", "ts")],
+    ("emit_rust_refusals/required_stream_coeffect.rvl",
+     "a required `Stream\\[T\\]` coeffect", "<<UNSUPPORTED-REQUIRED-STREAM:Fulfiller.feed>>"),
+]
+
+
+@pytest.mark.parametrize("rel, refusal, marker", NAMED_REFUSALS,
+                         ids=[rel for rel, _, _ in NAMED_REFUSALS])
+def test_a_reference_refusal_is_named_by_the_port(emitted, reference, rel, refusal, marker):
+    ir = compile_files([str(REFUSAL_FIXTURES / rel)])
+    with pytest.raises(reference.EmitError, match=refusal):
+        reference.emit(ir)
+    assert marker in emitted["emit_ts_src"](ir)
+
+
+def test_an_unvalidated_operation_is_not_named(emitted, reference, tmp_path):
+    """The document without `validated` emits on the reference, and the port
+    agrees byte for byte: the modifier alone carries the refusal."""
+    src = (REFUSAL_FIXTURES / "emit_ts_refusals"
+           / "validated_emission_operation.rvl").read_text()
+    doc = tmp_path / "unvalidated.rvl"
+    doc.write_text(src.replace("emission validated fn", "emission fn"))
+    ir = compile_files([str(doc)])
+    got = emitted["emit_ts_src"](ir)
+    assert "<<UNSUPPORTED" not in got
+    assert got == reference.emit(ir)
 
 
 @pytest.mark.parametrize("surface", [

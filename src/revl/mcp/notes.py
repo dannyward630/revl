@@ -547,6 +547,7 @@ def import_marked(session, vs: dict) -> list[dict]:
                        for p in vs.get("files") or []):
         if text is None:
             continue
+        parsed = None  # (program, decls, nodes), once a marked block needs it
         for block in _k.comment_blocks(text):
             note_id, body = _marked(block)
             if note_id is None:
@@ -554,8 +555,10 @@ def import_marked(session, vs: dict) -> list[dict]:
             existing = current.get(note_id)
             if existing is not None and existing["body"] == body:
                 continue
-            symbol = _k.anchor_of(text, name, block,
-                                  _declarations(text, name), {})[0]
+            if parsed is None:
+                parsed = _parsed(text, name)
+            program, decls, nodes = parsed
+            symbol = _k.anchor_of(text, name, block, decls, nodes, program)[0]
             if symbol is None:
                 continue
             human = {"kind": "human", "trust": "operator"}
@@ -569,13 +572,15 @@ def import_marked(session, vs: dict) -> list[dict]:
     return created
 
 
-def _declarations(text: str, name: str) -> list:
+def _parsed(text: str, name: str) -> tuple:
+    """(program, top-level declarations, anchor cache) of one file: parsed
+    once and shared by every marked block in it (issue #2250)."""
+    from .. import nested  # noqa: PLC0415
     from . import symbols  # noqa: PLC0415
 
-    try:
-        return symbols.declarations(text, name)
-    except symbols.SymbolError:
-        return []
+    program = nested.parse(text, name)
+    decls = symbols.declarations(text, name, program) if program is not None else []
+    return program, decls, {}
 
 
 __all__ = ["KINDS", "EVIDENCE_KINDS", "query_verbs", "RERUNNABLE", "run_evidence",

@@ -892,7 +892,12 @@ calls for one change, five of them `revl_check` polls):
 1. **load**, when nothing is loaded and `files`/`source` are given. A
    candidate with holes opens a draft, as `revl_load` does;
 2. **plan**: for a withdrawal, the cascade of components that would lose a
-   provider (`revl_query_withdraw`'s answer), reported whatever happens next;
+   provider (`revl_query_withdraw`'s answer), reported whatever happens next.
+   On a cold call the plan is read from the composition the call carries in
+   `files`/`source`/`modules`, so it matches what `revl_load` then the same
+   withdrawal would plan (issue #2225): `cascade: true` withdraws the whole
+   cascade, and a withdrawal that would strand a dependent is refused before
+   anything is loaded, with `loaded: false` and the same plan and hint;
 3. **apply** the change to a working copy of the server-side source, so
    nothing about the running composition has changed yet;
 4. **verify**: admission against the running composition, the lease and

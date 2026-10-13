@@ -70,12 +70,21 @@ step() {
 }
 
 # The number of tests of one outcome ($1: passed, skipped) that a `pytest -q`
-# run's output ($2) reports, or nothing. Only the summary, the last line, is
-# read: a warning or a test's own output earlier on can contain "1 passed".
+# run's output ($2) reports, or nothing. Only the summary is read: the LAST
+# line that ends the way pytest's summary does (" in 7.60s", optionally
+# "(0:01:02)" and a "===" rule). A warning or a test's own output earlier on can
+# contain "1 passed", and stderr printed AFTER the summary (a teardown warning,
+# an atexit message) can too, so neither the whole output nor its last line is
+# trusted. No summary line means no count, which the callers treat as nothing
+# verified: UNVERIFIED for an affected selection, a refusal for the core subset.
 # "1 xpassed" is not a pass: the outcome word must follow the count directly.
+# Colour codes (FORCE_COLOR, PY_COLORS) are stripped first: they sit between
+# the count and " in 0.02s" and after it, so the summary would not match.
 pytest_count() {
-    printf '%s\n' "$2" | tail -1 | grep -Eo "(^|[^0-9])[0-9]+ $1" \
-        | grep -Eo '[0-9]+' | tail -1
+    _esc=$(printf '\033')
+    printf '%s\n' "$2" | sed "s/${_esc}\[[0-9;]*m//g" \
+        | grep -E ' in [0-9]+(\.[0-9]+)?s( \([0-9:]+\))?( =+)?$' | tail -1 \
+        | grep -Eo "(^|[^0-9])[0-9]+ $1" | grep -Eo '[0-9]+' | tail -1
 }
 
 # Judge a finished pytest run by what it ran, not only by its exit status
@@ -166,9 +175,9 @@ if "$PY" -P -m pytest --help 2>/dev/null | grep -q -- '--timeout'; then
     TIMEOUT_ARGS="--timeout=60 --timeout-method=thread"
 fi
 
-# A FULL selection does not run the root suite here. That suite is about an
-# hour on this machine (253 test-minutes, issue #2208), so no local ceiling
-# fits it, and an unbounded run is the machine-starvation path issue #2059
+# A FULL selection does not run the root suite here. That suite takes hours
+# on a loaded machine (253 test-minutes, issue #2217; its size is the
+# generated suite-size paragraph in CONTRIBUTING.md), so no local ceiling fits it, and an unbounded run is the machine-starvation path issue #2059
 # measured (one commit pinned five cores above 90% and drove load to 59 while
 # other jobs worked). Running it under a ceiling and calling the timeout a
 # skip was worse: the hook then printed "ok" for every checker change after
@@ -266,7 +275,7 @@ else
         echo "      staged: ${STAGED:-<unknown>}"
         echo "      core subset: ${CORE_TESTS}"
         if [ "$fail" -ne 0 ]; then
-            echo "      the full suite is about an hour here, so no test covers this"
+            echo "      the full suite takes hours here, so no test covers this"
             echo "      change locally. Fix the core subset, or commit with"
             echo "      git commit --no-verify  and put the selector line above in the"
             echo "      commit message (\`make pre-merge\` runs everything before land)."

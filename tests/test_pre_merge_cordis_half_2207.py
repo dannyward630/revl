@@ -74,12 +74,17 @@ def _tree(tmp: Path) -> Path:
 
 
 def _run_step(tmp: Path, candidate: Path, log: str = "",
-              pin: str = "") -> subprocess.CompletedProcess:
+              pin: str | None = "b" * 40,
+              setup_sh: str | None = None) -> subprocess.CompletedProcess:
+    """The cordis step against a throwaway tree whose setup.sh pins `pin`
+    (or holds `setup_sh` verbatim). No pin, no setup.sh."""
     root = _tree(tmp)
-    if pin:
+    if setup_sh is None and pin is not None:
+        setup_sh = f'CORDIS_PY_PIN="${{CORDIS_PY_PIN:-{pin}}}"\n'
+    if setup_sh is not None:
         (root / "backends" / "python").mkdir(parents=True)
         (root / "backends" / "python" / "setup.sh").write_text(
-            f'CORDIS_PY_PIN="${{CORDIS_PY_PIN:-{pin}}}"\n', encoding="utf-8")
+            setup_sh, encoding="utf-8")
     head = (
         f"root='{root}'\nmain_root='{tmp / 'nomain'}'\n"
         f"PYTHON='{sys.executable}'\nSEL_PYTEST='tests/'\nRUN_ALL=1\n"
@@ -117,7 +122,9 @@ def test_verdict_is_not_ok_when_the_runtime_half_is_missing():
 def test_step_runs_the_logged_files_under_the_cordis_venv(tmp_path):
     log = tmp_path / "skips.log"
     log.write_text("tests/test_plain.py::test_y\n", encoding="utf-8")
-    out = _run_step(tmp_path, _stub_python(tmp_path), log=str(log))
+    clone, rev = _git_checkout(tmp_path)
+    out = _run_step(tmp_path, _stub_python(tmp_path, cordis_dir=str(clone)),
+                    log=str(log), pin=rev)
     assert "ok (1 file(s))" in out.stdout, out.stdout + out.stderr
     assert "ran=1 fail=0 missing=0" in out.stdout
     args = (tmp_path / "pytest_args").read_text(encoding="utf-8").split()
@@ -125,7 +132,9 @@ def test_step_runs_the_logged_files_under_the_cordis_venv(tmp_path):
 
 
 def test_step_without_a_log_selects_the_files_that_mention_cordis(tmp_path):
-    out = _run_step(tmp_path, _stub_python(tmp_path, pytest_rc=1))
+    clone, rev = _git_checkout(tmp_path)
+    out = _run_step(tmp_path, _stub_python(tmp_path, pytest_rc=1,
+                                           cordis_dir=str(clone)), pin=rev)
     assert "FAILED" in out.stdout and "fail=1" in out.stdout, out.stdout
     args = (tmp_path / "pytest_args").read_text(encoding="utf-8").split()
     assert "tests/test_needs_runtime.py" in args
@@ -264,3 +273,41 @@ def test_only_cordis_py_skips_are_logged(tmp_path, monkeypatch):
             skipped=True, nodeid=nodeid, longrepr=("p", 1, "Skipped: " + reason)))
     assert log.read_text(encoding="utf-8").split() == [
         "tests/test_py.py::t", "tests/test_imp.py"]
+
+
+# --- issue #2257 ----------------------------------------------------------------
+
+def test_no_pin_found_is_missing_and_names_the_file(tmp_path):
+    # A setup.sh whose pin line changed shape: no pin is found, and that must
+    # not turn the pin check off. The candidate would pass every other probe.
+    clone, _ = _git_checkout(tmp_path)
+    out = _run_step(tmp_path, _stub_python(tmp_path, cordis_dir=str(clone)),
+                    setup_sh="CORDIS_PY_REV=1c5e6f17abf5\n")
+    assert "MISSING, NOT OK" in out.stdout, out.stdout + out.stderr
+    assert "no CORDIS_PY_PIN found in backends/python/setup.sh" in out.stdout
+    assert "missing=1" in out.stdout
+    assert not (tmp_path / "pytest_args").exists()
+
+
+def test_no_setup_sh_is_missing_too(tmp_path):
+    clone, _ = _git_checkout(tmp_path)
+    out = _run_step(tmp_path, _stub_python(tmp_path, cordis_dir=str(clone)),
+                    pin=None)
+    assert "MISSING, NOT OK" in out.stdout, out.stdout + out.stderr
+    assert "no CORDIS_PY_PIN found" in out.stdout
+
+
+@pytest.mark.parametrize("reason", [
+    "cordis (TS): node not installed",
+    "cordis (TS): node_modules/cordis not installed (run npm ci in backends/typescript)",
+    "cordisc (or node) not available",
+    "REVL_CORDIS4J_CLASSES is not set",
+])
+def test_other_runtimes_skips_are_not_logged(tmp_path, monkeypatch, reason):
+    conf = _conftest()
+    log = tmp_path / "log"
+    monkeypatch.setenv("REVL_CORDIS_SKIP_LOG", str(log))
+    conf._log_cordis_skip(SimpleNamespace(
+        skipped=True, nodeid="tests/test_other.py::t",
+        longrepr=("p", 1, "Skipped: " + reason)))
+    assert not log.exists() or log.read_text(encoding="utf-8") == ""

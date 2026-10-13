@@ -558,6 +558,23 @@ def test_every_site_wheel_input_selects_the_site_wheel_gate():
     )
 
 
+def test_the_cached_test_listing_answers_what_the_glob_answers():
+    """Issue #2216. The selector caches its listing of tests/, so the cached
+    answer has to be the glob's own answer, on this tree and on a tree that
+    gains a test between two calls."""
+    assert at._test_files(ROOT) == at._list_test_files(ROOT)
+
+
+def test_the_cached_test_listing_sees_a_test_added_between_calls(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text("", encoding="utf-8")
+    assert [p.name for p in at._test_files(tmp_path)] == ["test_a.py"]
+    (tmp_path / "tests" / "test_b.py").write_text("", encoding="utf-8")
+    assert [p.name for p in at._test_files(tmp_path)] == [
+        "test_a.py", "test_b.py"]
+    assert at._test_files(tmp_path) == at._list_test_files(tmp_path)
+
+
 def test_the_word_index_answers_what_the_word_regex_answers():
     """Issue #1449. `_word_tests` answers from a per-session index of bare words
     instead of re-running its regex over every test for every token. The index
@@ -956,6 +973,14 @@ def _tracked_candidates():
     return [line for line in out.stdout.split("\n") if line.strip()]
 
 
+def _witness_in_ci_corpus(module):
+    """`in_ci_corpus = f in ci_backend_corpus_inputs(root)` then `if in_ci_corpus:`
+    (issue #2333). Asked of the selector: any file it says the backend corpus
+    reads is a witness; none at all means the arm is dead and this reds."""
+    inputs = sorted(module.ci_backend_corpus_inputs(ROOT))
+    return inputs[:1] or None
+
+
 _PREDICATE_WITNESSES = {
     "_is_scoring_corpus_document": _witness_scoring_corpus_document,
 }
@@ -965,6 +990,7 @@ _PREDICATE_WITNESSES = {
 #: name absent from it stays unknown rather than being guessed reachable.
 _BOUND_NAME_WITNESSES = {
     "named_by": _witness_named_by_a_test,
+    "in_ci_corpus": _witness_in_ci_corpus,
 }
 
 _PROBE_RVL = ".rvl"
@@ -1565,3 +1591,53 @@ def test_the_census_step_regex_rejects_a_hostile_script_in_linear_time():
     )
     subprocess.run([sys.executable, "-c", probe], check=True, timeout=30,
                    cwd=ROOT)
+
+
+# --- the backend-job corpus guards run on a PR (issue #2333) --------------- #
+def test_a_file_the_backend_corpus_reads_selects_the_corpus_guards():
+    """tests/test_ci_backend_gate.py scans the root tests the backend jobs run
+    and what they import. A change to one of them (a `.md` string literal in
+    tests/test_env_gated_skips_run_somewhere.py reddened main) must re-run it."""
+    inputs = at.ci_backend_corpus_inputs(ROOT)
+    assert "tests/test_env_gated_skips_run_somewhere.py" in inputs
+    assert "tests/test_wasm_backend.py" in inputs   # a backend-wasm step
+    for f in ("tests/test_env_gated_skips_run_somewhere.py",
+              "tests/test_wasm_backend.py"):
+        r = sel(f)
+        assert r["full"] is False
+        assert "tests/test_ci_backend_gate.py" in r["pytest"], f
+        assert f in r["pytest"]
+
+
+def test_a_root_test_outside_the_backend_corpus_does_not_select_the_guards():
+    assert "tests/test_affected_tests.py" not in at.ci_backend_corpus_inputs(ROOT)
+    assert "tests/test_ci_backend_gate.py" not in sel(
+        "tests/test_affected_tests.py")["pytest"]
+
+
+def test_the_corpus_inputs_follow_imports_into_tools(tmp_path):
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tools").mkdir()
+    (tmp_path / ".github" / "workflows" / "ci.yml").write_text(
+        "jobs:\n  backend-go:\n    steps:\n"
+        "      - run: pytest tests/test_a.py\n  other:\n"
+        "    steps:\n      - run: pytest tests/test_not_run.py\n",
+        encoding="utf-8")
+    (tmp_path / "tests" / "test_a.py").write_text(
+        "import helper\n", encoding="utf-8")
+    (tmp_path / "tools" / "helper.py").write_text("X = 1\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_not_run.py").write_text("", encoding="utf-8")
+    assert at.ci_backend_corpus_inputs(tmp_path) == frozenset(
+        {"tests/test_a.py", "tools/helper.py"})
+
+
+def test_the_corpus_inputs_are_empty_without_a_workflow_and_keep_a_deleted_test(
+        tmp_path):
+    assert at.ci_backend_corpus_inputs(tmp_path) == frozenset()
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / ".github" / "workflows" / "ci.yml").write_text(
+        "jobs:\n  backend-go:\n    steps:\n"
+        "      - run: pytest tests/test_gone.py\n", encoding="utf-8")
+    assert at.ci_backend_corpus_inputs(tmp_path) == frozenset(
+        {"tests/test_gone.py"})

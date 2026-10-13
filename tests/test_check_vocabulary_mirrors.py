@@ -376,3 +376,83 @@ def test_the_gate_is_stdlib_only_and_starts_no_subprocess():
     assert imported <= {"argparse", "ast", "dataclasses", "json", "pathlib", "sys",
                         "__future__"}, imported
     assert "subprocess" not in source and "os.system" not in source
+
+
+# ------------------------------------------------ issue #2216: the scan cache
+
+_ORIGINS = 'ORIGINS = frozenset({"web", "net", "fs", "model", "input"})\n'
+_CLAIMED = ('# The same origins as `src/revl/a.py`, kept in step by hand.\n'
+            'MINE = frozenset({"web", "net", "fs", "model", "input"})\n')
+
+
+def _scan_tree(tmp_path):
+    (tmp_path / "src" / "revl").mkdir(parents=True)
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "src" / "revl" / "a.py").write_text(_ORIGINS, encoding="utf-8")
+    return tmp_path
+
+
+def test_the_scan_key_changes_when_anything_the_scan_reads_changes(tmp_path):
+    """The scan is cached on what it reads, so every way a scanned file can
+    change has to change the key, and nothing it does not read may."""
+    tool = _tool()
+    root = _scan_tree(tmp_path)
+    a = root / "src" / "revl" / "a.py"
+    keys = [tool.scan_key(root)]
+    assert tool.scan_key(root) == keys[0]
+    (root / "tools" / "notes.txt").write_text("not scanned", encoding="utf-8")
+    assert tool.scan_key(root) == keys[0]
+    a.write_text(_ORIGINS.replace("input", "inbox"), encoding="utf-8")
+    keys.append(tool.scan_key(root))
+    (root / "tools" / "b.py").write_text("X = 1\n", encoding="utf-8")
+    keys.append(tool.scan_key(root))
+    (root / "tools" / "b.py").rename(root / "tools" / "c.py")
+    keys.append(tool.scan_key(root))
+    (root / "tools" / "c.py").unlink()
+    keys.append(tool.scan_key(root))
+    assert len(set(keys[:-1])) == 4, "an edit, an addition or a rename kept the key"
+    assert keys[-1] == keys[1], "removing the added file did not restore the key"
+    other = _scan_tree(tmp_path / "other")
+    (other / "src" / "revl" / "a.py").write_text(
+        a.read_text(encoding="utf-8"), encoding="utf-8")
+    assert tool.scan_key(other) != keys[-1], "two roots shared one key"
+
+
+def test_an_unchanged_tree_is_parsed_once_and_an_edit_is_seen(tmp_path, monkeypatch):
+    tool = _tool()
+    root = _scan_tree(tmp_path)
+    parsed = []
+    original = tool.sites_in_source
+
+    def counting(source, module):
+        parsed.append(module)
+        return original(source, module)
+
+    monkeypatch.setattr(tool, "sites_in_source", counting)
+    first = tool.scan(root)
+    assert [s.sid for s in first] == ["src/revl/a.py::ORIGINS"]
+    first.clear()
+    assert [s.sid for s in tool.scan(root)] == ["src/revl/a.py::ORIGINS"]
+    assert parsed == ["src/revl/a.py"], parsed
+    (root / "src" / "revl" / "b.py").write_text(_CLAIMED, encoding="utf-8")
+    assert [s.sid for s in tool.scan(root)] == [
+        "src/revl/a.py::ORIGINS", "src/revl/b.py::MINE"]
+    assert tool.scan(root) == tool._sites_from(
+        {"a.py": _ORIGINS, "b.py": _CLAIMED})
+
+
+def test_the_claim_scan_sees_an_edit_to_the_prose_between_calls(tmp_path):
+    """The claim scan reads prose the site scan does not key on (a comment
+    edit leaves every site as it was), so its cache keys on the bytes too."""
+    tool = _tool()
+    root = _scan_tree(tmp_path)
+    b = root / "src" / "revl" / "b.py"
+    b.write_text(_CLAIMED, encoding="utf-8")
+    sites = tool.scan(root)
+    assert [c.site for c in tool.scan_claims(sites, root)] == [
+        "src/revl/b.py::MINE"]
+    b.write_text(_CLAIMED.replace("The same origins as `src/revl/a.py`, kept "
+                                  "in step by hand.", "Unrelated words."),
+                 encoding="utf-8")
+    assert tool.scan(root) == sites
+    assert tool.scan_claims(sites, root) == []

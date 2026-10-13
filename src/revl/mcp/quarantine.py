@@ -140,48 +140,37 @@ def _load_canonical():
     """Import ``backends/wasm/canonical.py`` READ-ONLY, by path.
 
     The wasm backend lives outside the ``revl`` package (a sibling ``backends/``
-    tree), and a parallel session owns that file — so it is loaded by location,
+    tree), and a parallel session owns that file, so it is loaded by location,
     never imported as a package and never modified. Returns the module, or
     ``None`` when the backend tree is not present (an installed-package
     environment with no in-tree ``backends/``), which the caller reports as an
     honest ``unavailable`` rather than a crash.
 
-    ``canonical.py`` binds ``from emit import emit`` at load, resolving the bare
-    name ``emit`` against ``sys.modules``. By the time quarantine runs, the
-    gauntlet's scratch boot has already cached a *different* backend's
-    ``emit.py`` there (the python driver's), so a naive load would bind the wrong
-    emitter. We therefore pin ``sys.modules['emit']`` to the wasm backend's own
-    ``emit.py`` for the duration of the canonical exec, then restore whatever was
-    there — an import-state swap fully contained to this call, canonical.py
-    itself unmodified.
+    ``canonical.py`` binds its emitter by path under ``revl_wasm_emit``, the
+    name every loader shares, so nothing here touches the bare name ``emit``.
+    ``canonical.py`` puts the repository's ``src/`` on ``sys.path`` when it is
+    absent; that one entry is taken out again afterwards, and only when this
+    load is what added it. Nothing else is removed: other threads may change
+    ``sys.path`` meanwhile (issue #2204).
     """
     import sys  # noqa: PLC0415
 
     from .._paths import backends_root  # noqa: PLC0415
 
-    backend = backends_root() / "wasm"
-    canonical_path = backend / "canonical.py"
-    emit_path = backend / "emit.py"
-    if not canonical_path.is_file() or not emit_path.is_file():
+    canonical_path = backends_root() / "wasm" / "canonical.py"
+    if not canonical_path.is_file():
         return None
 
-    saved = sys.modules.get("emit")
+    # canonical.py's own `_SRC`: `_HERE.parents[1] / "src"`, `_HERE` resolved
+    src_entry = str(canonical_path.resolve().parents[2] / "src")
+    src_was_on_path = src_entry in sys.path
     try:
-        wasm_emit = _load_by_path("emit", emit_path)
-        sys.modules["emit"] = wasm_emit  # canonical's `from emit import` binds here
-        if str(backend) not in sys.path:
-            sys.path.insert(0, str(backend))
         return _load_by_path("revl_wasm_canonical_quarantine", canonical_path)
     except Exception:  # pragma: no cover - defensive: a broken backend tree
         return None
     finally:
-        # restore whatever `emit` the rest of the process expects (the python
-        # driver's emitter the gauntlet cached), so nothing downstream is
-        # perturbed by our temporary pin.
-        if saved is not None:
-            sys.modules["emit"] = saved
-        else:
-            sys.modules.pop("emit", None)
+        if not src_was_on_path and src_entry in sys.path:
+            sys.path.remove(src_entry)
 
 
 def _service_name(ir: dict, arguments: dict) -> str:

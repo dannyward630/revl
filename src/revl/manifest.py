@@ -255,6 +255,14 @@ def _handoffs(ir: dict) -> dict[str, dict]:
     return out
 
 
+def _presence_row(name: str) -> str:
+    """The row naming a running component that renders no other row: its bare
+    name, `C` (issue #2289). It contributes no edge, no provision and no
+    requirement; it only puts `C` in the running composition's name set, which
+    is what the reference's folded-name check reads."""
+    return name
+
+
 def _handoff_row(name: str, handoff: dict | None) -> list[str]:
     """The handoff row of one running component, or no row at all.
 
@@ -296,6 +304,22 @@ def manifest_wire(ir: dict, replacing: Iterable[str] = ()) -> str:
     single-source composition of the manifest ++ the incoming text. The
     withdrawal rows of `replacing` follow, after the composition they act on.
 
+    A running component that renders none of those rows (it provides nothing,
+    requires nothing, routes nothing and exports no state) renders a PRESENCE
+    row instead: its bare name (issue #2289). Without it the wire did not name
+    the component at all, so the gate could not refuse an incoming name that
+    folds onto it, which the reference refuses. Every running component is
+    therefore named by at least one row. A component that has any other row
+    renders no presence row, so every wire that named all its components before
+    is byte-identical. A reader from before this row refuses it as an unknown
+    row kind, which fails closed: a consumer pinned to an older gate refuses
+    every admission into a composition holding such a component. A bare
+    manifest dict whose components all lack rows used to render the empty
+    wire, which a reader takes as the empty composition with no services; it
+    now renders the presence rows, and with no `!services` header the running
+    services read as unknown, which is the truthful reading of a dict that
+    carries no service table.
+
     `replacing` is the same set ``compile_files``' `replacing=` takes: the
     running components this admission withdraws. A name that is not running
     withdraws nothing, exactly as on the reference side. The components the
@@ -327,6 +351,7 @@ def manifest_wire(ir: dict, replacing: Iterable[str] = ()) -> str:
     for entry in _components(ir):
         name = entry.get("name", "")
         isolate = entry.get("isolate") or {}
+        before = len(rows)
         for key in entry.get("provides") or []:
             realm = isolate.get(key, SHARED_REALM)
             rows.append(f"{name}/{key}/{realm}")
@@ -334,6 +359,8 @@ def manifest_wire(ir: dict, replacing: Iterable[str] = ()) -> str:
             rows.append(_requirement_row(name, key, entry))
         rows.extend(_route_rows(name, entry))
         rows.extend(_handoff_row(name, handoffs.get(name)))
+        if len(rows) == before:
+            rows.append(_presence_row(name))
     services = _declared_services(ir)
     if services is not None:
         rows.append(SERVICES_HEADER)

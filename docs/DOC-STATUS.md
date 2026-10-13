@@ -194,7 +194,7 @@ was corrected by hand and had drifted back within a day.
 | stdlib-2.0.md | current | 88 | yes |
 | stdlib-json.md | needs-work | 56 |  |
 | stdlib-list.md | current | 14 |  |
-| stdlib-str.md | current | 16 |  |
+| stdlib-str.md | current | 13 |  |
 | stdlib-value.md | current | 26 |  |
 | stdlib-version.md | needs-work | 11 |  |
 | strings.md | needs-work | 39 |  |

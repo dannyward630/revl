@@ -29,21 +29,24 @@ function revlEq(a: unknown, b: unknown): boolean {
     && revlEq((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]))
 }
 
-let revlCpsK0: string | undefined
-let revlCpsV0: string[] = []
-let revlCpsK1: string | undefined
-let revlCpsV1: string[] = []
-function revlCps(s: string): string[] {
-  if (s === revlCpsK0) return revlCpsV0
-  if (s === revlCpsK1) {
-    const k = revlCpsK1, v = revlCpsV1
-    revlCpsK1 = revlCpsK0; revlCpsV1 = revlCpsV0
-    revlCpsK0 = k; revlCpsV0 = v
-    return v
+const revlCpsN = 8
+const revlCpsK: (string | undefined)[] = new Array<string | undefined>(revlCpsN).fill(undefined)
+const revlCpsV: (string | string[])[] = new Array<string | string[]>(revlCpsN).fill("")
+function revlCpsDecode(s: string): string | string[] {
+  for (let i = 0; i < s.length; i++) {
+    const u = s.charCodeAt(i)
+    if (u >= 0xD800 && u <= 0xDFFF) return Array.from(s)
   }
-  const v = Array.from(s)
-  revlCpsK1 = revlCpsK0; revlCpsV1 = revlCpsV0
-  revlCpsK0 = s; revlCpsV0 = v
+  return s
+}
+function revlCps(s: string): string | string[] {
+  if (s.length < 64) return revlCpsDecode(s)
+  let k = 0
+  while (k < revlCpsN && revlCpsK[k] !== s) k++
+  const v = k < revlCpsN ? revlCpsV[k] : revlCpsDecode(s)
+  if (k === revlCpsN) k--
+  for (; k > 0; k--) { revlCpsK[k] = revlCpsK[k - 1]; revlCpsV[k] = revlCpsV[k - 1] }
+  revlCpsK[0] = s; revlCpsV[0] = v
   return v
 }
 function revlLen(x: string | ArrayLike<unknown>): bigint {
@@ -55,9 +58,9 @@ function revlSlice<T>(x: T[], a: bigint, b: bigint): T[]
 function revlSlice(x: unknown, a: bigint, b: bigint): string | Uint8Array | unknown[]
 function revlSlice(x: unknown, a: bigint, b: bigint): string | Uint8Array | unknown[] {
   const i = Number(a), j = Number(b)
-  return typeof x === "string"
-    ? revlCps(x).slice(i, j).join("")
-    : (x as string | Uint8Array | unknown[]).slice(i, j)
+  if (typeof x !== "string") return (x as Uint8Array | unknown[]).slice(i, j)
+  const v = revlCps(x)
+  return typeof v === "string" ? v.slice(i, j) : v.slice(i, j).join("")
 }
 function revlCharAt(s: string, i: bigint): string {
   const c = revlCps(s)[Number(i)]

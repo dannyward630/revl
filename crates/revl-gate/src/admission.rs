@@ -73,9 +73,14 @@
 //!
 //! The same for a COMPONENT: a candidate declaring a component the wire names is
 //! a replacement, whose handoff and unmet-consumer reasoning belongs to the fold
-//! and to item 53's relation. Withheld. A running component the wire does not
-//! name is one that carries no provision and no requirement row, so replacing it
-//! hands off no state and strands no consumer.
+//! and to item 53's relation. Withheld. A running component that carries no
+//! other row is named by a PRESENCE row, its bare name (issue #2289): it
+//! provides nothing, requires nothing and exports no state, so replacing it
+//! under the SAME name hands off no state and strands no consumer, and that
+//! replacement is still certified. A candidate component whose name differs
+//! from any running one only in letter case or underscores is withheld: the
+//! reference refuses it unless the admission withdraws the running one. Every
+//! running component is named on the wire, so that comparison is exhaustive.
 //!
 //! The second is what an AMBIENT service's operations are declared to be, which
 //! is what a certified provide-method body's calls are typed against. Both
@@ -379,6 +384,26 @@ fn is_declarable(token: &str) -> bool {
 fn has_duplicate(names: &[&str]) -> bool {
     for (i, name) in names.iter().enumerate() {
         if names[i + 1..].contains(name) {
+            return true;
+        }
+    }
+    false
+}
+
+/// The key `revl.compiler.component_name_fold` computes: the name with letter
+/// case and underscores dropped.
+fn name_fold(name: &str) -> String {
+    name.chars().filter(|c| *c != '_').flat_map(char::to_lowercase).collect()
+}
+
+/// Two component names, or two service names, the reference refuses as one
+/// (issues #2224 and #2275): names that agree under [`name_fold`]. An exact
+/// repeat agrees too, so this is a superset of `has_duplicate` over the same
+/// list.
+fn has_folded_duplicate(names: &[&str]) -> bool {
+    let folded: Vec<String> = names.iter().map(|name| name_fold(name)).collect();
+    for (i, key) in folded.iter().enumerate() {
+        if folded[i + 1..].contains(key) {
             return true;
         }
     }
@@ -854,8 +879,10 @@ fn check<'a>(
     // duplicate alias and a duplicate component, and the native gate does not
     // make all of those refusals, so the certifier carries them itself. Without
     // them the surface would admit programs the reference refuses — measured,
-    // which is why they are here and not assumed away.
-    if has_duplicate(&services) || has_duplicate(&parsed.aliases) || has_duplicate(&components) {
+    // which is why they are here and not assumed away. Services and components
+    // are compared folded: the reference also refuses two names of one kind
+    // that differ only in letter case or underscores (issues #2224, #2275).
+    if has_folded_duplicate(&services) || has_duplicate(&parsed.aliases) || has_folded_duplicate(&components) {
         return None;
     }
     if parsed.declared_aliases != parsed.aliases.len() {
@@ -934,7 +961,11 @@ fn basis_line(shape: &Shape<'_>, running: Option<String>) -> String {
 ///   declares. That is the only interaction the reference has between an
 ///   interface-only candidate and a running manifest
 ///   (`revl.admission._admit_service_replacement`), and the item-186 service
-///   block (`!services` + `:S,op,op` rows) is what makes it answerable;
+///   block (`!services` + `:S,op,op` rows) is what makes it answerable. The
+///   service names compare folded: a candidate service whose name differs
+///   from a running one only in letter case or underscores is refused by the
+///   reference (issue #2334), and the block enumerates every running service,
+///   so that comparison is exhaustive;
 /// * no component it declares may take the name of one the wire names. A
 ///   same-name component is a REPLACEMENT, whose handoff and unmet-consumer
 ///   reasoning is the fold's and the §5 relation's, not this surface's.
@@ -972,14 +1003,32 @@ pub(crate) fn certify_into(source: &str, manifest: &str) -> Option<String> {
             return None;
         }
     }
-    // A running component the wire does not NAME is one with no provision and
-    // no requirement row, which is a component that provides nothing and
-    // requires nothing: replacing it hands off no state and strands no
-    // consumer, and the reference admits the replacement. Every other running
-    // component carries at least one row and is named here, so this comparison
-    // is exhaustive over the replacements that have consequences.
+    // Services also compare folded: the reference refuses a candidate service
+    // whose name differs from a running one only in letter case or underscores,
+    // because an admission never withdraws a running service and the
+    // composition would hold the pair a single compile refuses (issue #2334).
+    for name in &shape.services {
+        let key = name_fold(name);
+        if declared.iter().any(|s| name_fold(s.name) == key) {
+            return None;
+        }
+    }
+    // A running component named only by a PRESENCE row (issue #2289) provides
+    // nothing, requires nothing and exports no state: replacing it under the
+    // same name hands off no state and strands no consumer, and the reference
+    // admits that replacement. Every other running component carries a row of
+    // substance, and replacing one is withheld.
+    // The comparison is folded: a candidate component whose name differs from
+    // a running one only in letter case or underscores is refused by the
+    // reference unless the admission withdraws the running one (issue #2276),
+    // and it is withheld whichever kind of row names the running one. The wire
+    // names every running component, so this comparison is exhaustive.
     for name in &shape.components {
-        if running.components.contains(name) {
+        let key = name_fold(name);
+        if running.components.iter().any(|held| name_fold(held) == key) {
+            return None;
+        }
+        if running.present.iter().any(|held| held != name && name_fold(held) == key) {
             return None;
         }
     }
@@ -1003,8 +1052,12 @@ struct Running<'a> {
     /// carries no `!services` header and therefore makes no claim about them.
     /// `None` is NOT the empty set: see [`certify_into`].
     services: Option<Vec<Svc<'a>>>,
-    /// The component names the wire's rows carry, in row order.
+    /// The component names the wire's provision, requirement, route and
+    /// handoff rows carry, in row order.
     components: Vec<&'a str>,
+    /// The component names the wire's PRESENCE rows (`C`, issue #2289) carry:
+    /// running components with no other row.
+    present: Vec<&'a str>,
 }
 
 /// The [`Running`] reading of a manifest wire every one of whose rows the
@@ -1140,6 +1193,7 @@ fn manifest_shape(manifest: &str) -> Option<Running<'_>> {
     let mut required: Vec<&str> = Vec::new();
     let mut services: Option<Vec<Svc<'_>>> = None;
     let mut components: Vec<&str> = Vec::new();
+    let mut present: Vec<&str> = Vec::new();
     for row in manifest.split(';') {
         if row.is_empty() {
             return None;
@@ -1246,6 +1300,12 @@ fn manifest_shape(manifest: &str) -> Option<Running<'_>> {
             components.push(component);
             continue;
         }
+        if is_wire_name(row) {
+            // `C` is the PRESENCE row (issue #2289): a running component that
+            // renders no other row. It is a name and nothing more.
+            present.push(row);
+            continue;
+        }
         let mut parts = row.splitn(3, '/');
         let component = parts.next()?;
         let key = parts.next()?;
@@ -1272,6 +1332,7 @@ fn manifest_shape(manifest: &str) -> Option<Running<'_>> {
         requirements: required.len(),
         services,
         components,
+        present,
     })
 }
 
@@ -1682,6 +1743,24 @@ mod tests {
         // named by no row provides nothing and requires nothing.
         let also_replacing = replacing.replace("component App ", "component Kv ");
         assert!(certify_into(&also_replacing, RUNNING_WIRE).is_none());
+    }
+
+    #[test]
+    fn a_presence_row_names_a_rowless_running_component() {
+        // Issue #2289: a running component with no other row is on the wire as
+        // its bare name. A candidate whose name folds onto it under another
+        // spelling is refused by the reference and withheld here; the same
+        // name is a replacement with no consequence and stays certified, and
+        // an unrelated presence row changes nothing.
+        let with = |row: &str| RUNNING_WIRE.replace(";!services", &format!(";{};!services", row));
+        assert!(certify_into(CACHE_LAYER, &with("Cache_Layer")).is_none());
+        assert!(certify_into(CACHE_LAYER, &with("CACHELAYER")).is_none());
+        assert!(certify_into(CACHE_LAYER, &with("CacheLayer")).is_some());
+        assert!(certify_into(CACHE_LAYER, &with("Lone")).is_some());
+        // a presence row is a bare name: anything else on the row is garbled
+        for row in ["Lone!", "1Lone", "Lone,x"] {
+            assert!(certify_into(CACHE_LAYER, &with(row)).is_none(), "must not certify into {:?}", row);
+        }
     }
 
     #[test]

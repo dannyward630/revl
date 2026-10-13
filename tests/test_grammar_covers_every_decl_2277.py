@@ -13,6 +13,13 @@ enumerations of what the parser accepts at the top level:
     (every word that can head a declaration, including contextual ones such as
     `secret`, `event`, `boot` and modifiers such as `pub`, `verified`).
 
+A third enumeration (issue #2280) covers the statements that are NOT
+top-level declarations but are security forms all the same: the clause heads
+`Parser.composition_decl` reads inside a `composition { ... }` (`place`,
+`grant`, ...) and the operations `Parser.layer_decl`/`_layer_op` read inside a
+`layer` (site layer `place`/`grant`). `grant` and `place` are not `Program`
+lists, so the two enumerations above could never have caught them.
+
 Each must appear, quoted as a keyword, in the text `revl grammar --prompt`
 prints. A kind that is deliberately left out goes in `EXEMPT_*` below with the
 reason; a new Program list or dispatch keyword fails here until it is either put
@@ -68,6 +75,16 @@ EXEMPT_LISTS = {
 #: declaration is short enough to name.
 EXEMPT_KEYWORDS: dict[str, str] = {}
 
+#: Clause heads of `composition_decl` left out of the prompt grammar, with the
+#: reason. They are row kinds and an SLO block, not security declarations, and
+#: the prompt grammar is at its character budget (tests/test_grammar_prompt.py);
+#: the prose docs/composition-rows.md carries them.
+EXEMPT_COMPOSITION_KEYWORDS = {
+    "host": "a row kind (ambient host service); budget",
+    "seam": "a row kind (observer forwarder); budget",
+    "slo": "a service-level objective block; budget",
+}
+
 
 def _prompt_grammar_text(capsys) -> str:
     assert main(["grammar", "--prompt"]) == 0
@@ -87,6 +104,28 @@ def _dispatch_keywords() -> set[str]:
     source = inspect.getsource(parser.Parser._parse_program)
     words = set(re.findall(r'self\.at\("(?:kw|ident)",\s*"(\w+)"\)', source))
     return words | set(re.findall(r'\.value == "(\w+)"', source))
+
+
+def _clause_heads(*methods) -> set[str]:
+    """Every contextual word the given parser methods branch on with
+    `self.at("kw"|"ident", WORD)`."""
+    words: set[str] = set()
+    for method in methods:
+        words |= set(re.findall(r'self\.at\("(?:kw|ident)",\s*"(\w+)"\)',
+                                inspect.getsource(method)))
+    return words
+
+
+def _composition_heads() -> set[str]:
+    return _clause_heads(parser.Parser.composition_decl)
+
+
+def _layer_op_heads() -> set[str]:
+    """The operations a layer body reads: `touches` (in `layer_decl`) and every
+    operation head in `_layer_op`, minus words that are not heads there
+    (`for` after the layer name, `row` after `add`, `with`, `to`, `over`)."""
+    heads = _clause_heads(parser.Parser.layer_decl, parser.Parser._layer_op)
+    return heads - {"for", "row", "with", "to", "over"}
 
 
 def _quoted(word: str) -> str:
@@ -158,3 +197,56 @@ def test_the_served_text_is_the_constant_the_test_reads(capsys):
 
 def test_the_prose_summary_shows_a_secret_too():
     assert "secret api_key for net.send" in PROSE_GRAMMAR
+
+
+def _production(text: str, name: str) -> str:
+    """The code part of the production called `name`, or fail."""
+    for block in _productions(text):
+        if re.match(rf"^{name}\s*:=", block):
+            return re.sub(r"\s--.*", "", block)
+    raise AssertionError(f"`revl grammar --prompt` has no `{name}` production")
+
+
+def test_prompt_grammar_names_every_clause_a_composition_reads(capsys):
+    """issue #2280: `place` and `grant` are clause heads of a composition, not
+    Program lists, so they were absent while the parser accepted them."""
+    text = _prompt_grammar_text(capsys)
+    heads = _composition_heads()
+    assert {"row", "remote", "place", "grant", "stack", "site"} <= heads, \
+        f"the composition scrape found too little: {sorted(heads)}"
+    body = _production(text, "composition")
+    missing = sorted(
+        w for w in heads - set(EXEMPT_COMPOSITION_KEYWORDS)
+        if not re.search(rf"\b{w}\b", body) or not _in_a_production(text, w))
+    assert not missing, (
+        f"the `composition` production omits clause heads the parser reads: "
+        f"{missing}")
+
+
+def test_the_composition_exemptions_are_reasoned_and_not_stale():
+    assert all(r.strip() for r in EXEMPT_COMPOSITION_KEYWORDS.values())
+    assert set(EXEMPT_COMPOSITION_KEYWORDS) <= _composition_heads()
+
+
+def test_prompt_grammar_names_every_operation_a_layer_reads(capsys):
+    """issue #2280: the site layer writes `place` and `grant` as operations;
+    each must be a member of the `op` production, by quoted word or by naming
+    the production that spells it."""
+    text = _prompt_grammar_text(capsys)
+    heads = _layer_op_heads()
+    assert {"add", "remove", "replace", "configure", "resolve", "place",
+            "grant", "touches"} <= heads, \
+        f"the layer scrape found too little: {sorted(heads)}"
+    code = _production(text, "op") + _production(text, "touches")
+    missing = sorted(w for w in heads
+                     if _quoted(w) not in code
+                     and not re.search(rf"\|\s*(?:\w+\s*\|\s*)*{w}\b", code))
+    assert not missing, (
+        f"the layer `op` production omits operations the parser reads: "
+        f"{missing}")
+
+
+def test_the_security_forms_show_the_shape_the_parser_accepts(capsys):
+    text = _prompt_grammar_text(capsys)
+    assert "'place' address 'on' 'process' STRING ['backend' IDENT]" in text
+    assert "'grant' address 'with' '{' IDENT (',' IDENT)* '}'" in text

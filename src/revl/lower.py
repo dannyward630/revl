@@ -64,6 +64,7 @@ from .typecheck import (
     unify,
     _is_wildcard,
     _check_method_namespace_disjoint,
+    _split_fn_type,
 )
 from .taint import (
     extract_and_normalize,
@@ -257,6 +258,9 @@ _BUILTIN_METHODS = {
     # Int32 to Int (lossless); `to_int32` narrows an Int to Int32 (checked,
     # traps out of the 32-bit range).
     "to_int": 0, "to_int32": 0,
+    # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+    # §Int.to_char): Int receiver, no argument, a one-code-point Str or "".
+    "to_char": 0,
     # The total forms (docs/arithmetic.md): a zero divisor is the *point*
     # here, so these are deliberately absent from _DIVIDES_BY below — a
     # literal zero argument is refused for the faulting operations only.
@@ -2167,6 +2171,12 @@ def _lower_fns(program: Program, filename: str, types: dict | None = None) -> li
         "taken": ({fn.name for fn in program.fn_decls}
                   | {ext.name for ext in program.externs}),
     })
+    # issue #2193: every fn of one module shares one `fn_scopes` value
+    # (compiler.py), so its body namespace is built once per module, not once
+    # per fn. Keyed by identity; `program.fn_scopes` and `default_callables`
+    # keep every keyed object alive for the whole loop.
+    extern_names = {ext.name for ext in program.externs}
+    body_callables: dict[int, frozenset] = {}
     for decl in program.fn_decls:
         # In a multi-file composition `filename` is only the first source
         # (paths[0]); a fn parsed from a LATER file carries its own `source`, so
@@ -2187,7 +2197,11 @@ def _lower_fns(program: Program, filename: str, types: dict | None = None) -> li
             scope[param.name] = False
             type_env[param.name] = marked
         module_callables = program.fn_scopes.get(id(decl), default_callables)
-        callables = _HOST_CALLABLES | _BUILTIN_CONSTRUCTORS | _DECLASSIFY_BUILTINS | set(module_callables) | {ext.name for ext in program.externs}
+        callables = body_callables.get(id(module_callables))
+        if callables is None:
+            callables = frozenset(_HOST_CALLABLES | _BUILTIN_CONSTRUCTORS | _DECLASSIFY_BUILTINS
+                                  | set(module_callables) | extern_names)
+            body_callables[id(module_callables)] = callables
         alias_fns = program.fn_alias_scopes.get(id(decl), {})
         check_list_index_bounds(decl.body, decl_file)
         body: list[dict] = []
@@ -7445,7 +7459,17 @@ def _lower_pure_expr(expr, scope: dict, callables: set, alias_fns: dict, filenam
         # the checking pass has already diagnosed real mismatches, so this is
         # annotation only.
         if isinstance(expr.callee, ExprVar):
-            sig = (types.get(FNS_KEY) or {}).get(expr.callee.name)
+            callee_name = expr.callee.name
+            # issue #2311: a callee bound in the local scope (a parameter, a
+            # `let`, a loop variable) is that local function value, so its own
+            # declared type gives the parameter types, and it has no defaults.
+            # The signature table holds top-level fns only: a same-named fn in
+            # another file must not lend this call its arity or its types.
+            if callee_name in scope:
+                local_fn = _split_fn_type(str(type_env.get(callee_name) or ""))
+                sig = {"params": local_fn[0]} if local_fn else None
+            else:
+                sig = (types.get(FNS_KEY) or {}).get(callee_name)
             if sig is not None and sig.get("params"):
                 params = list(sig["params"])
                 if sig.get("tparams"):
@@ -7464,10 +7488,15 @@ def _lower_pure_expr(expr, scope: dict, callables: set, alias_fns: dict, filenam
                 # parameter's default expression. Lower each default here and
                 # mark the Int->Float widening on it exactly as a written
                 # argument would get, so a `Float = 0` default emits correctly.
-                sig = types.get(FNS_KEY, {}).get(expr.callee.name) or {}
                 defaults = sig.get("defaults") or []
                 for i in range(len(lowered_args), len(params)):
-                    dexpr = defaults[i]
+                    dexpr = defaults[i] if i < len(defaults) else None
+                    if dexpr is None:
+                        raise RevlError(
+                            filename, expr.line,
+                            f"call to `{callee_name}` gives {len(expr.args)} "
+                            f"argument(s), but its signature takes {len(params)} "
+                            f"and parameter {i + 1} has no default")
                     dnode = _lower_pure_expr(dexpr, scope, callables, alias_fns,
                                              filename, type_env, types)
                     _mark_widen(params[i], infer_ast(dexpr, type_env, types, None),
@@ -8185,10 +8214,17 @@ def _refuse_callable_shadowing(program: Program, filename: str) -> None:
                      "`let` binds a name once per scope.",
             )
 
+    # issue #2193: one visible set per shared `fn_scopes` value (one per
+    # module), not one rebuild per fn
+    per_scope: dict[int, frozenset] = {}
     for decl in program.fn_decls:
         # exactly the namespace `_lower_fns` resolves this body's bare names in
-        visible = set(program.fn_scopes.get(id(decl), declared)) | externs
-        check(decl, visible & declared, decl.source or filename)
+        scope = program.fn_scopes.get(id(decl), declared)
+        visible = per_scope.get(id(scope))
+        if visible is None:
+            visible = frozenset((set(scope) | externs) & declared)
+            per_scope[id(scope)] = visible
+        check(decl, visible, decl.source or filename)
     # components and `test`/prop-test blocks resolve against the whole merged
     # program (`component_callables` in `check_and_lower`), so their visible
     # set is that same one.

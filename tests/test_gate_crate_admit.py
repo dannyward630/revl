@@ -445,6 +445,19 @@ def admissions(consumer) -> list[tuple[str, str, tuple[str, str], dict]]:
             for (name, src), wire in zip(CORPUS, wires)]
 
 
+def _two_components(first: str, second: str) -> str:
+    """Two components inside the certified component half: each provides one
+    key of one service through a bare parameter read."""
+    return ("service S {\n  fn get(k: Str) -> Str\n}\n"
+            f"component {first} provides a: S {{\n  provide a {{\n    fn get(k) = k\n  }}\n}}\n"
+            f"component {second} provides b: S {{\n  provide b {{\n    fn get(k) = k\n  }}\n}}\n")
+
+
+def _two_services(first: str, second: str) -> str:
+    return (f"service {first} {{\n  fn get(k: Str) -> Str\n}}\n"
+            f"service {second} {{\n  fn put(k: Str) -> Str\n}}\n")
+
+
 # Programs INSIDE the crate's admission surface (`crates/revl-gate/src/
 # admission.rs`), and near misses one token outside it. The oracle corpus above
 # contains none of either: every program in it declares a component or an `fn`
@@ -455,6 +468,12 @@ INSIDE_THE_ADMISSION_SURFACE = (
     ("comment_only", "// nothing to declare\n"),
     ("one_service", "service Store {\n  fn get(key: Str) -> Str\n}\n"),
     ("scalar_alias", "type Key = Str\nservice S {\n  fn get(k: Key) -> Key\n}\n"),
+    # the positive control for `folded_component_names` below: the same two
+    # components under names that stay apart, so that near miss is withheld
+    # for its names and not for its shape
+    ("two_components", _two_components("KVStore", "Store")),
+    # the positive control for `folded_service_names` below
+    ("two_services", _two_services("KVStore", "Store")),
 )
 
 OUTSIDE_THE_ADMISSION_SURFACE = (
@@ -464,6 +483,11 @@ OUTSIDE_THE_ADMISSION_SURFACE = (
      "service A {\n  fn f(x: Int) -> Int\n}\nservice A {\n  fn g(x: Int) -> Int\n}\n"),
     ("duplicate_method",
      "service A {\n  fn f(x: Int) -> Int\n  fn f(y: Int) -> Int\n}\n"),
+    # issue #2224: the reference refuses two component names that differ only
+    # in letter case or underscores, which `has_duplicate` alone would admit
+    ("folded_component_names", _two_components("KVStore", "Kvstore")),
+    # issue #2275: the same fold over service names
+    ("folded_service_names", _two_services("KVStore", "Kvstore")),
     # the type layer, which is the whole reason the surface is this small
     ("type_error", 'fn f() -> Int { return "s" }'),
     ("undefined_name", "fn f() -> Int { return undefined_name }"),
@@ -557,6 +581,122 @@ def test_the_manifest_admission_arm_reads_its_manifest(consumer):
     halted = _crate_verdicts(consumer, [silent], "--admission-into",
                              "Kv/store/;!halted")
     assert halted[0]["admitted"] is False, halted
+
+
+def test_the_manifest_admission_arm_withholds_a_name_folded_onto_a_running_component(consumer):
+    """Issue #2276: the reference refuses a hot-swap that adds `Kvstore` to a
+    composition keeping `KVStore`, so the crate must not certify it. The wire
+    is rendered from the reference's own manifest, and a candidate under a name
+    that stays apart is the positive control."""
+    from revl.compiler import compile_source
+    from revl.manifest import manifest_wire
+    running = compile_source(
+        "service Store {\n  fn get(key: Str) -> Str\n}\n"
+        "component KVStore provides a: Store {\n  provide a {\n"
+        "    fn get(key) = key\n  }\n}\n", "running.rvl")
+    wire = manifest_wire(running)
+
+    # the candidate provides a service of its own: this surface withholds a
+    # provision of a running service, whose declaration the wire carries only
+    # as far as it can spell it
+    def candidate(name: str) -> str:
+        return ("service Local {\n  fn get(key: Str) -> Str\n}\n"
+                f"component {name} provides b: Local {{\n  provide b {{\n"
+                "    fn get(key) = key\n  }\n}\n")
+
+    folded, apart = _crate_verdicts(
+        consumer, [candidate("Kvstore"), candidate("Cache")],
+        "--admission-into", wire)
+    assert apart["admitted"] is True, (
+        f"the control must be certified into the composition: {apart}")
+    assert folded["admitted"] is False, (
+        "the crate certified `Kvstore` into a composition keeping `KVStore`, "
+        f"which the reference refuses: {folded}")
+    compile_source(candidate("Cache"), "incoming.rvl", manifest=running)
+    with pytest.raises(Exception, match="collides with running component"):
+        compile_source(candidate("Kvstore"), "incoming.rvl", manifest=running)
+
+
+def test_the_manifest_admission_arm_withholds_a_service_folded_onto_a_running_service(consumer):
+    """Issue #2334: the reference refuses a hot-swap that adds `service Kvstore`
+    to a composition declaring `service KVStore`, so the crate must not certify
+    it. The wire's `!services` block enumerates every running service, so this
+    comparison is exhaustive. A service under a name that stays apart is the
+    positive control."""
+    from revl.compiler import compile_source
+    from revl.manifest import manifest_wire
+    running = compile_source(
+        "service KVStore {\n  fn get(key: Str) -> Str\n}\n"
+        "component A provides a: KVStore {\n  provide a {\n"
+        "    fn get(key) = key\n  }\n}\n", "running.rvl")
+    wire = manifest_wire(running)
+
+    def candidate(name: str) -> str:
+        return (f"service {name} {{\n  fn put(key: Str) -> Str\n}}\n"
+                f"component B provides b: {name} {{\n  provide b {{\n"
+                "    fn put(key) = key\n  }\n}\n")
+
+    folded, underscored, apart = _crate_verdicts(
+        consumer, [candidate("Kvstore"), candidate("KV_Store"), candidate("Cache")],
+        "--admission-into", wire)
+    assert apart["admitted"] is True, (
+        f"the control must be certified into the composition: {apart}")
+    for verdict in (folded, underscored):
+        assert verdict["admitted"] is False, (
+            "the crate certified a service folded onto the running `KVStore`, "
+            f"which the reference refuses: {verdict}")
+    compile_source(candidate("Cache"), "incoming.rvl", manifest=running)
+    for name in ("Kvstore", "KV_Store"):
+        with pytest.raises(Exception, match="collides with running service `KVStore`"):
+            compile_source(candidate(name), "incoming.rvl", manifest=running)
+
+
+@pytest.mark.parametrize("running_name, incoming_name", [
+    ("Lone", "LONE"), ("Noop", "NOOP"), ("No_op", "Noop")])
+def test_the_manifest_admission_arm_refuses_a_name_folded_onto_a_rowless_running_component(
+        consumer, running_name, incoming_name):
+    """Issue #2289: the reference refuses `NOOP` into a composition keeping
+    `component Noop {}` (issue #2276). `Noop` provides and requires nothing, and
+    the wire used to carry no row for it, so the crate certified `NOOP`. The
+    wire now names it with a presence row, and the crate refuses the hot-swap
+    with the reference's own sentence."""
+    from revl.compiler import compile_source
+    from revl.manifest import manifest_wire
+    running = compile_source(
+        "service Store {\n  fn get(key: Str) -> Str\n}\n"
+        "component KVStore provides a: Store {\n  provide a {\n"
+        "    fn get(key) = key\n  }\n}\n"
+        f"component {running_name} {{\n}}\n", "running.rvl")
+    wire = manifest_wire(running)
+    assert running_name in wire.split(";"), wire
+
+    def candidate(name: str) -> str:
+        return ("service Local {\n  fn get(key: Str) -> Str\n}\n"
+                f"component {name} provides b: Local {{\n  provide b {{\n"
+                "    fn get(key) = key\n  }\n}\n")
+
+    with pytest.raises(RevlError) as raised:
+        compile_source(candidate(incoming_name), "incoming.rvl", manifest=running)
+    assert f"collides with running component `{running_name}`" in raised.value.message
+    compile_source(candidate(running_name), "incoming.rvl", manifest=running)
+    compile_source(candidate("Cache"), "incoming.rvl", manifest=running)
+
+    folded, same, apart = _crate_verdicts(
+        consumer, [candidate(incoming_name), candidate(running_name),
+                   candidate("Cache")],
+        "--admission-into", wire)
+    assert folded["admitted"] is False, (
+        f"the crate certified `{incoming_name}` beside a running "
+        f"`{running_name}` on {wire!r}: {folded}")
+    assert folded["verdict"] == "refused", folded
+    assert folded["message"] == raised.value.message, (
+        "the crate must refuse with the reference's sentence:\n"
+        f"  crate:     {folded['message']!r}\n"
+        f"  reference: {raised.value.message!r}")
+    # the same name replaces a component that hands off nothing and strands
+    # nothing, and the reference admits it; so is a name that stays apart
+    assert same["admitted"] is True, same
+    assert apart["admitted"] is True, apart
 
 
 def test_every_refusal_the_crate_issues_is_a_real_reference_refusal(agreement):
@@ -1178,7 +1318,15 @@ TYPE_LAYER_GAP = [
     # REFUSES it in the reference's own words and it is an agreement rather than
     # a gap. `test_the_gap_that_closed_is_an_agreement_now` below holds that,
     # so this list cannot go vacuous by attrition.
-    ("return arrow with no type", "fn f() -> { }"),
+    # `("return arrow with no type", "fn f() -> { }")` left the list when the
+    # statement grammar learned the reference's `type_` rule (issue #2396): the
+    # crate now REFUSES it as a parse error in the reference's own words. A
+    # parse refusal classifies as "OUT:" in the oracle and as BAD in the gate,
+    # so it cannot be a `REJECTED_PROGRAMS` row (tag AND message must match
+    # there); `test_the_arrow_gap_that_closed_is_a_parse_agreement_now` below
+    # holds it instead.
+    ("record literal missing a declared field",
+     "type P = { x: Int }\nfn f() -> P { return { y: 1 } }"),
     # `("undeclared name in a body", "fn f() -> Int { return undefined_name }")`
     # headed this list until the name-RESOLUTION rule landed
     # (docs/design/457 §2.3): a name READ is resolved against the fn's scope and
@@ -1224,6 +1372,22 @@ def test_the_gap_that_closed_is_an_agreement_now(consumer):
     assert verdict["verdict"] == "refused"
     assert verdict["admitted"] is False
     assert verdict["code"] == ref_code
+    assert verdict["message"] == ref_message
+
+
+def test_the_arrow_gap_that_closed_is_a_parse_agreement_now(consumer):
+    """`fn f() -> { }`, the last row of the list above, until the statement
+    grammar ported the reference's `type_` rule (issue #2396). The reference
+    refuses it at parse time; the crate refuses it under BAD with the
+    reference's sentence, and still issues no admission doing so."""
+    source = "fn f() -> { }"
+    ref_code, ref_message = _reference(source)
+    assert ref_code == "OUT:" + ref_message, ref_code
+    assert ref_message == "expected a type, found '{'", ref_message
+    verdict = _crate_verdicts(consumer, [source])[0]
+    assert verdict["verdict"] == "refused"
+    assert verdict["admitted"] is False
+    assert verdict["code"] == "BAD"
     assert verdict["message"] == ref_message
 
 

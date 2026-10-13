@@ -70,7 +70,7 @@ import types
 import uuid
 from pathlib import Path
 
-from ._paths import backends_root
+from ._paths import backends_root, python_backend_emitter
 
 
 # item 443: how often an ARMED process re-reads the latch, and the status it
@@ -350,7 +350,9 @@ def _has_provisions(hosts: dict) -> bool:
 
 
 def _load_module(ir: dict, wal: "_ProcessWal | None" = None) -> types.ModuleType:
-    import emit  # noqa: PLC0415  backend dir already on sys.path
+    # the python backend's own emitter, never whichever backend directory is
+    # first on sys.path for the bare name `emit` (issues #1449, #2204)
+    emit = python_backend_emitter()
 
     source = emit.emit(ir)
     module = types.ModuleType("revl_proc_mod")

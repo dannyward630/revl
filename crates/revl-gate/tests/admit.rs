@@ -79,12 +79,15 @@ fn a_clean_program_gets_a_no_objection_which_is_not_an_admission() {
 /// rather than pinned here. `"fn f() -> Int { return undefined_name }"` left
 /// the same way when the name-RESOLUTION rule landed (docs/design/457 §2.3):
 /// it is asserted by `an_undeclared_name_read_is_refused_with_its_guarantee_tag`
-/// below. The rest of the type layer is still a gap.
+/// below. `"fn f() -> { }"` left when the statement grammar learned the
+/// reference's `type_` rule (issue #2396): it is a parse refusal now, asserted
+/// by `a_return_arrow_with_no_type_is_refused_as_a_parse_error` below. The rest
+/// of the type layer is still a gap.
 #[test]
 fn type_layer_programs_are_not_refused_here_and_must_not_read_as_admitted() {
     let reference_refuses_all_of_these = [
-        // a return arrow with no return type at all
-        "fn f() -> { }",
+        // a record literal that misses a declared field and names an unknown one
+        "type P = { x: Int }\nfn f() -> P { return { y: 1 } }",
     ];
     for src in reference_refuses_all_of_these {
         let verdict = admit(src);
@@ -107,6 +110,17 @@ update the crate docs and this test: {}",
     let refused = admit("fn f() -> Int { return \"s\" }");
     assert!(refused.is_refused());
     assert!(refused.to_json().contains("\"admitted\":false"));
+}
+
+/// `fn f() -> { }` sat in the gap list above until issue #2396: the reference
+/// refuses it at parse time, and so does this crate, in the reference's words.
+#[test]
+fn a_return_arrow_with_no_type_is_refused_as_a_parse_error() {
+    let verdict = admit("fn f() -> { }");
+    assert!(verdict.is_refused());
+    assert_eq!(verdict.code(), Some("BAD"));
+    assert!(verdict.to_json().contains("\"admitted\":false"));
+    assert!(verdict.to_json().contains("expected a type, found '{'"));
 }
 
 /// The half of the type layer this crate DOES decide: a `fn` with a declared

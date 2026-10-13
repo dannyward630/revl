@@ -230,6 +230,20 @@ def pytest_configure(config):
     # marker here keeps it a known marker there, where it has no effect.
     config.addinivalue_line(
         "markers", "timeout(seconds): per-test limit for pytest-timeout")
+    # Issue #2192: tests/_compiled_ir.py keeps one compile of a self-host
+    # document per key; with the cache provider on (it is off under
+    # `-p no:cacheprovider`), it also keeps a copy under the pytest cache dir,
+    # which the next session and every xdist worker of this one reuse.
+    # The compiler's own sources are hashed now, at session start: the key
+    # names the code this process runs, not what a later edit leaves on disk.
+    import _compiled_ir  # noqa: PLC0415
+    cache = getattr(config, "cache", None)
+    _compiled_ir.configure(
+        cache.mkdir("revl-compiled-ir") if cache is not None else None)
+    # find_spec locates the package without importing it.
+    spec = importlib.util.find_spec("revl")
+    if spec is not None and spec.origin:
+        _compiled_ir.pin_package(Path(spec.origin).parent)
 
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -324,8 +338,19 @@ def pytest_runtest_makereport(item, call):
 # runtimes' skips (cordis-ts, cordis4j, cordis-rs, ...): re-running those files
 # under the cordis-py venv would only skip them again. Guards word their reason
 # freely, so this excludes the other runtimes rather than requiring "cordis-py".
-_NAMES_CORDIS_PY = re.compile(r"cordis(?![-_]?(?:ts|4j|rs|java|go|wasm|js)\b)",
-                              re.IGNORECASE)
+#
+# A reason that names another runtime anywhere is that runtime's skip, even
+# when it says "cordis" again later ("cordis (TS): node_modules/cordis not
+# installed"). There is no `\b` after the runtime name: `\b` does not match
+# before `_`, so REVL_CORDIS4J_CLASSES got through (issue #2257). `c\b` is the
+# cordisc compiler ("cordisc (or node)") and ` \(ts\)` the "cordis (TS)" guards.
+_NAMES_CORDIS = re.compile(r"cordis", re.IGNORECASE)
+_NAMES_OTHER_RUNTIME = re.compile(
+    r"cordis(?:[-_]?(?:ts|4j|rs|java|go|wasm|js)|c\b| \(ts\))", re.IGNORECASE)
+
+
+def _names_cordis_py(reason: str) -> bool:
+    return bool(_NAMES_CORDIS.search(reason)) and not _NAMES_OTHER_RUNTIME.search(reason)
 
 
 def _skip_reason(report) -> str:
@@ -340,7 +365,7 @@ def _log_cordis_skip(report) -> None:
     target = os.environ.get("REVL_CORDIS_SKIP_LOG")
     if not target or not report.skipped:
         return
-    if not _NAMES_CORDIS_PY.search(_skip_reason(report)):
+    if not _names_cordis_py(_skip_reason(report)):
         return
     try:
         with open(target, "a", encoding="utf-8") as fh:

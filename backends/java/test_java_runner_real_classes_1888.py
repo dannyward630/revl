@@ -82,7 +82,7 @@ def test_every_runner_step_has_the_real_classes_on_its_classpath(monkeypatch,
 
     def fake_run(argv, **_kwargs):
         calls.append(list(argv))
-        stdout = "REVL_TESTS_OK\n" if argv[0] == "java" else ""
+        stdout = "REVL_TESTS_OK 1\n" if argv[0] == "java" else ""
         return subprocess.CompletedProcess(argv, 0, stdout, "")
 
     monkeypatch.setattr(revl_test.subprocess, "run", fake_run)

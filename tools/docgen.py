@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import json
 import re
 import sys
 from pathlib import Path
@@ -376,12 +377,74 @@ def block_mcp_test_count(current: str) -> str:
     )
 
 
+def suite_size(root: Path | None = None) -> tuple[int, float]:
+    """The root suite's size: its `def test_*` functions (top level and in
+    `Test*` classes, from the AST of every tests/**/test_*.py), and the CI
+    seconds tests/shard_weights.json records for its files (issue #2217)."""
+    root = root or ROOT
+    functions = 0
+    for path in sorted((root / "tests").rglob("test_*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, UnicodeDecodeError, ValueError):
+            continue
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+                body = node.body
+            else:
+                body = [node]
+            functions += sum(
+                1 for item in body
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and item.name.startswith("test_"))
+    weights = json.loads((root / "tests" / "shard_weights.json")
+                         .read_text(encoding="utf-8"))
+    return functions, float(sum(weights["seconds"].values()))
+
+
+#: The claims the suite-size block makes. The text is FIXED so it does not move
+#: with normal growth (about 210 test functions a day crosses a thousand every
+#: few days, and that would red `docgen --check` on main and every open PR, the
+#: reason #1768 dropped the mcp count). The block fails only when a claim
+#: becomes false.
+SUITE_MIN_FUNCTIONS = 10_000
+SUITE_CI_MINUTES = (20, 120)
+
+
+def block_suite_size(current: str, root: Path | None = None) -> str:
+    """CONTRIBUTING.md's statement of how big `tests/` is (issue #2217): fixed
+    text, checked against the tree. It raises when the suite has fewer than
+    SUITE_MIN_FUNCTIONS test functions or its CI weights fall outside
+    SUITE_CI_MINUTES; `--show suite-size` prints the exact figures."""
+    functions, seconds = suite_size(root)
+    low, high = SUITE_CI_MINUTES
+    if functions < SUITE_MIN_FUNCTIONS:
+        raise SystemExit(
+            f"docgen: tests/ defines {functions} test functions, so CONTRIBUTING.md's "
+            f"\"more than {SUITE_MIN_FUNCTIONS:,}\" is false; rewrite the suite-size "
+            "block and SUITE_MIN_FUNCTIONS")
+    if not low * 60 <= seconds <= high * 60:
+        raise SystemExit(
+            f"docgen: tests/shard_weights.json sums to {seconds / 60:.0f} CI minutes, "
+            f"outside the {low} to {high} that \"tens of CI minutes\" claims; "
+            "rewrite the suite-size block and SUITE_CI_MINUTES")
+    return (
+        f"The root suite, `tests/`, defines more than {SUITE_MIN_FUNCTIONS:,} test\n"
+        "functions (parametrization collects far more tests than that), and it\n"
+        "takes tens of CI minutes of test time across the shards, the sum of\n"
+        "`tests/shard_weights.json`. `tools/docgen.py --check` fails when either\n"
+        "claim stops being true; `--show suite-size` prints the exact figures."
+    )
+
+
 #: What `--show` prints: the counts the committed blocks no longer store.
 SHOW = {
     "selfhost-residual": lambda: residual_report(),
     "mcp-verb-count": lambda: f"{len(mcp_tools())} advertised MCP verbs",
     "mcp-test-count": lambda: (f"{test_count('tests/test_mcp.py')} tests in "
                                "tests/test_mcp.py"),
+    "suite-size": lambda: ("{} test functions in tests/, {:.0f} CI seconds in "
+                           "tests/shard_weights.json".format(*suite_size())),
 }
 
 
@@ -713,6 +776,8 @@ BLOCKS: list[tuple[str, str, str, object]] = [
     ("guarantees-humans", "docs/guide-humans.md", "revl.diagnostics.GUARANTEES",
      block_guarantees_humans),
     ("mcp-test-count", "docs/guide-humans.md", "tests/test_mcp.py", block_mcp_test_count),
+    ("suite-size", "CONTRIBUTING.md", "tests/**/test_*.py + tests/shard_weights.json",
+     block_suite_size),
     ("vision-tiers", "docs/vision.md", "docs/conformance.md per-tier totals",
      block_vision_tiers),
     ("selfhost-residual", "docs/selfhost-compile.md",

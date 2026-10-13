@@ -770,6 +770,162 @@ class _ModuleLoader:
                         f"`{name}` is not a public declaration in `{where}`")
 
 
+def component_name_fold(name: str) -> str:
+    """The key two component names, or two service names, must not share
+    (issues #2224 and #2275): the name with letter case and underscores dropped.
+
+    Two tiers reduce a component name before using it as an identifier. The
+    rust emitter snake-cases it (`backends/rust/emit.py::_snake`: insert `_`,
+    lowercase) for the `pub fn` plugin and the `plugin_by_name` / `_revl_load`
+    key the placement spec names it by, so `KVStore` and `Kvstore` are both
+    `kvstore`. The java tier keeps the spelling, but writes one class file per
+    component, and a case-insensitive file system holds one of
+    `Components$KVStorePlugin.class` and `Components$KvstorePlugin.class`.
+    A service name goes through the same two reductions: the rust tier names
+    its dispatch fn `_revl_dispatch_<snake>` and the java tier writes one
+    `Components$<Name>.class` interface file per service.
+    Both reductions only insert underscores or change case, so two names they
+    merge always agree here, which `tests/test_component_key_collision_2224.py`
+    pins against the rust emitter's own function. The key is deliberately
+    coarser than either reduction: it also refuses pairs such as `A_B` and `AB`
+    that no tier merges today, because names that close are a hazard for the
+    next tier that derives a name from them.
+    """
+    return name.lower().replace("_", "")
+
+
+_FOLD_HINTS = {
+    "component": "several tiers derive file and symbol names from a component "
+                 "name by changing its case or its underscores (the rust plugin "
+                 "fn and plugin key, a java class file on a case-insensitive "
+                 "file system), so names this close can land on one name. "
+                 "Rename one of the two components.",
+    "service": "several tiers derive file and symbol names from a service "
+               "name by changing its case or its underscores (the rust "
+               "dispatch fn, a java interface class file on a case-insensitive "
+               "file system), so names this close can land on one name. "
+               "Rename one of the two services.",
+}
+
+
+def _fold_collision_message(kind: str, name: str, other: str, where: str) -> str:
+    return (f"{kind} `{name}` collides with {other} ({where}): the two names "
+            f"differ only in letter case or underscores, and both reduce to "
+            f"`{component_name_fold(name)}`")
+
+
+def _reject_name_folds(decls: list, kind: str, filename: str,
+                       source_of=None) -> None:
+    """Refuse two declarations of one `kind` ("component" or "service") whose
+    names agree under `component_name_fold`, naming both (issues #2224 and
+    #2275). Without this the rust build fails on a doubly defined plugin fn or
+    dispatch fn, or one component's plugin key shadows the other's, and the java
+    run loads the wrong class on a case-insensitive file system.
+
+    The refusal is the checker's, on every tier, because the program is not
+    portable: it would run on python, typescript, go and wasm and break on rust
+    and java. An exact repeat is left to `duplicate component` and `duplicate
+    service`, which refuse it on their own. `source_of` gives the file a
+    declaration came from, for a declaration that does not carry its own."""
+    def source(decl) -> str:
+        if source_of is not None:
+            return source_of(decl) or filename
+        return getattr(decl, "source", "") or filename
+
+    first: dict[str, object] = {}
+    for decl in decls:
+        key = component_name_fold(decl.name)
+        prior = first.get(key)
+        if prior is None:
+            first[key] = decl
+            continue
+        if prior.name == decl.name:
+            continue
+        prior_file = source(prior)
+        where = (f"line {prior.line}" if prior_file == source(decl)
+                 else f"declared in {prior_file}:{prior.line}")
+        raise RevlError(
+            source(decl), decl.line,
+            _fold_collision_message(kind, decl.name, f"{kind} `{prior.name}`", where),
+            hint=_FOLD_HINTS[kind],
+        )
+
+
+def _reject_component_name_folds(components: list, filename: str) -> None:
+    _reject_name_folds(components, "component", filename)
+
+
+def _reject_running_component_name_folds(components: list, retained: list,
+                                         filename: str) -> None:
+    """Refuse an incoming component whose name agrees under
+    `component_name_fold` with a running component this admission keeps
+    (issue #2276), naming both. Without this a hot-swap leaves the running
+    composition holding the pair a single compile refuses. A running component
+    the admission withdraws, through `replacing=` or by an incoming component of
+    the same name, is not kept, so swapping `KVStore` for `Kvstore` with
+    `replacing=("KVStore",)` is still admitted."""
+    running: dict[str, str] = {}
+    for entry in retained:
+        name = entry.get("name")
+        if isinstance(name, str):
+            running.setdefault(component_name_fold(name), name)
+    for comp in components:
+        stays = running.get(component_name_fold(comp.name))
+        if stays is None:
+            continue
+        raise RevlError(
+            comp.source or filename, comp.line,
+            _fold_collision_message("component", comp.name,
+                                    f"running component `{stays}`",
+                                    "in the manifest"),
+            hint=f"the running composition keeps `{stays}`, and a composition "
+                 f"holding two names this close breaks the tiers that derive "
+                 f"file and symbol names from a component name (the rust "
+                 f"plugin fn and plugin key, a java class file on a "
+                 f"case-insensitive file system). To swap `{stays}` out for "
+                 f"`{comp.name}`, pass `replacing=(\"{stays}\",)`; otherwise "
+                 f"rename `{comp.name}`.",
+        )
+
+
+def _reject_running_service_name_folds(services: list, running: dict,
+                                       filename: str, source_of=None) -> None:
+    """Refuse an incoming service whose name agrees under `component_name_fold`
+    with a running service under a different spelling (issue #2334), naming
+    both. An admission never withdraws a running service: an incoming service
+    of the SAME name redeclares it, gated by the replacement relation, and every
+    other running service stays in the composition. So without this a hot-swap
+    leaves the composition holding `KVStore` and `Kvstore`, the pair a single
+    compile refuses. `source_of` gives the file a declaration came from."""
+    held: dict[str, str] = {}
+    for name in running:
+        if isinstance(name, str):
+            held.setdefault(component_name_fold(name), name)
+    for svc in services:
+        # an exact name is a redeclaration, even in a composition that already
+        # holds a second spelling of it
+        if svc.name in running:
+            continue
+        stays = held.get(component_name_fold(svc.name))
+        if stays is None:
+            continue
+        where = (source_of(svc) if source_of is not None else None) or filename
+        raise RevlError(
+            where, svc.line,
+            _fold_collision_message("service", svc.name,
+                                    f"running service `{stays}`",
+                                    "in the manifest"),
+            hint=f"the running composition declares `{stays}`, and an admission "
+                 f"does not withdraw a running service, so the composition "
+                 f"would hold two names this close, which breaks the tiers that "
+                 f"derive file and symbol names from a service name (the rust "
+                 f"dispatch fn, a java interface class file on a "
+                 f"case-insensitive file system). To change `{stays}`, "
+                 f"redeclare it under that exact name; otherwise rename "
+                 f"`{svc.name}`.",
+        )
+
+
 def compile_source(source: str, filename: str = "<string>",
                    manifest: dict | None = None,
                    replacing: tuple[str, ...] = (),
@@ -868,6 +1024,8 @@ def compile_source(source: str, filename: str = "<string>",
                 hint="a bare source string has no root compile tree to jail the "
                      "asset against, and `compile_source` reads nothing from "
                      "disk (item 459)")
+        _reject_name_folds(program.services, "service", filename)
+        _reject_component_name_folds(program.components, filename)
         document = check_and_lower(
             program, taint_strict=bool(profile and profile.taint_strict),
             untrusted=bool(profile and profile.untrusted))
@@ -1386,6 +1544,15 @@ def compile_files(paths: list[str], manifest: dict | None = None,
     _root_profs = [p for p in per_root_profiles.values() if p is not None]
     _taint_strict = any(p.taint_strict for p in _root_profs)
     _untrusted = any(p.untrusted for p in _root_profs)
+    _reject_name_folds(merged.services, "service", merged.filename,
+                       source_of=lambda svc: seen_services.get(svc.name))
+    _reject_component_name_folds(merged.components, merged.filename)
+    if ambient is not None:
+        _reject_running_service_name_folds(
+            merged.services, ambient["services"], merged.filename,
+            source_of=lambda svc: seen_services.get(svc.name))
+        _reject_running_component_name_folds(
+            merged.components, ambient["components"], merged.filename)
     document = check_and_lower(
         merged, ambient, taint_strict=_taint_strict, untrusted=_untrusted)
     # the allowlist half — refuse a reach outside the granted service set, on the

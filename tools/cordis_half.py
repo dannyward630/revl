@@ -24,8 +24,8 @@ The last line printed is a status the gate reads:
     STATUS ran <n>          pytest ran <n> file(s); the exit code is pytest's
     STATUS none             no selected test needs the runtime (exit 0)
     STATUS missing <why>    files need the runtime and no candidate has it at
-                            CORDIS_PY_PIN (exit EXIT_MISSING): the gate
-                            reports NOT OK
+                            CORDIS_PY_PIN, or no pin was found at all (exit
+                            EXIT_MISSING): the gate reports NOT OK
     STATUS error <why>      the skip log passed with --log is missing (exit 1)
 """
 
@@ -44,6 +44,8 @@ EXIT_MISSING = 10
 # runtime itself and the `watchdog` extra the fork's `cordis.hmr` needs.
 REQUIRED_MODULES = ("pytest", "pytest_asyncio", "yaml", "cryptography",
                     "llguidance", "cordis", "watchdog")
+
+PIN_SOURCE = "backends/python/setup.sh"
 
 SETUP_HINT = ("run `sh backends/python/setup.sh` (pinned cordis-py fork, "
               "CORDIS_PY_PIN, with watchdog) or set REVL_CORDIS_PYTHON")
@@ -71,7 +73,7 @@ def pinned_revision(root: Path) -> str | None:
     if os.environ.get("CORDIS_PY_PIN"):
         return os.environ["CORDIS_PY_PIN"]
     try:
-        text = (root / "backends" / "python" / "setup.sh").read_text(encoding="utf-8")
+        text = (root / PIN_SOURCE).read_text(encoding="utf-8")
     except OSError:
         return None
     found = re.search(r'CORDIS_PY_PIN="\$\{CORDIS_PY_PIN:-([0-9a-f]{7,40})\}"', text)
@@ -179,7 +181,17 @@ def main(argv: list[str] | None = None) -> int:
         print("STATUS none")
         return 0
 
-    python, rejected = resolve_python(args.python, pinned_revision(root))
+    # No pin means no revision to hold the runtime to. Running anyway would
+    # turn the pin check off without a word (issue #2257), so it is MISSING,
+    # naming the file the pin was read from.
+    pin = pinned_revision(root)
+    if pin is None:
+        print(f"{len(files)} test file(s) need the cordis-py runtime and did not run")
+        print(f"STATUS missing no CORDIS_PY_PIN found in {PIN_SOURCE} "
+              "(nor in the environment), so no venv can be checked against it")
+        return EXIT_MISSING
+
+    python, rejected = resolve_python(args.python, pin)
     if python is None:
         for why in rejected:
             print(f"rejected {why}")

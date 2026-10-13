@@ -409,7 +409,7 @@ def test_filter_of_a_prop_name_is_a_tier_skip_not_an_emit_failure(tmp_path):
     # and the tier that DOES run the selection keeps its verdict
     py = _cli(tmp_path, str(source), "--backend", "py", "--filter", "identity holds")
     assert py.returncode == 0, py.stdout + py.stderr
-    assert "[py] pass: 1 of 1 prop test(s) held" in py.stdout
+    assert "[py] pass: 1 test(s) passed; 1 of 1 prop test(s) held" in py.stdout
 
 
 def test_filter_that_leaves_a_tier_nothing_never_prints_pass(tmp_path):
@@ -470,7 +470,7 @@ def test_all_with_a_prop_only_selection_summarises_skips_not_failures(tmp_path):
     result = _cli(tmp_path, str(source), "--backend", "all",
                   "--filter", "identity holds")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "[py] pass: 1 of 1 prop test(s) held" in result.stdout
+    assert "[py] pass: 1 test(s) passed; 1 of 1 prop test(s) held" in result.stdout
     assert "summary: 1 pass, 5 skipped, 0 failed" in result.stdout
     assert "all tiers passed" in result.stdout
     assert "tier(s) failed" not in (result.stdout + result.stderr)
@@ -635,7 +635,9 @@ def test_a_resolvable_stc_go_still_runs_the_emitted_module_offline(monkeypatch):
     def _run(cmd, **kwargs):
         seen["cmd"] = cmd
         seen["goproxy"] = (kwargs.get("env") or {}).get("GOPROXY")
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        # `go test -v` reports each test it ran; the tier counts these lines
+        return subprocess.CompletedProcess(
+            cmd, 0, "--- PASS: TestLifecycle (0.00s)\nPASS\n", "")
 
     monkeypatch.setattr(test_module, "_STC_GO_REASON", None)  # resolvable
     monkeypatch.setattr(test_module.shutil, "which", lambda _name: "/usr/bin/go")

@@ -83,14 +83,15 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from revl import compile_files, compile_source  # noqa: E402
+from revl import compile_source  # noqa: E402
+from _compiled_ir import compiled_ir  # noqa: E402
 from revl.errors import RevlError, RevlErrors  # noqa: E402
 
 
 # ---------------------------------------------------------------- harness
 
 def _exec_emitted() -> dict:
-    ir = compile_files([str(ROOT / "selfhost" / "lower.rvl")])
+    ir = compiled_ir(ROOT / "selfhost" / "lower.rvl")
     assert ir["ir_version"] == 3
     spec = importlib.util.spec_from_file_location(
         "pyemit_selfhost_lower", ROOT / "backends" / "python" / "emit.py")
@@ -161,6 +162,15 @@ def _classify(e: RevlError) -> str:
     if e.code in ("G4", "A1"):
         return e.code
     m = e.message
+    # ---- issues #2224, #2275, #2309, #2334: folded names ------------------
+    # Two component names, or two service names, that differ only in letter
+    # case or underscores, in one program or against a running one. The gate
+    # spells every one of these sentences byte for byte (issue #2351,
+    # selfhost/lower.rvl's name-fold section), so the marker is a claim of
+    # agreement.
+    if (" differ only in letter case or underscores, and both reduce to `"
+            in m and (m.startswith("component `") or m.startswith("service `"))):
+        return "FOLD"
     # ---- item 512 slice 3: model placement, the DECLARATION half ------------
     # `selfhost/lower.rvl`'s model-placement section decides `model role` and
     # `route model` and tags every refusal "MODEL". First in this function, and
@@ -798,6 +808,10 @@ def _restoring(read: str | None = "let prev = store.get(k)",
             "    }\n"
             "  }\n"
             "}\n")
+
+
+_BOX2403 = "type Box[T] = { v: T }\n"
+_G2403 = "fn g(b: Box[Int]) -> Int { return b.v }\n"
 
 
 ACCEPTED_PROGRAMS = [
@@ -1888,6 +1902,14 @@ component Supervisor requires net: Kv provides sup: Sup {
     ("issue 1980: a write at another key between the read and the effect",
      _restoring(between='effect store.insert("j", "mid")\n'
                         'undo   store.remove("j")')),
+    # ---- issue #2403: the matching twins of the rows in REJECTED_PROGRAMS ----
+    ("issue 2403: a generic record argument with the same type argument",
+     _BOX2403 + _G2403 + "fn f(s: Box[Int]) -> Int { return g(s) }\n"),
+    ("issue 2403: a nested generic record argument with the same type argument",
+     _BOX2403 + "fn g(b: Box[Box[Int]]) -> Int { return 1 }\n"
+     "fn f(s: Box[Box[Int]]) -> Int { return g(s) }\n"),
+    ("issue 2403: a generic record compared with a record literal",
+     _BOX2403 + "fn f(b: Box[Int]) -> Bool { return b == { v: 1 } }\n"),
 ]
 
 
@@ -3853,6 +3875,16 @@ component C provides ops: Ops {
   provide ops { fn ping() = 1 }
 }
 """, "G4"),
+    # ---- issue #2403: two applied generic records meet by type argument -----
+    ("issue 2403: a generic record argument with the wrong type argument",
+     _BOX2403 + _G2403 + "fn f(s: Box[Str]) -> Int { return g(s) }\n", "T1"),
+    ("issue 2403: a generic record let with the wrong type argument",
+     _BOX2403 + "fn f(s: Box[Str]) -> Int {\n  let t: Box[Int] = s\n  return 1\n}\n", "T1"),
+    ("issue 2403: a generic record return with the wrong type argument",
+     _BOX2403 + "fn f(s: Box[Str]) -> Box[Int] { return s }\n", "T1"),
+    ("issue 2403: a nested generic record argument with the wrong type argument",
+     _BOX2403 + "fn g(b: Box[Box[Int]]) -> Int { return 1 }\n"
+     "fn f(s: Box[Box[Str]]) -> Int { return g(s) }\n", "T1"),
 ]
 
 
@@ -3872,6 +3904,26 @@ def test_rejected_programs_agree(admit, case):
     assert ref_tag == tag, \
         f"corpus bug: reference tag for {name} is {ref_tag!r}, expected {tag!r}"
     _agree(admit, src)
+
+
+# Parse refusals the gate spells in the reference's words. They cannot be
+# `REJECTED_PROGRAMS` rows: `_classify` files a parse error as "OUT:<message>"
+# and the gate tags it BAD, so only the message is compared here.
+# `fn f() -> { }` sat in test_gate_crate_admit.py's TYPE_LAYER_GAP until the
+# statement grammar ported the reference's `type_` rule (issue #2396).
+PARSE_REFUSED_PROGRAMS = [
+    ("issue 2396: a return arrow with no type", "fn f() -> { }"),
+]
+
+
+@pytest.mark.parametrize("case", PARSE_REFUSED_PROGRAMS,
+                         ids=[n for n, _ in PARSE_REFUSED_PROGRAMS])
+def test_parse_refused_programs_agree(admit, case):
+    name, src = case
+    ref_tag, ref_msg = _ref(src)
+    assert ref_tag == "OUT:" + ref_msg, \
+        f"corpus bug: the reference does not refuse {name} at parse time"
+    assert admit(src) == "BAD|" + ref_msg
 
 
 @pytest.mark.parametrize("binding", ["let", "var"])

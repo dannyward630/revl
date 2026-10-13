@@ -1043,7 +1043,7 @@ Both modern fixtures are byte-identical across the provider-class shape
 ctors, `_config_default_lit`/`_zero_java_value`), and the `apply` effect-scope /
 `ctx.get` / A8 self-revert try-catch. A host-`Map` `let-effect` component
 (`demo/components/user_cache.rvl`) routes to the loud
-`<<DEFER-component-nonsimple:UserCache>>` marker instead of mis-emitting — the
+`<<UNSUPPORTED-component-nonsimple:UserCache>>` marker instead of mis-emitting — the
 `_emit_host_stubs` `HashMap<String,V>` per-site inference stays slice 4+.
 
 ---
@@ -1686,12 +1686,12 @@ section for an `undo`/capability-tagged extern) and `NATIVE_GATE_GAPS`.
 between the types and the functions) and the extern half of the `fn_returns`
 seeding. Two reference shapes stay out and take a LOUD marker instead of a
 guess — the same treatment `selfhost/emit_go.rvl` gives them: an extern with no
-`@rs` body (`<<EXTERN-NO-RS-BODY:name>>`; the reference RAISES, a portability
+`@rs` body (`<<UNSUPPORTED-EXTERN-NO-RS-BODY:name>>` since issue #2353; the reference RAISES, a portability
 boundary) and an extern carrying a `config` schema
-(`<<DEFER-EXTERN-config:name>>`; item 378 Stage 5's `_revl_extern_config`
+(`<<UNSUPPORTED-EXTERN-config:name>>`, `DEFER` before issue #2367; item 378 Stage 5's `_revl_extern_config`
 scaffold). The body splice is LF-only, so a body carrying one of the code points
 Python `splitlines()` breaks on that `split("\n")` does not takes
-`<<DEFER-EXTERN-linebreak:name>>` rather than splitting differently.
+`<<UNSUPPORTED-EXTERN-linebreak:name>>` rather than splitting differently.
 
 **`tests/fixtures/emit_rust_corpus/externs.rvl` is the new fixture**, and it is
 the part that keeps this closed: the verbatim `@rs` splice, a Rust-keyword extern
@@ -1745,7 +1745,7 @@ document the **fully-native** chain does not reproduce is therefore a
 they are named document by document in
 [`LOWER_GAP_DOCS`](../tests/test_selfhost_compile.py).
 
-Tiers whose whole corpus survives the fully-native chain: `go`, `java`, `wasm`.
+Tiers whose whole corpus survives the fully-native chain: `py`, `go`, `java`, `wasm`.
 
 The per-tier counts are not stored here, because they move with every
 corpus document a pull request adds. Print them with
@@ -1777,12 +1777,11 @@ relative to the tier's own corpus directory, `tests/fixtures/emit_<tier>_corpus/
 <!-- docgen:selfhost-residual-docs begin -->
 `py`:
 
-- `../../../backends/typescript/tests/fixtures/fr3_json_int.rvl`
+- none; the fully-native chain reproduces the whole corpus.
 
 `ts`:
 
 - `block_arm_records.rvl`
-- `../../../backends/typescript/tests/fixtures/fr3_json_int.rvl`
 
 `go`:
 

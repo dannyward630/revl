@@ -39,6 +39,8 @@ service T { fn m(a: Str) -> Int }
 extern pure fn conn_close(c: Conn) = @py { return None }
 extern acquire fn conn_open(url: Str) -> Conn undo conn_close(result) = @py { return 1 }
 
+// a capability declares the dimensions a token may bind (path, discrete, ceiling)
+capability net.send(account: discrete)
 // a secret is a name bound to a capability; the value is never in source
 secret api_key for net.send
 extern emission[net.send] fn post(m: Str) -> Int = @py { return len(api_key) }
@@ -73,6 +75,9 @@ Rules that reject code: mutation needs `undo` or `emit` (G4); reads must be
 declared (G1); no cycles or duplicate providers (G2/G3); teardown cannot
 register effects (G5); expressions are pure (G6); `null` has no type —
 absence is Opt[T]; declared types are checked at every boundary.
+`grant` is not a program declaration: a composition writes it to name the
+keys a row may reach. Its forms, and every other declaration, are in
+`revl grammar --prompt`.
 """
 
 PROMPT_GRAMMAR = """\
@@ -151,11 +156,13 @@ provide   := 'provide' IDENT '{' ('fn' IDENT '(' IDENT* ')' ('=' expr | block))*
 -- an activation body never takes a plain binding (G6: nothing there to revert).
 
 --- compositions (a composition is a set of ROWS; docs/composition-rows.md) ---
-composition := 'composition' IDENT '{' (use | row | remote | stack | site)* '}'  -- contextual kw
+composition := 'composition' IDENT '{' (use | row | remote | place | grant | stack | site)* '}'  -- contextual kw
 row       := 'row' '@' IDENT 'from' STRING 'provides' ('nothing' | IDENT (',' IDENT)*)
              ['component' IDENT]            -- disambiguator; provenance, not identity
              ['config' '{' (IDENT ':' literal)* '}']  -- checked against the header
              ['granted' '{' IDENT (',' IDENT)* '}']   -- reach allowlist, empty default
+place     := 'place' address 'on' 'process' STRING ['backend' IDENT]   -- which process runs the row
+grant     := 'grant' address 'with' '{' IDENT (',' IDENT)* '}'          -- the `requires` keys a row may reach
 stack     := 'stack' STRING          -- a level-1 peer layer; conflicts REFUSE
 site      := 'site' STRING           -- the level-2 layer; exactly one, resolves
 remote    := 'remote' '@' IDENT 'provides' IDENT ':' IDENT       -- key : Service
@@ -182,10 +189,13 @@ touches   := 'touches' address (',' address)*   -- enforced; a layer's reach, re
 op        := 'add' row | 'remove' address | 'replace' address 'with' row
            | 'configure' address 'with' '{' (IDENT ':' literal)* '}'
            | 'resolve' address 'to' label 'over' label     -- site layer only
+           | place | grant                                 -- site layer only, as in a composition
 address   := 'key' '(' STRING [',' 'realm' ':' STRING] ')' | label
 label     := [(IDENT | '.') '::'] '@' IDENT
--- Four operations and no more; NO positional operation (load order is derived
+-- Four row operations and no more; NO positional operation (load order is derived
 -- by Kahn over the wiring, not declared). `replace` is CLAIM-PRESERVING.
+-- `place` and `grant` write only in the base composition or the site layer: a
+-- stack layer may not choose its tier nor raise its own reach, and is REFUSED.
 -- `configure @db with { ... }`, never `configure @db { ... }`: a brace after a
 -- label lexes as an `@db` HOST BODY. Peer conflicts between stack layers
 -- REFUSE (precedence never chooses a provider); only the site layer resolves,

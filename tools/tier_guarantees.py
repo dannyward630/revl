@@ -241,7 +241,7 @@ def guarantee_codes() -> list[str]:
     G before A before T before the named families, then alphabetically inside
     each, so the table reads the way `docs/guarantees.md` does.
     """
-    from revl.diagnostics import GUARANTEES  # noqa: PLC0415 — needs sys.path
+    from revl.diagnostics import GUARANTEES  # noqa: PLC0415: needs sys.path
 
     def key(code: str) -> tuple:
         m = re.fullmatch(r"([GAT])(\d+)", code)
@@ -579,7 +579,9 @@ def host_tiers() -> tuple[str, ...]:
 
 
 def _short(tier: str) -> str:
-    return {"python": "py", "typescript": "ts"}.get(tier, tier)
+    from revl.tiers import short_tier  # noqa: PLC0415: needs sys.path
+
+    return short_tier(tier)
 
 
 def matrix() -> dict:

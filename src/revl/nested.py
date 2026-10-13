@@ -24,6 +24,7 @@ edit still reaches it.
 
 from __future__ import annotations
 
+import bisect
 import copy
 from dataclasses import dataclass
 
@@ -140,18 +141,31 @@ def _item_lines(node, kind: str) -> list[int]:
     return sorted({line for line in lines if line})
 
 
-def span(text: str, name: str, node, kind: str, member: Member) -> tuple[int, int]:
-    """The member's (first, last) lines, before the proof."""
+def tokens_of(text: str, name: str) -> list:
+    """`text` lexed, for `span` to share across the members of one file
+    (issue #2250)."""
     from .lexer import lex  # noqa: PLC0415
 
-    after = [line for line in _item_lines(node, kind) if line > member.line]
-    next_line = after[0] if after else None
     try:
-        tokens = [t for t in lex(text, name) if t.line >= member.line]
+        return lex(text, name)
     except RevlError as error:
         raise NestedError(f"{name} does not lex: {error}") from None
+
+
+def span(text: str, name: str, node, kind: str, member: Member,
+         tokens: list | None = None) -> tuple[int, int]:
+    """The member's (first, last) lines, before the proof. `tokens` is `text`
+    already lexed (`tokens_of`), when the caller has it."""
+    after = [line for line in _item_lines(node, kind) if line > member.line]
+    next_line = after[0] if after else None
+    if tokens is None:
+        tokens = tokens_of(text, name)
+    # the lexer emits tokens in source order, so their lines never decrease
+    # and the member's first token is found by bisection
+    start = bisect.bisect_left(tokens, member.line, key=lambda t: t.line)
     depth, last = 0, member.line
-    for tok in tokens:
+    for index in range(start, len(tokens)):
+        tok = tokens[index]
         if tok.kind == "eof":
             break
         if tok.kind in _CLOSERS and depth == 0:
@@ -187,7 +201,8 @@ def _drop(node, kind: str, member: Member):
     return node
 
 
-def _program(text: str, name: str):
+def parse(text: str, name: str):
+    """`text` parsed, or None when it does not parse."""
     try:
         return Parser(text, name).parse()
     except RevlError:
@@ -227,8 +242,8 @@ def prove(text: str, name: str, kind: str, top_name: str, member: Member,
     member, and every other declaration as it was."""
     from .operator_text import shape  # noqa: PLC0415
 
-    before = _program(text, name)
-    after = _program(_splice(text, first, last, ""), name)
+    before = parse(text, name)
+    after = parse(_splice(text, first, last, ""), name)
     ok = before is not None and after is not None
     if ok:
         old, new = _top(before, kind, top_name), _top(after, kind, top_name)
@@ -249,7 +264,7 @@ def prove_replacement(text: str, new_text: str, name: str, kind: str,
     member changed, and every other declaration as it was."""
     from .operator_text import shape  # noqa: PLC0415
 
-    before, after = _program(text, name), _program(new_text, name)
+    before, after = parse(text, name), parse(new_text, name)
     if after is None:
         return  # the compile reports the syntax error with its own message
     old, new = _top(before, kind, top_name), _top(after, kind, top_name)
@@ -272,8 +287,9 @@ def top_of(program, name: str, kind: str, top_name: str):
 
 
 def node_of(text: str, name: str, kind: str, top_name: str):
-    return top_of(_program(text, name), name, kind, top_name)
+    return top_of(parse(text, name), name, kind, top_name)
 
 
 __all__ = ["NestedError", "Member", "members", "member_nodes", "member_changes",
-           "find", "span", "prove", "prove_replacement", "node_of", "top_of"]
+           "find", "tokens_of", "span", "prove", "prove_replacement", "parse",
+           "node_of", "top_of"]

@@ -67,7 +67,10 @@ A step is credited with a file only if it can really run it and fail the build
 on it (issue #2210): a pytest line whose targets are computed at run time
 (`pytest $SEL_PYTEST`) is credited with nothing, not with the whole tree, and a
 step or job that is `if: false` or `continue-on-error: true` is credited with
-nothing either.
+nothing either. Nor is a job that never executes: one in a workflow that only
+`workflow_dispatch`, a tag push or a path-filtered trigger starts, one whose
+`if:` is false for every event its workflow is triggered by, or one that needs
+such a job (`_executing_steps`).
 
 STILL NOT CAUGHT, stated plainly so nobody reads more into a green run than is
 there: a toolchain-probe skip for any OTHER tier that does NOT go through a
@@ -75,18 +78,25 @@ there: a toolchain-probe skip for any OTHER tier that does NOT go through a
 backends/python/.venv by hand is one; `pytest.importorskip` anywhere is
 another. Those remain per-file, and the `backend-wasm` job's junit skip audit
 remains the strongest tool for a whole job at once. And everything here reads
-the workflows, not tools/pre_merge.sh: the local gate is not audited yet
-(issue #2210).
+the workflows, with one exception: the gates that make a skip a failure
+(`REVL_CROSS_TIER_SLOW`, `REVL_SWEEP_ALL_TIERS`, `REVL_REQUIRE_*`) must also be
+set by a suite `make pre-merge` can run (issue #2210), see the last section.
 """
 
 from __future__ import annotations
 
 import ast
+import fnmatch
 import posixpath
 import re
 from pathlib import Path
 
+import os
+import subprocess
+import sys
+
 import pytest
+from _load_by_path import load_by_path
 # A HARD import, deliberately (issue #266). This was `pytest.importorskip("yaml")`
 # inside `_steps_setting`, which made the two strongest checks in this file --
 # the ones that pair a gate against the job that actually runs it -- skip
@@ -436,23 +446,213 @@ def _never_gates(spec: dict) -> bool:
     return cond is False or str(cond).replace(" ", "") in ("false", "${{false}}")
 
 
+#: Events that start a workflow by themselves, on a change or on a clock.
+#: `workflow_dispatch` waits for a person, `workflow_call` and `workflow_run`
+#: for another workflow: a job only they start is a job nothing starts.
+_SELF_STARTING = frozenset({
+    "push", "pull_request", "pull_request_target", "merge_group", "schedule"})
+
+
+def _matches_main(patterns: list) -> bool:
+    """Does a `branches:` filter include main? Patterns apply in order, and a
+    `!pattern` excludes what an earlier one included."""
+    included = False
+    for pattern in map(str, patterns):
+        negated = pattern.startswith("!")
+        if fnmatch.fnmatchcase("main", pattern.lstrip("!")):
+            included = not negated
+    return included
+
+
+def _triggers(doc: dict) -> set[str]:
+    """The self-starting events that run this workflow for every change to main.
+
+    A `push` limited to tags or to branches other than main, a `pull_request`
+    limited to some base branches or activity types, and any trigger with a
+    `paths:` filter run for some changes only, so they are not counted.
+    `paths-ignore` (skip docs-only changes) is. A pull request's activity
+    types must include `synchronize`, the push to an open pull request. PyYAML reads the bare key `on`
+    as the boolean True."""
+    on = doc.get("on", doc.get(True))
+    if isinstance(on, str):
+        on = {on: None}
+    elif isinstance(on, list):
+        on = dict.fromkeys(on)
+    elif not isinstance(on, dict):
+        return set()
+    events: set[str] = set()
+    for event, filters in on.items():
+        filters = filters if isinstance(filters, dict) else {}
+        branches = filters.get("branches")
+        if event not in _SELF_STARTING or "paths" in filters:
+            continue
+        if branches is None and ("tags" in filters or "tags-ignore" in filters):
+            continue
+        if branches is not None and not _matches_main(branches):
+            continue
+        if "main" in (filters.get("branches-ignore") or []):
+            continue
+        types = filters.get("types")
+        if (event.startswith("pull_request") and types is not None
+                and "synchronize" not in types):
+            continue
+        events.add(event)
+    return events
+
+
+_EXPR_TOKEN = re.compile(r"\s*(&&|\|\||==|!=|!|\(|\)|,|'(?:[^']|'')*'|[\w.*-]+)")
+
+
+def _when(cond: object, event: str) -> bool | None:
+    """Is a job or step `if:` true in a run that `event` started?
+
+    True, False, or None when the answer depends on something only the run
+    knows (a path filter's output, a needed job's result). Only a definite
+    False is acted on: `github.event_name` comparisons, literals, `!`, `&&`,
+    `||` and parentheses are evaluated, and `cancelled()` is false and
+    `always()` true, `failure()` false; everything else is None."""
+    if cond is None or isinstance(cond, bool):
+        return True if cond is None else cond
+    text = str(cond).strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        text = text[3:-2].strip()
+    tokens: list[str] = []
+    pos = 0
+    while pos < len(text):
+        match = _EXPR_TOKEN.match(text, pos)
+        if not match:
+            return None
+        tokens.append(match.group(1))
+        pos = match.end()
+    pos = 0
+
+    def peek() -> str | None:
+        return tokens[pos] if pos < len(tokens) else None
+
+    def take() -> str:
+        nonlocal pos
+        pos += 1
+        return tokens[pos - 1]
+
+    def truth(value: object) -> bool | None:
+        return None if value is None else bool(value)
+
+    def either(op: str, operand) -> object:
+        left = operand()
+        while peek() == op:
+            take()
+            a, b = truth(left), truth(operand())
+            short = op == "||"
+            if a is short or b is short:
+                left = short
+            elif a is None or b is None:
+                left = None
+            else:
+                left = not short
+        return left
+
+    def unary() -> object:
+        # `!` binds tighter than `==`: `!a == b` is `(!a) == b`.
+        if peek() == "!":
+            take()
+            value = truth(unary())
+            return None if value is None else not value
+        return atom()
+
+    def comparison() -> object:
+        left = unary()
+        if peek() in ("==", "!="):
+            same = take() == "=="
+            right = unary()
+            if left is None or right is None:
+                return None
+            if isinstance(left, str) and isinstance(right, str):
+                left, right = left.lower(), right.lower()
+            return (left == right) is same
+        return left
+
+    def atom() -> object:
+        tok = take()
+        if tok == "(":
+            value = either("||", lambda: either("&&", comparison))
+            if take() != ")":
+                raise ValueError(text)
+            return value
+        if peek() == "(":
+            depth = 0
+            while True:
+                part = take()
+                depth += {"(": 1, ")": -1}.get(part, 0)
+                if depth == 0:
+                    break
+            # `failure()` runs only after something else went red, so a step
+            # it guards proves nothing about a green run.
+            return {"always": True, "cancelled": False, "failure": False}.get(tok)
+        if tok.startswith("'"):
+            return tok[1:-1].replace("''", "'")
+        if tok in ("true", "false"):
+            return tok == "true"
+        return event if tok == "github.event_name" else None
+
+    try:
+        value = either("||", lambda: either("&&", comparison))
+    except (IndexError, ValueError):
+        return None
+    return truth(value) if pos == len(tokens) else None
+
+
+#: An `if:` that names one of these keeps the job running after a needed job
+#: was skipped; without one, GitHub skips it too.
+_STATUS_CHECK = re.compile(r"\b(?:always|cancelled|failure)\s*\(")
+
+
+def _executing_steps(doc: dict) -> list[tuple[str, dict, dict, dict]]:
+    """(job, job spec, step, merged env) for every step of one workflow that
+    runs in some run a self-starting trigger begins, and whose red is red.
+
+    A job runs for an event its workflow is triggered by when its `if:` is not
+    false for that event and, unless that `if:` overrides the default status
+    check, every job it needs runs for it too."""
+    jobs = {name: spec or {} for name, spec in (doc.get("jobs") or {}).items()}
+    triggers = _triggers(doc)
+    memo: dict[str, set[str]] = {}
+
+    def events_for(name: str, chain: tuple[str, ...] = ()) -> set[str]:
+        if name in memo:
+            return memo[name]
+        spec = jobs.get(name)
+        if spec is None or name in chain:
+            return set()
+        events = {e for e in triggers if _when(spec.get("if"), e) is not False}
+        needs = spec.get("needs") or []
+        if not _STATUS_CHECK.search(str(spec.get("if", ""))):
+            for need in [needs] if isinstance(needs, str) else needs:
+                events &= events_for(need, chain + (name,))
+        memo[name] = events
+        return events
+
+    out: list[tuple[str, dict, dict, dict]] = []
+    for job, spec in jobs.items():
+        if _never_gates(spec):
+            continue
+        events = events_for(job)
+        job_env = spec.get("env") or {}
+        for step in spec.get("steps") or []:
+            step = step or {}
+            if _never_gates(step) or not any(
+                    _when(step.get("if"), e) is not False for e in events):
+                continue
+            out.append((job, spec, step, {**job_env, **(step.get("env") or {})}))
+    return out
+
+
 def _gating_steps() -> list[tuple[str, dict, dict, dict]]:
     """(job, job spec, step, merged env) for every workflow step that can fail
     the build. A step that never runs, or whose failure is ignored, proves
     nothing about the files it names (issue #2210)."""
     out: list[tuple[str, dict, dict, dict]] = []
     for path in sorted(WORKFLOWS.rglob("*.yml")) + sorted(WORKFLOWS.rglob("*.yaml")):
-        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        for job, spec in (doc.get("jobs") or {}).items():
-            spec = spec or {}
-            if _never_gates(spec):
-                continue
-            job_env = spec.get("env") or {}
-            for step in spec.get("steps") or []:
-                step = step or {}
-                if _never_gates(step):
-                    continue
-                out.append((job, spec, step, {**job_env, **(step.get("env") or {})}))
+        out += _executing_steps(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
     return out
 
 
@@ -647,15 +847,6 @@ _REQUIRE_ENV = "REVL_REQUIRE_TIERS"
 # file -- it may only shrink, `test_no_stale_tier_exemptions` sees to that, and
 # `test_local_declaration_carries_a_real_reason`'s rules apply to the prose.
 _TIER_NOT_REQUIRED_IN_CI: dict[str, str] = {
-    "rust": (
-        "`conformance` installs a rust toolchain, but `RUNNERS['rust']` also "
-        "reaches for crates.io to resolve cordis-rs and answers an absent-"
-        "toolchain skip when the index is unreachable. Requiring the tier would "
-        "turn a network blip into a red build on an unrelated PR, so closing "
-        "this means vendoring or caching the crate registry in that job first. "
-        "The tier still executes there when the index answers; what is missing "
-        "is the guarantee, not the coverage."
-    ),
     "java": (
         "`RUNNERS['java']` compiles against in-repo stubs unless "
         "REVL_CORDIS4J_CLASSES points at real cordis4j classes, and that "
@@ -928,6 +1119,90 @@ def test_a_step_that_cannot_fail_the_build_is_not_credited(spec, gates):
     assert _never_gates(spec) is not gates
 
 
+_GATED_JOB = """\
+  gated:
+    runs-on: ubuntu-latest{job_extra}
+    steps:
+      - run: sh backends/python/setup.sh
+      - run: pytest tests/test_gated.py -q{step_extra}
+        env:
+          REVL_PROBE_GATE: "1"
+"""
+_IDLE_JOB = """\
+  idle:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
+"""
+
+
+def _workflow(on: str, job_extra: str = "", step_extra: str = "",
+              idle_job: bool = False) -> str:
+    jobs = (_IDLE_JOB if idle_job else "") + _GATED_JOB.format(
+        job_extra=job_extra, step_extra=step_extra)
+    return f"on: {on}\njobs:\n{jobs}"
+
+
+@pytest.mark.parametrize("workflow, executes", [
+    # A job nothing starts on its own: a person, a tag, or a path filter.
+    (_workflow("workflow_dispatch"), False),
+    (_workflow("{push: {tags: ['v*']}}"), False),
+    (_workflow("{push: {branches: [release]}}"), False),
+    (_workflow("{pull_request: {paths: ['docs/**']}}"), False),
+    (_workflow("{pull_request: {types: [labeled]}}"), False),
+    (_workflow("{push: {branches: ['**', '!main']}}"), False),
+    # Triggered, but its `if:` is false for every event that starts it.
+    (_workflow("[push, pull_request]",
+               job_extra="\n    if: github.event_name == 'workflow_dispatch'"), False),
+    (_workflow("[push, pull_request]",
+               step_extra="\n        if: ${{ github.event_name == 'schedule' }}"), False),
+    # Needs a job that never runs, so GitHub skips it too.
+    (_workflow("[push, pull_request]", job_extra="\n    needs: idle", idle_job=True), False),
+    # Positive controls: these do execute.
+    (_workflow("{push: {branches: [main]}, pull_request: null}"), True),
+    (_workflow("{push: {branches: [main], paths-ignore: ['docs/**']}}"), True),
+    (_workflow("{schedule: [{cron: '0 7 * * *'}]}"), True),
+    (_workflow("{merge_group: {types: [checks_requested]}}"), True),
+    (_workflow("[push, pull_request]",
+               job_extra="\n    if: ${{ github.event_name != 'pull_request' }}"), True),
+    (_workflow("[push, pull_request]",
+               job_extra="\n    if: needs.changes.outputs.backends != 'false'"), True),
+    (_workflow("[push, pull_request]", idle_job=True,
+               job_extra="\n    needs: idle\n    if: ${{ !cancelled() }}"), True),
+])
+def test_a_gate_set_only_in_a_job_that_never_executes_is_not_credited(
+        tmp_path, monkeypatch, workflow, executes):
+    """A gate set in a CI job that never executes runs its test nowhere (issue
+    #2210), yet `if: false` was the only way a job could fail to execute here.
+    Driven through the same readers the checks above use, over a workflow
+    directory this test writes."""
+    (tmp_path / "probe.yml").write_text(workflow, encoding="utf-8")
+    monkeypatch.setitem(globals(), "WORKFLOWS", tmp_path)
+    assert bool(_steps_setting("REVL_PROBE_GATE")) is executes
+    assert (_runtime_gaps({"tests/test_gated.py": []}, _runtime_provisioning_jobs())
+            == ([] if executes else ["tests/test_gated.py"]))
+
+
+@pytest.mark.parametrize("cond, event, value", [
+    (None, "push", True),
+    ("${{ github.event_name != 'pull_request' }}", "pull_request", False),
+    ("${{ github.event_name != 'pull_request' }}", "push", True),
+    ("github.event_name == 'push' || github.event_name == 'schedule'", "schedule", True),
+    ("${{ !cancelled() && needs.lint.result == 'success' }}", "push", None),
+    ("${{ !cancelled() && (github.event_name != 'pull_request' || "
+     "needs.changes.outputs.backends != 'false') }}", "pull_request", None),
+    ("${{ github.event_name == 'pull_request' && needs.x.result == 'y' }}", "push", False),
+    ("contains(github.ref, 'main')", "push", None),
+    ("github.run_attempt > 1", "push", None),
+    ("!github.event_name == 'push'", "pull_request", False),
+    ("!(github.event_name == 'push')", "pull_request", True),
+    ("${{ failure() }}", "push", False),
+])
+def test_an_if_is_false_only_when_the_event_makes_it_false(cond, event, value):
+    assert _when(cond, event) is value
+
+
 def test_the_switch_is_wired_in_ci_at_all():
     """`REVL_REQUIRE_TIERS` is read in src/revl/, not tests/, so the scanners at
     the top of this file cannot see it. Check it directly: it must be set by at
@@ -1125,20 +1400,20 @@ def _runtime_provisioning_jobs() -> list[tuple[str, list[str]]]:
 
     Per JOB rather than per step: `setup.sh` and the pytest invocation are two
     separate steps of the same job, and it is the job that carries the venv
-    from one to the other.
+    from one to the other. Only steps that execute and can fail the build
+    count (`_gating_steps`), so a job nothing starts provisions nothing.
     """
+    by_job: dict[int, tuple[str, list[str]]] = {}
+    for job, spec, step, _env in _gating_steps():
+        by_job.setdefault(id(spec), (job, []))[1].append(str(step.get("run", "")))
     out: list[tuple[str, list[str]]] = []
-    for path in sorted(WORKFLOWS.rglob("*.yml")) + sorted(WORKFLOWS.rglob("*.yaml")):
-        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        for job, spec in (doc.get("jobs") or {}).items():
-            runs = [str((step or {}).get("run", ""))
-                    for step in (spec or {}).get("steps") or []]
-            if not any(_CORDIS_SETUP in run for run in runs):
-                continue
-            targets: list[str] = []
-            for run in runs:
-                targets += _pytest_targets(_command_lines(run))
-            out.append((job, targets))
+    for job, runs in by_job.values():
+        if not any(_CORDIS_SETUP in run for run in runs):
+            continue
+        targets: list[str] = []
+        for run in runs:
+            targets += _pytest_targets(_command_lines(run))
+        out.append((job, targets))
     return out
 
 
@@ -1248,3 +1523,199 @@ def test_no_stale_runtime_exemptions():
         assert len(reason.strip()) >= _MIN_REASON_CHARS, (
             f"{rel}: a one-liner is not a reason. Say why no job can run it."
         )
+
+
+# --------------------------------------------------------------------------
+# THE LOCAL HALF: the gates are set on the `make pre-merge` path too (issue
+# #2210).
+#
+# Every check above asks whether a gate is set in a CI job that executes. That
+# proved nothing about a laptop: tools/pre_merge.sh ran the `test_emit_*` file
+# of each tier and set no `REVL_` switch, so the rust/java semantic floor, the
+# toolchain-required tiers and the all-tier sweep ran in CI only.
+# tools/ci_suites.py now lists every CI step that sets one of them and
+# `pre_merge.sh --with=<job>` runs it with CI's value. This section requires
+# that to stay true: a gate that CI sets but no suite the local gate can run
+# sets goes red here, so adding a gate to ci.yml cannot quietly leave it out of
+# `make pre-merge` again.
+# --------------------------------------------------------------------------
+
+PRE_MERGE = ROOT / "tools" / "pre_merge.sh"
+CI_SUITES = ROOT / "tools" / "ci_suites.py"
+
+#: The switches whose job is to turn a skip into a failure or to switch the
+#: slow tier probes on. A `REVL_REQUIRE_*` name is matched by prefix, so a new
+#: one is covered the day it is added.
+_LOCAL_GATE_NAMES = frozenset({"REVL_CROSS_TIER_SLOW", "REVL_SWEEP_ALL_TIERS"})
+
+
+def _is_local_gate(name: str) -> bool:
+    return name in _LOCAL_GATE_NAMES or name.startswith("REVL_REQUIRE_")
+
+
+def _tokens(value: object) -> set[str]:
+    return {t for t in str(value).replace(",", " ").split() if t}
+
+
+def _ci_gate_values() -> dict[str, dict[str, set[str]]]:
+    """gate -> {job -> every value token a gating CI step of that job sets}."""
+    out: dict[str, dict[str, set[str]]] = {}
+    for job, _spec, _step, env in _gating_steps():
+        for name, value in env.items():
+            if _is_local_gate(str(name)):
+                out.setdefault(str(name), {}).setdefault(job, set()).update(_tokens(
+                    str(value).lower() if isinstance(value, bool) else value))
+    return out
+
+
+def _local_gate_gaps(ci_values: dict[str, dict[str, set[str]]], suites, mod
+                     ) -> dict[str, str]:
+    """gate -> why `pre_merge.sh --with=...` does not reproduce it. Two things
+    must hold. Every job that sets the gate in CI has a local recipe (else the
+    gate lists it SKIPPED, "no local recipe", forever) or only runs as a slice
+    of a job that does (`COVERED_JOBS`). And the suites that can run here set
+    the gate to every value CI sets it to, in any job."""
+    runnable = [s for s in suites
+                if s.job in mod.RECIPES and s.job not in mod.COVERED_JOBS]
+    gaps: dict[str, str] = {}
+    for gate, by_job in sorted(ci_values.items()):
+        local: set[str] = set()
+        for suite in runnable:
+            local |= _tokens(mod.switches(suite).get(gate, ""))
+        why = []
+        for job, wanted in sorted(by_job.items()):
+            if job not in mod.RECIPES and job not in mod.COVERED_JOBS:
+                why.append(f"CI job {job} sets it and has no local recipe")
+            elif not wanted <= local:
+                why.append(f"CI job {job} sets {sorted(wanted - local)}, which no "
+                           f"suite `make pre-merge` can run sets (local: "
+                           f"{sorted(local) or 'nothing'})")
+        if why:
+            gaps[gate] = "; ".join(why)
+    return gaps
+
+
+def test_every_ci_gate_is_set_on_the_local_pre_merge_path():
+    """The anti-silent-skip gates are not CI-only (issue #2210).
+
+    `test_every_tier_test_is_required_to_actually_run_in_some_ci_job` and the
+    checks above are satisfied by a CI job. A contributor running `make
+    pre-merge` runs none of it unless tools/ci_suites.py lists the CI step that
+    sets the gate, with the CI value, in a job it knows how to provision.
+    """
+    mod = load_by_path("ci_suites_env_gates_2210", CI_SUITES)
+    ci_values = _ci_gate_values()
+    # the three the issue names must be among them, or the filter is wrong
+    assert {"REVL_CROSS_TIER_SLOW", "REVL_REQUIRE_TIERS",
+            "REVL_SWEEP_ALL_TIERS"} <= set(ci_values), sorted(ci_values)
+    gaps = _local_gate_gaps(
+        ci_values, mod.ci_suites(WORKFLOWS / "ci.yml"), mod)
+    assert not gaps, (
+        "these gates are set in CI but by no suite the local pre-merge gate "
+        "can run, so they run in CI only:\n"
+        + "\n".join(f"  {g}: {why}" for g, why in gaps.items())
+        + "\n\nGive the CI job a recipe in tools/ci_suites.py RECIPES (and "
+        "keep it out of COVERED_JOBS), or set the gate in a job that has one."
+    )
+
+
+def test_the_pre_merge_script_runs_the_ci_suites_that_set_the_gates():
+    """The suites above are reachable from the script, not only from the tool."""
+    text = PRE_MERGE.read_text(encoding="utf-8")
+    assert "tools/ci_suites.py" in text and "--list" in text and "--run" in text, (
+        "tools/pre_merge.sh no longer lists and runs the CI-only suites "
+        "through tools/ci_suites.py, so no gate is set on the local path"
+    )
+    assert "--with=*)" in text, "tools/pre_merge.sh has no --with opt-in"
+    mod = load_by_path("ci_suites_env_gates_2210", CI_SUITES)
+    wanted = {s.id for s in mod.ci_suites(WORKFLOWS / "ci.yml")
+              if any(_is_local_gate(k) for k in s.env)
+              and s.job in mod.RECIPES and s.job not in mod.COVERED_JOBS}
+    assert wanted, "no CI suite sets a gate; the filter is wrong"
+    env = dict(os.environ)
+    env["PATH"] = os.path.dirname(sys.executable) + os.pathsep + env.get("PATH", "")
+    env.pop("REVL_PREMERGE_WITH", None)
+    out = subprocess.run(["sh", str(PRE_MERGE), "--plan", "--with=all"], cwd=ROOT,
+                         env=env, capture_output=True, text=True, timeout=300,
+                         check=False)
+    assert out.returncode == 0 and "nothing was run" in out.stdout, \
+        out.stdout + out.stderr
+    lines = {sid: next((ln for ln in out.stdout.splitlines()
+                        if ln.strip().startswith(f"ci-only {sid}:")), "")
+             for sid in sorted(wanted)}
+    bad = {sid: ln.strip()[:160] for sid, ln in lines.items()
+           if not ln or "not opted in" in ln or "no local recipe" in ln}
+    assert not bad, f"`pre_merge.sh --plan --with=all` does not run: {bad}"
+
+
+_LOCAL_JOB = """\
+on: push
+jobs:
+  {job}:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest tests/test_x.py -q
+        env:
+          {gate}: "{value}"
+"""
+
+
+@pytest.mark.parametrize("job, gate, value, ci_values, gap", [
+    # Positive controls: a job with a local recipe, same value.
+    ("conformance", "REVL_CROSS_TIER_SLOW", "1",
+     {"REVL_CROSS_TIER_SLOW": {"conformance": {"1"}}}, False),
+    ("conformance", "REVL_REQUIRE_TIERS", "py,ts,go,rust",
+     {"REVL_REQUIRE_TIERS": {"conformance": {"rust", "go"}}}, False),
+    # A job that only runs as a slice of another job's suite is reachable.
+    ("conformance", "REVL_REQUIRE_TIERS", "go",
+     {"REVL_REQUIRE_TIERS": {"root-suite-affected": {"go"}}}, False),
+    # Set only in a job the local gate has no recipe for.
+    ("nightly-extra", "REVL_CROSS_TIER_SLOW", "1",
+     {"REVL_CROSS_TIER_SLOW": {"nightly-extra": {"1"}}}, True),
+    # A value reproduced locally by another job does not hide a job with no
+    # recipe that also sets the gate.
+    ("conformance", "REVL_REQUIRE_TIERS", "py,ts,go,rust",
+     {"REVL_REQUIRE_TIERS": {"conformance": {"rust"}, "nightly-extra": {"rust"}}},
+     True),
+    # Set locally, but not to every tier CI requires.
+    ("conformance", "REVL_REQUIRE_TIERS", "py,ts,go",
+     {"REVL_REQUIRE_TIERS": {"conformance": {"go", "rust"}}}, True),
+    # Not set by any suite at all.
+    ("conformance", "REVL_UNRELATED", "1",
+     {"REVL_REQUIRE_TIERS": {"conformance": {"1"}}}, True),
+])
+def test_a_gate_ci_sets_but_the_local_gate_cannot_is_reported(
+        tmp_path, job, gate, value, ci_values, gap):
+    """The check can fail: driven over a workflow this test writes. The real
+    tree passing is not evidence by itself, since `switches()` copies CI's
+    value; these controls are what show the check can go red."""
+    mod = load_by_path("ci_suites_env_gates_2210", CI_SUITES)
+    ci = tmp_path / "ci.yml"
+    ci.write_text(_LOCAL_JOB.format(job=job, gate=gate, value=value),
+                  encoding="utf-8")
+    gaps = _local_gate_gaps(ci_values, mod.ci_suites(ci), mod)
+    assert bool(gaps) is gap, gaps
+
+
+#: Files whose rust skip is a module-level `skipif` on `rust_runtime_reason()`
+#: or a hand `which("cargo")`, not a `revl.test` runner. The tier check above
+#: cannot see them, so each is named and must be run by a CI step that sets
+#: `REVL_REQUIRE_TIERS` for rust; the root conftest.py then fails their skip
+#: (issue #2210).
+_HAND_PROBED_RUST_FILES = ("tests/test_component_name_2200.py",)
+
+
+@pytest.mark.parametrize("rel", _HAND_PROBED_RUST_FILES)
+def test_a_hand_probed_rust_test_is_run_where_rust_is_required(rel):
+    text = (ROOT / rel).read_text(encoding="utf-8")
+    assert re.search(r"which\(\s*[\"']cargo[\"']\s*\)|rust_runtime_reason\(", text), (
+        f"{rel} no longer probes for cargo by hand; drop it from "
+        "_HAND_PROBED_RUST_FILES"
+    )
+    covered = [job for job, run, required in _require_steps()
+               if "rust" in required
+               and any(_covers(target, rel) for target in _pytest_targets(run))]
+    assert covered, (
+        f"{rel} skips when cargo or cordis-rs is missing, and no CI step that "
+        f"runs it sets {_REQUIRE_ENV} for rust, so that skip reads green."
+    )
