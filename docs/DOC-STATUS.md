@@ -90,7 +90,7 @@ was corrected by hand and had drifted back within a day.
 | auto-mocks.md | needs-work | 16 |  |
 | backend-go-v3.md | needs-work | 14 | yes |
 | backend-ir-v1.md | needs-work | 16 |  |
-| backend-ir-v3.md | needs-work | 18 |  |
+| backend-ir-v3.md | needs-work | 0 |  |
 | backend-ir.md | needs-work | 11 |  |
 | backends-roadmap.md | needs-work | 42 |  |
 | bench-selfhost.md | live-owned (not audited) | 49 |  |
@@ -129,7 +129,7 @@ was corrected by hand and had drifted back within a day.
 | frontend-assets.md | needs-work | 13 |  |
 | function-types.md | needs-work | 31 |  |
 | gate-as-a-service.md | needs-work | 21 | yes |
-| gate-dependency-contract.md | stale-fixed | 1 |  |
+| gate-dependency-contract.md | stale-fixed | 0 |  |
 | gauntlet.md | needs-work | 18 |  |
 | gen-types.md | needs-work | 0 |  |
 | generation-history.md | current | 22 |  |
@@ -189,7 +189,7 @@ was corrected by hand and had drifted back within a day.
 | selfhost-findings.md | live-owned (not audited) | 246 |  |
 | service-compat.md | needs-work | 17 |  |
 | signals-and-queries.md | needs-work | 44 |  |
-| stability.md | needs-work | 17 |  |
+| stability.md | needs-work | 0 |  |
 | state-handoff.md | needs-work | 22 |  |
 | stdlib-2.0.md | current | 88 | yes |
 | stdlib-json.md | needs-work | 56 |  |
@@ -199,7 +199,7 @@ was corrected by hand and had drifted back within a day.
 | stdlib-version.md | needs-work | 11 |  |
 | strings.md | needs-work | 39 |  |
 | swap.md | needs-work | 19 |  |
-| syntax-2.0.md | needs-work | 18 |  |
+| syntax-2.0.md | needs-work | 0 |  |
 | tee-attestation-root.md | current | 0 |  |
 | threat-model.md | needs-work | 27 |  |
 | time-coeffect.md | needs-work | 35 | yes |
