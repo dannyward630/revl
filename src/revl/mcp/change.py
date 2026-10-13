@@ -221,17 +221,24 @@ def shape(intent: str, result: dict, plan: dict | None, withdrawn: list[str],
     elif not committed:
         out["note"] = (result.get("note") or "the change was not committed") \
             + "; the running composition is unchanged" \
-            + (_HELD_UNCHANGED if result.get("ok") is False
-               and result.get("proposal") else "")
+            + _held_unchanged(result)
     return out
 
 
-#: Issue #2230: a refusal while a proposal is held leaves that proposal as it
-#: was, and saying only that the running composition is unchanged reads as if
-#: nothing was ever staged.
-_HELD_UNCHANGED = (", and your held proposal is still held and unchanged "
-                   "(commit it with revl_change {commit: true}, or drop it "
-                   "with {discard: true})")
+def _held_unchanged(result: dict) -> str:
+    """Issue #2230: a refusal while a proposal is held leaves that proposal as
+    it was, and saying only that the running composition is unchanged reads as
+    if nothing was ever staged. A stale proposal cannot commit, so it is
+    offered only the discard."""
+    proposal = result.get("proposal")
+    if result.get("ok") is not False or not proposal:
+        return ""
+    if proposal.get("stale"):
+        return (", and your held proposal is still held and unchanged; it is "
+                "stale, so it cannot commit: drop it with revl_change "
+                "{discard: true}")
+    return (", and your held proposal is still held and unchanged (commit it "
+            "with revl_change {commit: true}, or drop it with {discard: true})")
 
 
 def component_source(vs: dict, spec: dict) -> str:

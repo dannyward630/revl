@@ -2180,7 +2180,7 @@ def _edit_loaded_result(arguments: dict, verify, commit: bool) -> dict:
             _proposal.discard(SESSION)
         return _proposal.keep(SESSION, result, arguments.get("replacing") or ())
     except _edit.EditError as error:
-        removed = (_proposal.removed_named(SESSION, arguments)
+        removed = (_proposal.removed_named(SESSION, arguments, error)
                    if base is not None else None)
         if removed is None:
             return _session_error(error, edited=False, swapped=False)

@@ -155,3 +155,34 @@ def test_with_no_proposal_a_refusal_is_as_before(clean_session):
     assert "proposal" not in result and "speculative" not in result
     assert result["note"] == ("the change was not committed; the running "
                               "composition is unchanged")
+
+
+def test_any_other_edit_refusal_keeps_its_own_message(staged):
+    """Only the miss of a removed name is rewritten: a clash in the same edit
+    keeps the real refusal."""
+    result = _call("revl_edit", {"commit": False, "edits": [
+        {"append": "component TenantBApp {}"},
+        {"symbol": "TenantAApp", "remove": True}]})
+    message = _message(result)
+    assert "TenantBApp is already declared" in message
+    assert "held proposal" not in message
+    assert result["proposal"] == {"generation": 1, "replacing": REPLACING}
+
+
+def _make_stale():
+    session = server_mod.SESSION
+    (proposal,) = session.proposals.values()
+    proposal["generation"] = session._generation - 1
+
+
+def test_a_stale_proposal_is_offered_only_the_discard(staged):
+    _make_stale()
+    result = _replace("TenantAApp", A_APP)
+    message = _message(result)
+    assert "`TenantAApp` was removed by your held proposal" in message
+    assert "is stale" in message
+    assert "{commit: true}" not in message
+    assert [n["arguments"] for n in result["next"]] == [{"discard": True}]
+    assert result["proposal"]["stale"] is True
+    assert "{commit: true}" not in result["note"]
+    assert "stale, so it cannot commit" in result["note"]

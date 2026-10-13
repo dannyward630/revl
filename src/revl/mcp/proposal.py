@@ -109,9 +109,11 @@ def annotate(session, result: dict, speculative: bool) -> dict:
     proposal = held(session)
     if proposal is None or result.get("ok") is not False or "proposal" in result:
         return result
-    return {**result, "speculative": speculative,
-            "proposal": {"generation": proposal["generation"],
-                         "replacing": list(proposal["replacing"])}}
+    block = {"generation": proposal["generation"],
+             "replacing": list(proposal["replacing"])}
+    if stale(session) is not None:  # it cannot commit: say so on the block
+        block["stale"] = True
+    return {**result, "speculative": speculative, "proposal": block}
 
 
 def _declares(vs: dict, name: str) -> bool:
@@ -156,15 +158,23 @@ def _named_symbols(arguments: dict) -> list[str]:
     return out
 
 
-def removed_named(session, arguments: dict) -> str | None:
-    """The first name an edit addresses that the running composition declares
-    and the held proposal no longer does: a staged change removed it."""
+#: The miss `symbols.resolve` raises; the only refusal `removed_named` reads.
+_MISS = "no top-level declaration matches `{}`"
+
+
+def removed_named(session, arguments: dict, error) -> str | None:
+    """The name an edit addressed whose miss is `error`, when the running
+    composition declares it and the held proposal no longer does: a staged
+    change removed it. Any other refusal (a clash, a bad range) is None, and
+    keeps its own message."""
     proposal = held(session)
     if proposal is None:
         return None
     running = _edit.running_source(session)
     for symbol in _named_symbols(arguments):
-        if not _declares(proposal["vs"], symbol) and _declares(running, symbol):
+        if str(error) == _MISS.format(symbol) \
+                and not _declares(proposal["vs"], symbol) \
+                and _declares(running, symbol):
             return symbol
     return None
 
@@ -173,25 +183,31 @@ def removed_refusal(session, symbol: str) -> tuple[str, list]:
     """What a change that names `symbol` is told when the held proposal
     removed it (issue #2230): the name exists in the running composition, so
     "no declaration matches" would be false. The change still resolves against
-    the proposal, by design, so it stays refused, and says how to proceed."""
+    the proposal, by design, so it stays refused, and says how to proceed. A
+    stale proposal cannot commit, so it is offered only the discard."""
     from . import remedy as _remedy  # noqa: PLC0415
 
     proposal = held(session)
     running = _names(_edit.running_source(session))
     still = set(_names(proposal["vs"]))
-    gone = ", ".join(f"`{name}`" for name in running if name not in still)
-    message = (
-        f"`{symbol}` was removed by your held proposal: a staged change "
-        f"removed {gone} (proposal built on generation "
-        f"{proposal['generation']}). The running composition still has it, "
-        "but a change builds on the held proposal, where it no longer exists. "
-        "Commit the proposal with revl_change {commit: true} (no intent), "
-        "drop it with revl_change {discard: true}, or name a declaration the "
-        "proposal still has")
+    # a qualified name can move buffers and leave no top-level name missing
+    gone = ", ".join(f"`{name}`" for name in running if name not in still) \
+        or f"`{symbol}`"
+    head = (f"`{symbol}` was removed by your held proposal: a staged change "
+            f"removed {gone} (proposal built on generation "
+            f"{proposal['generation']}). The running composition still has it, "
+            "but a change builds on the held proposal, where it no longer "
+            "exists. ")
     discard_call = _remedy.call("revl_change", {"discard": True})
-    if stale(session) is not None:  # a stale proposal cannot commit
-        return message, [discard_call]
-    return message, [_remedy.call("revl_change", {"commit": True}), discard_call]
+    if stale(session) is not None:
+        return (head + "The proposal is stale (the running composition moved "
+                "since it was built), so it cannot commit: drop it with "
+                "revl_change {discard: true}, or name a declaration the "
+                "proposal still has"), [discard_call]
+    return (head + "Commit the proposal with revl_change {commit: true} (no "
+            "intent), drop it with revl_change {discard: true}, or name a "
+            "declaration the proposal still has"), \
+        [_remedy.call("revl_change", {"commit": True}), discard_call]
 
 
 def touched_since(session, proposal_vs: dict) -> list[dict]:
