@@ -269,9 +269,9 @@ with the path it is expected at and `sh backends/python/setup.sh` to fetch it.
 
 ```text
 $ revl doctor --no-smoke
-revl doctor - compiler 3.0.0
+revl doctor - compiler 0.3.0rc1
 
-  [OK     ] compiler (revl)                   3.0.0  the running compiler
+  [OK     ] compiler (revl)                0.3.0rc1  the running compiler
   [OK     ] python backend                    3.14.3  ...
   [MISSING] java backend (JDK)                 no working JDK found ...
   [WARN   ] cordis-py runtime                  'cordis' not importable ...
