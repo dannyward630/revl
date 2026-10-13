@@ -115,6 +115,13 @@ Parse, check, link, and lower `FILES` to a backend IR document.
   directory). Ignored for module arguments.
 - `--json-diagnostics` - on rejection, print a structured diagnostic (code,
   guarantee, expected/actual, `fix` hint) instead of the human rendering.
+- `--taint-strict` - derive taint sinks and sources with no annotation (item
+  249, slice D): a shell/exec/terminal-scoped crossing refuses untrusted
+  input, and a web/net/fs/model/input emission mints its origin. Additive: a
+  program that already passes without it is unaffected.
+- `--bind-realm NAME=REALM` - bind the realm placeholder `realm(?NAME)` to
+  `REALM` (repeatable, issue #1728). An unbound placeholder is refused by
+  name; G2 is checked after binding.
 
 The IR document it writes is the input other commands read as a "compiled
 composition": `revl diff`, `revl version --against`, `revl profile`,
@@ -128,7 +135,7 @@ revl compile app.rvl --json-diagnostics    # CI: parse the rejection
 ### `revl explain`
 
 What a diagnostic code guarantees and how to satisfy it. No sources; it reads
-the machine table in `src/revl/diagnostics.py` — `GUARANTEES`/`FIXES` for the
+the machine table in `src/revl/diagnostics.py` - `GUARANTEES`/`FIXES` for the
 codes of the design catalogue, plus `OTHER_CODES` for every remaining code the
 compiler, the gate, the session and the MCP faces emit. So a code a rejection
 can hand back has an answer, not just the catalogue ones (issue #2028). The
@@ -154,8 +161,8 @@ agent must solve from the refusal itself; `emitted_codes.reserved_codes()`
 derives them by the same rule the curriculum uses, and `revl explain` refuses
 them on purpose (`HOST-ARITY` is one).
 
-A code that enforces no named guarantee — a verdict about the *run* rather
-than about the source — says so: `classify()` reports
+A code that enforces no named guarantee - a verdict about the *run* rather
+than about the source - says so: `classify()` reports
 `"guarantee": "unclassified"` rather than leaving the field out, so a consumer
 has something to branch on. The reserved codes are the deliberate exception
 here too: `classify()` adds no machine field of its own for them, and a parse
@@ -165,7 +172,7 @@ token, which is more use than a canned one.
 The text renderer re-spells the same envelope field by field, and
 `tests/fixtures/vocabulary_mirror_ledger.json` records the pair, so
 `tools/check_vocabulary_mirrors.py` reds if a field the producer emits stops
-reaching the terminal — a field the producer emits and the renderer never
+reaching the terminal - a field the producer emits and the renderer never
 reads is invisible to the human. `tests/test_explain_coverage_2028.py` holds
 the same edge behaviourally, per entry.
 
@@ -348,6 +355,11 @@ without lowering a single component body.
 - `--root DIR` - the project root row provenance and origins are recorded
   against (default: the working directory). A document under `trucs/<key>/`
   is scoped to the origin `<key>`; anything else to the project origin `.`.
+- `--panel` - print the AUTHORITY PANEL comparing the base composition to the
+  folded candidate (item 426 S5, section 8): the TRUST BASIS line, the re-keyed
+  crossing tokens with `config:` value digests, the fail-closed headline, and
+  the always-printed BLIND SPOTS block. The panel is the approval surface for
+  applying layers.
 
 Exits nonzero on a refusal: an unresolvable row, an assertion the component
 header contradicts, two rows claiming one `(key, realm)` pair, a config field
@@ -360,8 +372,8 @@ revl composition base.rvl --admit
 
 ### `revl analyze`
 
-Derive a Petri net from the composition IR — provisions as places, activations
-as transitions — and search it by bounded reachability for a dead state, a
+Derive a Petri net from the composition IR - provisions as places, activations
+as transitions - and search it by bounded reachability for a dead state, a
 marking from which some component can never activate. This is the REACHABILITY
 question G2/G3/G7 do not answer ([analyze-liveness.md](analyze-liveness.md), item
 438). Report-only: it names the deadlocked cycle, it does not refuse admission.
@@ -557,7 +569,7 @@ component can perform and the capabilities each crosses.
 
 Also prints the **retention surface** (roadmap item 308 F10) when the
 composition has one: every declared position at which a resource handle leaves
-revl's sight — a resource-carrying parameter of a non-inverse extern, or of a
+revl's sight - a resource-carrying parameter of a non-inverse extern, or of a
 service method whose implementation may live host-side. This is report-only and
 refuses nothing: the ownership checks refuse a borrow that escapes through a
 revl position, but a host body that keeps the handle it was handed escapes
@@ -618,6 +630,9 @@ question.
   [model-scheduling.md](model-scheduling.md)). A placement whose routed model
   actions cannot be scheduled exits nonzero with the scheduler's refusal.
   Human output only; the `--json` body is unchanged.
+- `--recovery` - also print the item-309 recovery view: every inverse, deferred
+  emission, and compensation with its replay class (free / fenced /
+  human-finish) and idempotency register. Human output only.
 
 ### `revl goal audit`
 
@@ -1023,6 +1038,13 @@ Holds and opens a REPL by default; `--watch`, `--once`, or `--plan` change that.
   `--placement`, each process writes its own WAL (`FILE.<process>`) and FILE
   is the run's index; py processes only, unsandboxed, and no `revl swap`
   ([section 5d](crash-recovery.md#5d-recovering-a-placement-run-issue-1477)).
+- `--require-settled-wal` - refuse a new run while the `--wal` file still
+  holds unresolved emissions (crossings neither completed nor acknowledged
+  with `revl recover --operator-resolved`); the run exits 1 and prints them.
+  Requires `--wal` and the single-process Python backend (exit 2 otherwise).
+- `--allow-unsynced-wal` - explicitly permit WAL fsync failures. WAL durability
+  is then not guaranteed, and a warning says so on stderr. Requires `--wal` and
+  the single-process Python backend (exit 2 otherwise).
 - `--estop-latch FILE` - watch FILE for an operator E-Stop, so `revl estop
   --latch FILE` from another terminal halts this run immediately
   ([443-estop.md](design/443-estop.md)). Unarmed by default; an unarmed run
@@ -1161,6 +1183,11 @@ LIFO), ending in a checked verdict + residue proof
   For a `--placement` run, the index: recover finds every process WAL it
   names, recovers them consumers first, and gives one verdict naming each
   process's residue ([section 5d](crash-recovery.md#5d-recovering-a-placement-run-issue-1477)).
+- `--operator-resolved SEQ` - acknowledge a reconciled crossing by its WAL
+  sequence number, so recovery stops reporting it as unresolved; repeatable.
+  Each acknowledgement is appended to the WAL as it is validated, so an invalid
+  sequence number leaves the earlier ones applied. Not accepted on a placement
+  index: resolve a crossing on its process WAL (exit 2).
 - `--restore SNAPSHOT.json` - on roll-forward, the item-15 snapshot to
   re-admit so recovery resumes the persisted generation.
 - `--approval-policy auto` - on `--restore`, re-arm the auto-approve policy the
@@ -1208,7 +1235,7 @@ This is not `revl_abort` with a shorter name. Abort is a verdict on the work
 and pays for a full unwind; estop pays for a latch flip. The price is stated,
 not hidden: **nothing is unwound.** No inverse runs, no compensation runs,
 nothing is discharged; every registered entry is left stranded (still owed) and
-every acquired handle stays held. The instance is dead afterwards — there is no
+every acquired handle stays held. The instance is dead afterwards - there is no
 resume, and the way back is `revl recover --wal FILE`.
 
 - `--latch FILE` - the latch file the running process watches (`revl run
@@ -1242,9 +1269,9 @@ FILE` halts all of them. The two populations are different and the report says
 which one each component got:
 
 - a process on a tier that HONORS the latch (today: `py`) refuses new crossings
-  at its own seams from the instant the latch appears, prints its inventory —
+  at its own seams from the instant the latch appears, prints its inventory -
   the entries it stranded and the at-most-one crossing that was already
-  dispatched — and dies where it stands, running no teardown;
+  dispatched - and dies where it stands, running no teardown;
 - a process on any other tier (`node`, `rust`, `go`, `java`, `wasm`) has no
   E-Stop seam, so the only halt available for it is a SIGKILL. It may have
   dispatched a crossing microseconds before it died and nothing recorded that,
@@ -1292,6 +1319,10 @@ Flags:
   `REVL_SLO_KEY`). With no key the run is measured and reported but not signed,
   and the output says so.
 - `--signer TOKEN` - who issued the receipt, recorded inside the signed body.
+- `--seal` - sign the receipt even when nothing breached. This is the
+  generation-boundary reading, and what a live `Session` does at its own
+  boundary. Without it a clean run is measured and reported and no receipt is
+  issued, because in flight a receipt is the account of an action taken.
 - `--receipt FILE` - the receipt to verify, or the predecessor receipt to gate
   against.
 - `--out FILE` - write the signed receipt.
@@ -1402,6 +1433,12 @@ emitted, flagging over-declaration ([revl-profile.md](revl-profile.md)).
 - `--json` - machine-readable profile document.
 - `--strict` - least-privilege gate: exit nonzero if any component
   over-declares an emission the run never exercised.
+- `--patch`, `--minimize` - repair mode (item 307), two spellings of one flag:
+  instead of the profile, PROPOSE the least-authority `emission[...]` each
+  over-declaring component should declare, narrowed to the observed reach and
+  never past a `*`. The proposal is printed, never applied: apply it and
+  re-run the gate. Combine with `--json` for an agent-consumable patch
+  document.
 
 ### `revl trace`
 
@@ -1664,8 +1701,9 @@ for the key lifecycle and what the signature binds.
     undetected, and nothing on it is secret - the artifact source crosses in
     the clear. A confidential cross-machine channel is roadmap item 118's mTLS
     work, which this is a caller of rather than a second copy of. A
-    non-loopback bind also needs the `revl[crypto]` extra
-    (`pip install 'revl[crypto]'`) and exits 2 naming it before binding,
+    non-loopback bind also needs the `crypto` extra (the `cryptography`
+    package), installed from a source checkout with
+    `pip install -e '.[crypto]'`, and exits 2 naming it before binding,
     because the peer signs a receipt for every task a remote party sends and
     the pure-Python signer's timing leaks its key (issue #1460; see
     [tee-attestation-root.md](tee-attestation-root.md)).
@@ -1704,6 +1742,12 @@ untouched ([erase-report.md](erase-report.md)).
 - `--json` - machine-readable, versioned report document.
 - `--no-residue-proof` - skip the runtime teardown proof (static sections
   only; use where the cordis runtime is unavailable).
+- `--receipt-key PATH` - sign a portable erasure receipt over this report and
+  embed it under `receipt` (roadmap item 472). Falls back to
+  `REVL_ERASURE_KEY_FILE` (a path) or `REVL_ERASURE_KEY` (the secret); never
+  hardcoded.
+- `--receipt-signer NAME` - the identity to record as the receipt's issuer, so
+  a verifier can tell who requested the erasure. Used when a receipt is signed.
 
 ### `revl retention-receipt`
 
@@ -1836,13 +1880,20 @@ Compile and run in-file `test` blocks (and `prop test` / `fault test` /
 - `--sweep` - fault sweep: inject failure at every step of every component and
   check L-Raise / no-residue / LIFO / siblings at each (py tier). With
   `--backend all`, sweep every runtime whose toolchain is present and assert
-  they agree — residue-free on every tier; a toolchain-absent or
+  they agree - residue-free on every tier; a toolchain-absent or
   not-yet-capable tier loud-skips, never a false green. Set `REVL_SWEEP_CAP=N`
   to take a representative corpus on the heavy tiers (§10 of
   [fault-tests.md](fault-tests.md)).
 - `--mock-requires` - run every `lifecycle test` in mock world: each unmet
   `requires` is filled by an auto-generated mock provider, so a consumer boots
   with zero real providers (py tier; [auto-mocks.md](auto-mocks.md)).
+- `--schedule-seed SEED` - schedule testing: replay one seeded interleaving of
+  the composition's concurrent lifecycle steps and check residue / deadlock /
+  stable-final-state / teardown / use-after-withdrawal. Reproducible from the
+  seed (py tier; [design/295-schedule-testing.md](design/295-schedule-testing.md)).
+- `--schedule-seeds N` - schedule testing: sample `N` seeded interleavings (a
+  random walk over the schedule space) plus the canonical sequential baseline,
+  and report any interleaving that violates a property (py tier).
 
 ---
 
@@ -1884,6 +1935,9 @@ source plus the runtime manifest, so one artifact carries every tier.
   (`docs/bundle.md` §4).
 - `--topology PLACEMENT` - a placement/topology map (TOML or JSON) carried in
   the bundle as `topology.json`; omit for a single-process bundle.
+- `--one-file FILE` - also pack the bundle into ONE self-contained file (for
+  example `app.revlbundle1`) beside the `--out` directory. `revl verify FILE`
+  checks it exactly as it checks the directory (item 305).
 - `--json` - print the bundle path and its runtime manifest as JSON.
 
 ```bash
@@ -1908,8 +1962,9 @@ revl verify app.revlbundle --json    # CI: parse the per-tier verdict
 ### `revl deploy`
 
 Deploy a compiled composition across process seams with attested admission and
-coordinated rollback (roadmap item 118). Every seam is a local process seam
-today; cross-machine control-plane pieces are deliberately deferred.
+coordinated rollback (roadmap item 118). A target is deployed over the process
+boundary (`via = local`) or, under a pinned host key, across a machine boundary
+(`via = ssh`). Container launch orchestration is still to come.
 
 - `MAP` - the deploy/placement map (TOML or JSON): `[processes.<p>]` with an
   optional `[processes.<p>.deploy]` table per process.
@@ -1918,30 +1973,60 @@ today; cross-machine control-plane pieces are deliberately deferred.
   participant.
 - `--json` - machine-readable verdict: the admission plan under `--dry-run` (or
   on a refusal), otherwise the coordinated deploy report.
+- `--bundle DIR` - an attested reproducible bundle (item 305, see
+  [`revl bundle`](#revl-bundle)) to admit before deploying. Its
+  whole-composition attestation chain is re-hashed against the staged bytes
+  and verified in PREPARE (item 118 section 2), and a refused chain refuses the
+  deploy before any boundary opens. The check is effect-free and also runs
+  under `--dry-run`, where a refusal reports the failing chain link and exits
+  1. A cross-machine (`ssh`) deploy requires it, because the far host re-hashes
+  the staged bytes.
+- `--key PATH` - a file holding the raw HMAC verify key the receiver trusts;
+  repeatable. Used only with `--bundle`; each key is selected by its
+  attestation `key_id`. With no key the chain cannot be verified and admission
+  refuses at the signer link.
+- `--backend {py,ts,rust,java,wasm,go}` - with `--bundle`, the receiver backend
+  whose emitted artifact bytes the chain is re-hashed over (default: python).
+- `--require-gauntlet` - with `--bundle`, refuse a chain that binds no item-31
+  gauntlet evidence rather than admitting on absent evidence.
+- `--require-conformance` - with `--bundle`, refuse a chain that binds no
+  item-306 conformance cert for `--backend` rather than admitting on absent
+  evidence.
 
 Admission is the load-bearing half: the receiver re-hashes the IR and artifact
 bytes it will actually execute and verifies item 127's signed `evidence_bindings`
 chain (`source -> IR -> artifact -> policy -> evidence`) against a local trust
 store, never trusting a self-declared `backend`/`artifact_hash`. A machine
-boundary is refused outright, an unknown `via` is refused rather than read as
-local, and a container target is refused unless it is proven seam-free.
+target is admitted only for `via = ssh` with both a `host` and a `known_hosts`
+(the pinned host-key file): host-key checking is never trust-on-first-use, and
+any other machine target (including `via = peer`) is refused by name. An
+unknown `via` is refused rather than read as local, and a container target is
+refused unless it is proven seam-free.
 
-Without `--dry-run`, an admitted map is DEPLOYED over the process boundary
-(`via = local`): one participant per process is spawned and driven through the
-two-phase PREPARE/COMMIT protocol. The coordinator holds only an ordered commit
+Without `--dry-run`, an admitted map is DEPLOYED: one participant per process
+is driven through the two-phase PREPARE/COMMIT protocol. A `via = local`
+participant is a spawned child process. A map that admits a `via = ssh` target
+stages the `--bundle` onto each far host under its pinned host key and drives
+the same protocol over an ssh channel, so a mixed map of local and ssh targets
+deploys as one coordinated unit; such a deploy requires `--bundle`, and
+without one it is refused at the stage phase. The `--bundle` chain is verified
+in PREPARE before any boundary opens (`--dry-run` runs it too). For an ssh
+target the far host's `revl deploy-admit` runner also verifies the staged bytes
+against its own local trust store and returns a signed verdict. The coordinator holds only an ordered commit
 ledger and, on any COMMIT failure, drives ABORT in reverse ledger order so each
-participant runs its own local LIFO unwind — a participant it cannot reach is
+participant runs its own local LIFO unwind - a participant it cannot reach is
 reported `unresolved`, never rolled back. The aggregate verdict is `applied`
 only when every participant applied, `aborted-clean` only when every committed
 participant rolled back clean, otherwise `aborted-with-residue`. Because
-admission supplies no seam set here, only a process-boundary target reaches the
-COMMIT path; the cross-machine / container launch orchestration and the
-host-side chain verify at admission are following slices.
+admission supplies no seam set here, a container target is refused, so only
+process-boundary and pinned ssh targets reach the COMMIT path; container launch
+orchestration is still to come.
 
 ```bash
 revl deploy deploy.toml --dry-run     # plan admission, stop before COMMIT
 revl deploy deploy.toml               # deploy over the process boundary
 revl deploy deploy.toml --json        # machine-readable verdict
+revl deploy deploy.toml --bundle app.revlbundle --key host.pub --dry-run
 ```
 
 ### `revl deploy-admit`
@@ -1972,8 +2057,8 @@ a request can ASK for admission but cannot supply the trust that would grant it.
 Locally the conductor spawns the `revl deploy-admit` runner as a local child
 process and speaks to it over stdin/stdout (`deploy.StdioRunnerTransport`);
 across a machine boundary it
-is the same command behind `ssh <host>`, which is a following slice together
-with the bundle staging and pinned SSH host key.
+is the same command behind `ssh <host>`, with the bundle staged onto the far
+host under a pinned SSH host key (`revl deploy`, `via = ssh`).
 
 ```bash
 # usually spawned by a transport, not by hand; driven over stdin/stdout:
@@ -2035,9 +2120,26 @@ the server whose verbs are documented in [mcp-reference.md](mcp-reference.md).
   reads identical twice this far apart (default: `1000`). Requests other than
   `revl_estop` are refused while it settles. `0` removes the protection against
   adopting a half-written file; write the profile atomically either way.
+- `--author-trust {untrusted,trusted}` - how much to trust the agent on the
+  other end as an AUTHOR. `untrusted` (the default) compiles its source under
+  the item-329 untrusted-author profile: it may compose granted services but may
+  neither declare nor reach an `extern`/host block. `trusted` lets it author
+  host code, and stamps every class-(c) ticket with the unreviewed host bodies
+  a yes would also run.
+- `--grant SERVICE` - a service name an admitted turn may reach (repeatable).
+  Naming any turns on the item-329 reach allowlist; omit them all and reach is
+  not bounded by this flag.
+- `--bind-realm NAME=REALM` - bind the realm placeholder `realm(?NAME)` to
+  `REALM` for every source this server admits (repeatable, issue #1728). An
+  untrusted agent may not name a realm (G9); it may write a placeholder, and
+  only this operator flag says which realm it is. An unbound placeholder is
+  refused by name.
+- `--print-config` - print the MCP client config block (an absolute interpreter
+  that can import revl and cordis, and the module invocation) and exit without
+  serving (issue #2281).
 - `--all-tools` - advertise every verb in `tools/list`. Without it, `tools/list`
   shows the core tier plus `revl_verbs`, which returns any other verb's schema
-  and — given `name` and `args` — calls that verb, so every verb is reachable
+  and - given `name` and `args` - calls that verb, so every verb is reachable
   from the advertised list; `--all-tools` costs about 22,800 extra cold-start
   tokens, the hatch about a hundred. `REVL_MCP_ALL_TOOLS=1` does the same
   (issue #1697, #2073, [mcp-reference.md](mcp-reference.md#find-a-verb)).
@@ -2131,6 +2233,30 @@ subcommands.
 - `--emission OP` - assert that a safe-by-spec operation (a `GET` that writes)
   is irreversible after all, overriding the verb; named the same way;
   repeatable.
+- `--compensate OP` - promote a write to a COMPENSATE-grade network effect
+  (item 254): attach a best-effort, audit-surface reversal to its emission. The
+  verb picks the route: `PUT` restores the `GET` preimage, `DELETE` recreates
+  from it, `POST` deletes what it created. A hard error on `PATCH`. Pair with
+  `--preimage`, `--undo` and `--undo-key`; repeatable.
+- `--preimage OP=GETOP` - name the safe `GET` operation a compensate-grade `PUT`
+  or `DELETE` reads its preimage from; repeatable.
+- `--undo OP=UNDOOP` - name the operation the reversal issues: the `PUT` that
+  writes the preimage back (the default for a `PUT`), the create a `DELETE`
+  recreates through, or the delete that removes what a `POST` created. It must
+  be an operation in the document whose verb fits the route (`PUT` for a
+  restore, `POST` or `PUT` for a recreate, `DELETE` for a delete of what was
+  created) and an `emission`, so one weakened with `--pure` cannot be an undo;
+  otherwise the promotion is refused. Repeatable.
+- `--undo-key OP=FIELD` - for a compensate-grade `POST`, the REQUIRED response
+  field naming the resource it created, which the reversal delete is addressed
+  by. Without it the compensation is unkeyed and refused; repeatable.
+- `--if-match OP` - assert that a compensate-grade endpoint exposes a
+  version/ETag token, so the reversal issues under `If-Match`
+  (`If-None-Match: *` for a recreate) and fails loudly on a racing writer.
+  Without it the reversal is best-effort and may clobber; repeatable.
+- `--require-if-match` - refuse a compensate-grade promotion on any endpoint
+  that claims no version/ETag token, instead of emitting a best-effort,
+  may-clobber reversal for it.
 - `-o`, `--output PATH` - output path (default: stdout).
 - `--json-diagnostics` - structured diagnostic on rejection.
 
@@ -2156,6 +2282,13 @@ subcommands.
 - `--backend {ts, py}` - host block backend (default: `ts`). Unlike its
   siblings the bodies are real: a JSON-RPC 2.0 `message/send` crossing.
 - `--service NAME` - generated service name (default: from the card's `name`).
+- `--long-running` - project the four-op A2A Task lifecycle
+  (`<skill>_start`, `_poll`, `_reply`, `_cancel`) instead of one terminal
+  crossing per skill (item 439 T1). A card that declares
+  `capabilities.streaming` triggers this on `--backend py` automatically; the
+  flag forces it for a skill the composing engineer knows is long-running.
+  `py` only: a Task crossing suspends, and the ts async recolour is a later
+  slice.
 - `--allow-plaintext` - import a card whose `url` is plaintext `http`; refused
   without it, and the generated header records that the flag was used.
 - `--follow-redirects` - let the generated crossing follow a **same-origin**
@@ -2173,7 +2306,7 @@ G7 teardown. See [import-a2a.md](import-a2a.md) §2.
 
 ### `revl export`
 
-The reverse of `revl import`. Two subcommands.
+The reverse of `revl import`. Three subcommands: `wit`, `client` and `openapi`.
 
 `revl export wit FILES` - generate the standard WIT interface for a revl
 service or composition ([wit-bridge.md](wit-bridge.md)).
@@ -2231,6 +2364,36 @@ provides nothing is refused rather than projected as half a contract.
   - `--component NAME` - export this component's browser channel (`webui`).
 - `-o`, `--output PATH` - output path (default: stdout).
 - `--json-diagnostics` - structured diagnostic on rejection.
+
+`revl export openapi FILES` - generate an OpenAPI 3.1 document (JSON) for one
+service's routed operations, the reverse of `revl import openapi`
+([import-openapi.md](import-openapi.md); roadmap item 457). It renders one path
+item per ROUTED operation (an operation that heads a `route` clause), the
+compiler-resolved bind table as path and query `parameters` and `requestBody`,
+the derived schemas under `components/schemas`, the `200`/`204` success and
+`ApiError` error responses, and the compiler's `x-revl-emission` hint. Pure IR
+codegen: no runtime, no emission, no language change. A type it cannot render
+exactly is refused rather than degraded to an unconstrained schema.
+
+The document carries NO `securitySchemes` and NO `security` requirement. There
+is nothing in a `route` clause to derive an authorization requirement from:
+authorization is the handler's explicit step on a required `Auth` service, not a
+fact the router or this document can stand in for. An operation with a `Bearer`
+parameter gets a documentation-only `x-revl-auth: bearer` marker that grants
+nothing.
+
+- `FILES` - `.rvl` source files (required).
+- `--service NAME` - the service whose routed operations to export (required).
+  There is no `--composition` form: an OpenAPI document is one API surface with
+  one `info.title`. A name not in the compiled IR is refused, listing the known
+  services.
+- `-o`, `--output PATH` - output path (default: stdout).
+- `--json-diagnostics` - on rejection, print a structured diagnostic instead of
+  the human rendering.
+
+```bash
+revl export openapi notes.rvl --service Notes -o notes.openapi.json
+```
 
 ### `revl sourcemap`
 

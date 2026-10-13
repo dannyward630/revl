@@ -274,7 +274,7 @@ def block_mcp_count(current: str) -> str:
     return ("The server has exactly the verbs below, one section each "
             "(`python3 tools/docgen.py --show mcp-verb-count` counts them). By "
             "default `tools/list` advertises the core tier and `revl_verbs` "
-            "returns the rest — or calls one, given `name` and `args`; see "
+            "returns the rest - or calls one, given `name` and `args`; see "
             "\"Find a verb\".")
 
 

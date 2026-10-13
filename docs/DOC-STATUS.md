@@ -72,7 +72,7 @@ regenerated rather than edited.
 | census-artifact.md | current | 0 |  |
 | closures.md | needs-work | 7 |  |
 | collections.md | needs-work | 34 | yes |
-| commands-reference.md | current | 14 |  |
+| commands-reference.md | current | 0 |  |
 | component-leases.md | needs-work | 33 |  |
 | composition-bootstrap.md | needs-work | 1 |  |
 | composition-layers.md | needs-work | 20 |  |
@@ -121,7 +121,7 @@ regenerated rather than edited.
 | mcp-bridge.md | needs-work | 77 |  |
 | mcp-http-transport.md | current | 0 |  |
 | mcp-proxy.md | current | 0 |  |
-| mcp-reference.md | current | 18 |  |
+| mcp-reference.md | current | 0 |  |
 | model-providers.md | current | 0 | written with issue #1461 |
 | model-scheduling.md | needs-work | 7 |  |
 | namespacing.md | needs-work | 16 |  |
@@ -155,7 +155,7 @@ regenerated rather than edited.
 | scaffold.md | needs-work | 2 |  |
 | schedule-testing.md | needs-work | 0 |  |
 | seam-deadlines.md | needs-work | 15 |  |
-| selfhost-compile.md | stale-fixed | 9 |  |
+| selfhost-compile.md | stale-fixed | 0 |  |
 | selfhost-findings.md | live-owned (not audited) | 246 |  |
 | service-compat.md | needs-work | 17 |  |
 | signals-and-queries.md | needs-work | 44 |  |
@@ -174,11 +174,11 @@ regenerated rather than edited.
 | threat-model.md | needs-work | 27 |  |
 | time-coeffect.md | needs-work | 35 | yes |
 | token-economy.md | needs-work | 19 |  |
-| truc.md | needs-work | 56 |  |
+| truc.md | needs-work | 3 |  |
 | ts-runtime-contract.md | needs-work | 4 |  |
 | verified-canary.md | needs-work | 24 |  |
 | verified-effect.md | needs-work | 18 |  |
-| vision.md | current | 8 |  |
+| vision.md | current | 0 |  |
 | wasm-capabilities.md | needs-work | 41 | yes |
 | webapp-competitiveness-report.md | needs-work | 33 |  |
 | why-runtime.md | needs-work | 29 |  |

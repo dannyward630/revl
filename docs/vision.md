@@ -1,4 +1,4 @@
-# revl — the vision, and the honest scope of the claim
+# revl - the vision, and the honest scope of the claim
 
 This is the "why" companion to [DESIGN.md](../DESIGN.md) (the what) and
 [docs/syntax-2.0.md](syntax-2.0.md) (the how). README links here for the
@@ -15,14 +15,14 @@ realization of the [Cordis paradigm](https://github.com/cordiverse/paper):
 the paper proves strong metatheorems, but every one rests on hypotheses no
 library can enforce (confinement, witnessed inverses, declared-only access,
 acyclic provisioning). revl's job is to move those hypotheses from *runtime
-discipline* into the *type system* — the jump C++ RAII made to become Rust's
+discipline* into the *type system* - the jump C++ RAII made to become Rust's
 ownership. See DESIGN.md §1 for the hypothesis-by-hypothesis table.
 
 The second motivation is forward-looking and is where the "future of
 programming" phrase comes from: if components are increasingly written by AI
 agents, then *machine-checkable safety of a generated component before it
 self-deploys* matters more than syntax familiarity. revl is designed to be a
-language such a harness could require its own components to pass — the
+language such a harness could require its own components to pass - the
 generate → check → run loop closes inside one file (`test`/`verified`,
 syntax-2.0 §7), and the checker's totality lets a corpus be
 compile-verified rather than hoped-for.
@@ -31,7 +31,7 @@ compile-verified rather than hoped-for.
 
 The same checked front-end lowers to a family of hardened runtimes rather
 than to raw native code (DESIGN.md §8 explains why native is deliberately not
-first — the paradigm's hardest requirement is reclaiming everything a
+first - the paradigm's hardest requirement is reclaiming everything a
 component owned, which `dlopen`/`dlclose` cannot promise):
 
 The `conformance today` column is **generated**, not written: it is the
@@ -55,7 +55,7 @@ with `make docs-gen`; never edit the block by hand.
 One `.rvl` source, one IR, six emitters. The [2.0 roadmap](v2.0-roadmap.md)
 tracks per-tier coverage.
 
-Where each "what it proves" is actually proved — a claim in this project gets
+Where each "what it proves" is actually proved - a claim in this project gets
 a command or it gets softened:
 
 | tier | gate | note |
@@ -83,10 +83,10 @@ What every tier can and cannot *express* is measured by
 [conformance.md](conformance.md); `--validate` additionally hands each tier's
 output to that tier's real compiler. Composing tiers across a process seam
 (`--placement`, [interop-bridge.md](interop-bridge.md)) is demonstrated by the
-`demo/bridge_*` scripts and not covered by a test — only the static
+`demo/bridge_*` scripts and not covered by a test - only the static
 transport-safety verdict is (`tests/test_distribute.py`).
 
-## The honest scope — what this does *not* claim
+## The honest scope - what this does *not* claim
 
 - **Not a general-purpose application language.** revl writes *components*;
   a host application assembles compiled components. Stratum 1 is a
@@ -97,7 +97,7 @@ transport-safety verdict is (`tests/test_distribute.py`).
   correctly for compositions of checked primitives; proving an arbitrary
   `undo` truly reverts its effect is undecidable and stays opt-in
   (`verified`, DESIGN.md §6).
-- **The extern boundary is trusted, not verified** — but it is *enumerable*
+- **The extern boundary is trusted, not verified** - but it is *enumerable*
   (G8, `revl audit`): revl cannot check foreign code, only force every escape
   hatch to be declared and auditable.
 - **The calculus's metatheorems transfer by construction, they are not
