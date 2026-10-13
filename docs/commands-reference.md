@@ -1964,7 +1964,13 @@ revl verify app.revlbundle --json    # CI: parse the per-tier verdict
 Deploy a compiled composition across process seams with attested admission and
 coordinated rollback (roadmap item 118). A target is deployed over the process
 boundary (`via = local`) or, under a pinned host key, across a machine boundary
-(`via = ssh`). Container launch orchestration is still to come.
+(`via = ssh`). An ssh target must name, in its `[processes.<p>.deploy]` table,
+`host` and `known_hosts` (the pinned host key), `host_key` (a copy of the far
+host's receipt-signing key, used to verify the signed admission and COMMIT
+receipts it returns) and `remote_bundle` (where to stage the bundle on the far
+host), and the command needs `--bundle`. A target missing any of these is
+refused at the stage phase, before anything commits. Container launch
+orchestration is still to come.
 
 - `MAP` - the deploy/placement map (TOML or JSON): `[processes.<p>]` with an
   optional `[processes.<p>.deploy]` table per process.
