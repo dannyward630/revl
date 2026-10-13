@@ -157,7 +157,10 @@ with no exact inverse says so: `undo: null` and an `undoReason` (an emission
 cannot be un-emitted, a halt or an approval is recorded evidence, and
 `revl_export` keeps no copy of the disk contents it replaced). `undoDepth` is how many changes
 `revl_step_back` with no arguments can still revert. A refused call changed
-nothing and carries no undo field.
+nothing and carries no undo field. The byte-for-byte promise covers sources and
+manifest, not running state: `revl_undo` starts the earlier generation cold, so
+when a running component holds live state the undo would drop, the response
+also carries an `undoNote` naming it (issue #2346).
 
 **Every response can say which compiler answered.** Since issue #2007, the
 `initialize` result's `serverInfo` block and every `revl_state` payload carry
@@ -1245,6 +1248,10 @@ gate a swap runs, so a target the current checker rejects is refused
 (`ok:false`, with the diagnostic) and the running composition is untouched. The
 dossier rides along: what unloads, what state drops, and the interim boundary
 crossings that no undo can un-emit ([generation-history.md](generation-history.md)).
+An undo starts the target cold and does not run a `handoff` in reverse, so every
+running component holding live state is listed in `dossier.stateDropped.components`
+with a `note` (issue #2346); to keep the state, re-apply the earlier source as a
+forward `revl_change` with `replace`, which hands state off like any swap.
 The answer carries the `"disk": {"inSync", "stale"}` block (issue #2037): a
 revert of a change that had been exported leaves disk holding the retracted
 change, so `stale` names it and a `note` points at `revl_export`; a revert of a

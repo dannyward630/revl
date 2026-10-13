@@ -86,6 +86,19 @@ _LEASE_NO_INVERSE = ("only a fresh lease claim has an exact inverse (its "
                      "expiry back, which no call restores")
 
 
+def undo_cold_start_note(components: list[str], to: int | None) -> str:
+    """Issue #2346: what an undo does to live state, said where a caller reads
+    it (the forward call's `undoNote`, the undo dossier's `stateDropped`)."""
+    target = f"generation {to}" if to is not None else "the earlier generation"
+    return (f"revl_undo re-admits {target}'s sources and starts it cold: a "
+            f"`handoff` is not run in reverse (a rollback never carries the "
+            f"generation it leaves into the one it returns to), so the live "
+            f"state held by {', '.join(components)} is dropped. To keep it, "
+            f"re-apply that generation's source as a forward change "
+            f"(revl_change with `replace` and `commit: true`), which hands "
+            f"state off through a declared `handoff` like any swap.")
+
+
 def _none(reason: str) -> dict:
     return {"undo": None, "undoReason": reason}
 
@@ -175,7 +188,17 @@ def _describe_generation(session, pre: PreState) -> dict:
         return _none(f"generation {pre.generation} was loaded without recorded "
                      "sources, so it cannot be re-admitted (docs/"
                      "generation-history.md)")
-    return {"undo": {"tool": "revl_undo", "arguments": {"to": pre.generation}}}
+    fields = {"undo": {"tool": "revl_undo", "arguments": {"to": pre.generation}}}
+    held = _live_state(session)
+    if held:
+        fields["undoNote"] = undo_cold_start_note(held, pre.generation)
+    return fields
+
+
+def _live_state(session) -> list[str]:
+    """The running components whose live state the undo would drop."""
+    reader = getattr(session, "live_state_components", None)
+    return reader() if callable(reader) else []
 
 
 @dataclass
