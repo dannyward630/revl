@@ -264,9 +264,9 @@ also folds in the full agent story and the standing correctness debt.
   (#2406, closes #2225).
 - `revl_undo` still re-admits the target generation by a cold start, and now
   says so: the undo dossier lists in `stateDropped.components` each running
-  component whose live state the rollback drops, with a note, and a forward call
-  whose undo is `revl_undo` carries an `undoNote` that says the same (#2422,
-  closes #2346).
+  component whose live state the rollback drops and the components the target
+  withdraws, with a note, and a forward call whose undo is `revl_undo` carries
+  an `undoNote` that says the same (#2422, closes #2346).
 - A refusal made while a proposal is held names the held proposal. When the
   running composition has a name that the held proposal removed, the message
   lists what the proposal removed and how to proceed, and every such refusal
