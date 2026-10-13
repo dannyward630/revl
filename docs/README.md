@@ -25,9 +25,9 @@ an exhaustive listing. `ls docs/` has more.
 - [mcp-reference.md](mcp-reference.md): the MCP verbs, per-verb inputs and outputs
 - [mcp-bridge.md](mcp-bridge.md): the compiler as an MCP server, full shapes
 - [guide-ai-agents.md](guide-ai-agents.md): the agent-facing workflow guide
-- [authoring-for-agents.md](authoring-for-agents.md): the authoring loop for an agent that writes revl: scaffold → fillSpec → fmt → explain → admit
+- [authoring-for-agents.md](authoring-for-agents.md): the authoring loop for an agent that writes revl (scaffold → fillSpec → fmt → explain → admit)
 - [mcp-proxy.md](mcp-proxy.md): `revl mcp proxy`, gating an existing MCP server · [gate-as-a-service.md](gate-as-a-service.md): the gate as a bridge service (first proving slice)
-- [harness-gate-guide.md](harness-gate-guide.md): driving the 245/246 approval gate from a harness: the three action classes, the MCP verbs, the commit two-step, and the `session.state()` metrics
+- [harness-gate-guide.md](harness-gate-guide.md): driving the 245/246 approval gate from a harness (the three action classes, the MCP verbs, the commit two-step, and the `session.state()` metrics)
 
 ## Testing and guarantees
 
@@ -44,10 +44,10 @@ an exhaustive listing. `ls docs/` has more.
 
 - [plan.md](plan.md): a dry run for admission · [apply.md](apply.md): execute a plan artifact · [swap.md](swap.md): migrate a live component across tiers
 - [deploy.md](deploy.md): attested admission with re-hash-on-receive, peer-authenticated seam correlation, and the coordinated cross-process commit/abort
-- [composition-rows.md](composition-rows.md): the composition as declared ROWS: a stable label per row, the claim assertion checked against the component header, typed row config
+- [composition-rows.md](composition-rows.md): the composition as declared ROWS (a stable label per row, the claim assertion checked against the component header, typed row config)
 - [composition-bootstrap.md](composition-bootstrap.md): a composition manifest that declares its own file list, and the two-stage host bootstrap that gets it running
-- [environment-binding.md](environment-binding.md): the `boot` component: the declared, bounded, audited contract for the values (port, token, data dir, model provider) the host must inject before the composition exists
-- [frontend-assets.md](frontend-assets.md): shipping a real Vite/Vue frontend behind a typed boundary: the `webui` coeffect, `webui.add_entry`, the G1/G8 audit surface, and what is not expressible yet
+- [environment-binding.md](environment-binding.md): the `boot` component, the declared, bounded, audited contract for the values (port, token, data dir, model provider) the host must inject before the composition exists
+- [frontend-assets.md](frontend-assets.md): shipping a real Vite/Vue frontend behind a typed boundary (the `webui` coeffect, `webui.add_entry`, the G1/G8 audit surface, and what is not expressible yet)
 - [model-providers.md](model-providers.md): bind each `model role` to a runtime adapter (OpenAI-compatible, Anthropic, Gemini, Ollama) with `revl run --providers`, checked against the program's placement
 - [queries.md](queries.md): ask the composition questions
 - [why-traces.md](why-traces.md): derivations behind a rejection · [why-runtime.md](why-runtime.md): cause chains for a recorded run
@@ -63,7 +63,7 @@ an exhaustive listing. `ls docs/` has more.
 
 - [backend-ir-v1.md](backend-ir-v1.md) · [backend-ir-v3.md](backend-ir-v3.md): the IR contract
 - [v2.0-roadmap.md](v2.0-roadmap.md): what is done and what is in flight
-- [webapp-competitiveness-report.md](webapp-competitiveness-report.md); roadmap item 462 acceptance bar 5: where revl is already competitive against a real app, and every friction point filed rather than worked around
+- [webapp-competitiveness-report.md](webapp-competitiveness-report.md): roadmap item 462 acceptance bar 5, where revl is already competitive against a real app, and every friction point filed rather than worked around
 - [stability.md](stability.md): what a version number promises
 - [process.md](process.md): how changes are proposed, tested and merged
 - [stdlib-json.md](stdlib-json.md) · [stdlib-list.md](stdlib-list.md) · [stdlib-str.md](stdlib-str.md) · [stdlib-value.md](stdlib-value.md) · [stdlib-version.md](stdlib-version.md): per-module stdlib pages

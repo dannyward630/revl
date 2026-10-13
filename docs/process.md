@@ -389,8 +389,8 @@ entry when you add the action.
 run, and in `publish.yml` immediately before the upload. It asserts that the
 built wheel's member list **equals** `git ls-files` of the trees
 `hatch_build.TREES` maps into it, plus the `.dist-info`: set equality, so an
-over-wide `exclude` is as red as an over-inclusion, and that the **sdist**
-carries no file the commit does not track. It exists because the
+over-wide `exclude` is as red as an over-inclusion. It also asserts that the
+**sdist** carries no file the commit does not track. It exists because the
 wheel used to `force-include` `backends/` and `stdlib/` verbatim.
 `force-include` runs after file selection and is exempt from every exclude rule
 and from the ignore files, so the wheel contained whatever sat on the builder's

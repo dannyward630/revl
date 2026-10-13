@@ -617,7 +617,7 @@ service Http { emission fn post(url: Str, body: Str) -> Str }</code></pre>
       <div class="cc-head">quickstart</div>
       <pre><code><span class="t-prompt">$</span> git clone https://github.com/inso1337/revl && cd revl
 <span class="t-prompt">$</span> python3 -m venv .venv && source .venv/bin/activate
-<span class="t-prompt">$</span> pip install -e .
+<span class="t-prompt">$</span> pip install -e .                        <span class="tok-com"># not `pip install revl`, an unrelated PyPI project</span>
 <span class="t-prompt">$</span> revl compile examples/user_cache.rvl   <span class="tok-com"># source → checked IR (JSON)</span>
 <span class="t-prompt">$</span> revl mcp serve                         <span class="tok-com"># the compiler as an agent gate</span></code></pre>
     </div>

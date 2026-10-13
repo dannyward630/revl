@@ -22,8 +22,9 @@ the same checks, and a change that skips them will be caught at the gate.
 > **The checker is the product.** revl sells exactly one promise: a component
 > that would corrupt a running system cannot compile. Every contribution is
 > measured against whether it keeps that promise provable. That is why the
-> rejection suite is an executable spec, why emitted output only changes reviewed, and why
-> emitted code is handed to real compilers instead of trusted.
+> rejection suite is an executable spec, why emitted output never changes
+> unreviewed, and why emitted code is handed to real compilers instead of
+> trusted.
 
 Read [DESIGN.md](DESIGN.md) §4 for the guarantee table (generated from
 `revl.diagnostics.GUARANTEES`, so it cannot drift), and
@@ -335,7 +336,7 @@ of files on disk **equals** the set of keys in `REJECTIONS`, so you cannot add a
 fixture without a spec entry, or an entry without a fixture. The rejection suite
 is therefore the checker's *definition* of sound, exhaustive by test, not a
 sample. (The handful of guarantees that no source program can violate at compile
-time, G5, G7, A3, A4, A5, A7, are documented in the block after the
+time (G5, G7, A3, A4, A5, A7) are documented in the block after the
 `REJECTIONS` table, with where each is actually enforced. If you believe you
 have a new such case, extend that block; do not leave it implicit.)
 

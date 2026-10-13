@@ -105,10 +105,12 @@ python3 site/build.py     # revl + cordis wheels, examples.js
 The cordis wheel needs the `backends/python/setup.sh` clone (or `CORDIS_PY`
 pointing at one).
 
-This is for previewing locally. The deploy workflow builds the wheel and the
-examples itself on every push to main, so nothing it produces is committed. Rerun
-it locally when `src/revl/` or the example set changes. The site touches
-nothing under `src/revl/`.
+This is for previewing locally. The deploy workflow builds the revl wheel and
+the examples itself on every push to main, so nothing the deploy builds is
+committed. The cordis runtime wheel (`site/vendor/cordis-*.whl`) is the
+exception: it is committed as an external pin, and `site/build.py` rebuilds it.
+Rerun the script locally when `src/revl/` or the example set changes. The site
+touches nothing under `src/revl/`.
 
 ## Honesty notes for edits
 
