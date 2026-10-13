@@ -101,9 +101,103 @@ def commit(session, verify=None) -> dict:
     return result
 
 
+def annotate(session, result: dict, speculative: bool) -> dict:
+    """A refusal made while the caller holds a proposal, carrying the same
+    `proposal` block (and `speculative`) a success carries (issue #2230): the
+    held proposal is often the whole explanation for the refusal, so it has to
+    be visible on it. A refusal leaves the proposal exactly as it was."""
+    proposal = held(session)
+    if proposal is None or result.get("ok") is not False or "proposal" in result:
+        return result
+    return {**result, "speculative": speculative,
+            "proposal": {"generation": proposal["generation"],
+                         "replacing": list(proposal["replacing"])}}
+
+
+def _declares(vs: dict, name: str) -> bool:
+    from . import symbols  # noqa: PLC0415
+
+    try:
+        symbols.resolve(vs, name)
+    except symbols.SymbolError as error:
+        # only a miss is absence; an ambiguous name is declared (twice)
+        return not str(error).startswith("no top-level declaration matches")
+    return True
+
+
+def _names(vs: dict) -> list[str]:
+    from . import symbols  # noqa: PLC0415
+
+    out = []
+    for key, text in symbols.buffers(vs):
+        try:
+            out += [decl.name for decl in symbols.declarations(text, key[1])
+                    if decl.name not in out]
+        except symbols.SymbolError:
+            continue
+    return out
+
+
+def _named_symbols(arguments: dict) -> list[str]:
+    """Every top-level declaration an edit addresses by name."""
+    from . import symbols  # noqa: PLC0415
+
+    out = []
+    for edit in arguments.get("edits") or ():
+        symbol = edit.get("symbol") if isinstance(edit, dict) else None
+        if not isinstance(symbol, str) or not symbol.strip():
+            continue
+        if edit.get("target") and ":" not in symbol:
+            symbol = f"{edit['target']}:{symbol}"
+        try:
+            out.append(symbols._top_and_rest(symbol)[0])
+        except symbols.SymbolError:
+            continue
+    return out
+
+
+def removed_named(session, arguments: dict) -> str | None:
+    """The first name an edit addresses that the running composition declares
+    and the held proposal no longer does: a staged change removed it."""
+    proposal = held(session)
+    if proposal is None:
+        return None
+    running = _edit.running_source(session)
+    for symbol in _named_symbols(arguments):
+        if not _declares(proposal["vs"], symbol) and _declares(running, symbol):
+            return symbol
+    return None
+
+
+def removed_refusal(session, symbol: str) -> tuple[str, list]:
+    """What a change that names `symbol` is told when the held proposal
+    removed it (issue #2230): the name exists in the running composition, so
+    "no declaration matches" would be false. The change still resolves against
+    the proposal, by design, so it stays refused, and says how to proceed."""
+    from . import remedy as _remedy  # noqa: PLC0415
+
+    proposal = held(session)
+    running = _names(_edit.running_source(session))
+    still = set(_names(proposal["vs"]))
+    gone = ", ".join(f"`{name}`" for name in running if name not in still)
+    message = (
+        f"`{symbol}` was removed by your held proposal: a staged change "
+        f"removed {gone} (proposal built on generation "
+        f"{proposal['generation']}). The running composition still has it, "
+        "but a change builds on the held proposal, where it no longer exists. "
+        "Commit the proposal with revl_change {commit: true} (no intent), "
+        "drop it with revl_change {discard: true}, or name a declaration the "
+        "proposal still has")
+    discard_call = _remedy.call("revl_change", {"discard": True})
+    if stale(session) is not None:  # a stale proposal cannot commit
+        return message, [discard_call]
+    return message, [_remedy.call("revl_change", {"commit": True}), discard_call]
+
+
 def touched_since(session, proposal_vs: dict) -> list[dict]:
     """What the proposal changes relative to the running composition."""
     return _edit._touched(_edit.running_source(session), proposal_vs)
 
 
-__all__ = ["held", "base", "keep", "discard", "stale", "commit", "touched_since"]
+__all__ = ["held", "base", "keep", "discard", "stale", "commit", "annotate",
+           "removed_named", "removed_refusal", "touched_since"]

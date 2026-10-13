@@ -885,6 +885,19 @@ the proposal was built (another caller committed): it would undo that change.
 `revl_source {proposal: true}` reads the proposal. The loop is propose, verify,
 commit; `revl_export` writes the committed source to disk when you want a file.
 
+A change resolves the names it addresses against the held proposal, so a name
+a staged change removed (a withdrawal, say) is refused while the proposal is
+held, even though the running composition still has it (issue #2230). The
+refusal says so: it names what the held proposal removed, says the running
+composition still has the name, and gives the ways on: commit the proposal
+with `revl_change {commit: true}`, drop it with `{discard: true}` (both in
+`next`), or name a declaration the proposal still has. A name neither has keeps the
+plain `no top-level declaration matches` refusal. Any refusal made while a
+proposal is held carries `proposal` (`{generation, replacing}`) and
+`speculative`, as a proposal does, and its note says the held proposal is
+still held and unchanged as well as the running composition: a refusal never
+changes or drops the proposal.
+
 Make one change in ONE call (issue #1695). An agent names the intent; the
 server runs the loop an agent used to orchestrate itself (in a benchmark, eight
 calls for one change, five of them `revl_check` polls):
