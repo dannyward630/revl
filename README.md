@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/emitted%20code-validated%20by%20real%20compilers-2dd4bf" alt="validated by real compilers">
   <img src="https://img.shields.io/badge/self--hosting-native-2dd4bf" alt="self-hosting">
   <img src="https://img.shields.io/badge/agent--native-MCP-a78bfa" alt="MCP native">
-  <img src="https://img.shields.io/badge/license-AGPL--3.0%20%2B%20MIT-blue" alt="AGPL-3.0 with MIT exception">
+  <img src="https://img.shields.io/badge/license-AGPL--3.0%20%2B%20MIT-blue" alt="AGPL-3.0-only compiler, MIT runtime and examples">
 </p>
 
 <p>
@@ -83,24 +83,42 @@ the paradigm and starts extending it.
 
 ## Quickstart
 
-```bash
-uv venv && uv pip install -e ".[test]" && .venv/bin/pytest tests/
-```
+revl needs Python 3.11 or newer and is installed from source. The name `revl`
+on PyPI belongs to an unrelated project, so do not `pip install revl`.
 
 ```bash
-revl compile examples/user_cache.rvl   # source -> checked IR -> emitted component
+git clone https://github.com/inso1337/revl && cd revl
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .
+```
+
+With [uv](https://docs.astral.sh/uv/) the last two lines are
+`uv venv && source .venv/bin/activate && uv pip install -e .`. To install a
+tagged release without a checkout, use
+`pip install "git+https://github.com/inso1337/revl@<tag>"`, with a tag from the
+[releases page](https://github.com/inso1337/revl/releases). To run the test
+suite, install the extra (`pip install -e ".[test]"`) and run `pytest tests/`.
+
+With the virtual environment active, `revl` is on your PATH:
+
+```bash
+revl compile examples/user_cache.rvl   # source -> checked IR, printed as JSON
+revl emit     examples/user_cache.rvl   # source -> emitted TypeScript (--backend picks another tier)
 revl audit    examples/user_cache.rvl   # everything that can cross the boundary
 revl mcp serve                          # the compiler as an agent admission gate
 make demo                               # a live hot-swap, migration and rollback
-make demo-flagship                      # one agent, ten guarantees, six refusals
+make demo-flagship                      # one agent, ten steps, six refusals
 ```
 
-The first command installs the `revl` package editable; the documented happy
-path then uses the `revl` console script (issue #336 closes the CWD-shadowing
-window that a bare `python -m revl` (no `-P`) still has; issue #317 is the
-underlying mechanism). The absolute-interpreter fallback is
-`python -P -m revl` (PYTHONSAFEPATH, 3.11+), where the `-P` is the safety bit
-that closes the rest of the window.
+`make demo` needs more than the install above: it runs
+`backends/python/setup.sh` on first use (git, uv and network access) to build
+the runtime it hot-swaps on. `revl mcp serve` prints the same pointer if that
+runtime is missing and starts with the live verbs unavailable.
+
+The `revl` console script is the documented happy path. The
+absolute-interpreter fallback is `python -P -m revl` (PYTHONSAFEPATH, 3.11+).
+The `-P` matters: without it, the current directory can shadow the installed
+package (issue #336; issue #317 is the underlying mechanism).
 
 The language reference is [docs/syntax-2.0.md](docs/syntax-2.0.md); if the
 component author is a model, start with the
@@ -265,14 +283,20 @@ distinction honest.
 ### It compiles itself, and disagreement is a bug report
 
 `selfhost/compile.rvl` is the revl compiler written in revl. Where its native
-pipeline runs today (24 of the 61 constructs in the conformance matrix, 39%,
-with no reference compiler in the chain), its output is byte-identical to the
+pipeline runs today (59 of the 61 constructs in the conformance matrix, with no
+reference compiler in the chain), its output is byte-identical to the
 reference compiler, which makes self-hosting more than a stunt: two independent
 implementations of one grammar run the same input, and any divergence is a real
-defect in one of them. The remaining constructs are the documented self-host
-frontier ([docs/conformance.md](docs/conformance.md) has the per-construct
-`revl` column). The defects this differential oracle has already caught are
-written up in [docs/selfhost-findings.md](docs/selfhost-findings.md).
+defect in one of them. The two remaining constructs are `component/block effect setup` and
+`fn/verified fn`.
+
+The self-host gate is not yet the reference gate. It does not implement the G5,
+G7, G9, A2, A8, A9, G-RETAIN and G-SECRET-FLOW checks, and it diverges from the
+reference on a few reproducers of G1, G2, G3 and G6.
+[docs/conformance.md](docs/conformance.md) has the per-construct `revl` column
+and the per-guarantee list of what the self-host gate does not refuse. The
+defects this differential oracle has already caught are written up in
+[docs/selfhost-findings.md](docs/selfhost-findings.md).
 
 The supporting cast is what you would expect from a checked language, done
 plainly: bidirectional type checking, no `null` (absence is `Opt[T]` and never
@@ -289,7 +313,7 @@ The full index is **[docs/README.md](docs/README.md)**. Start here:
 - **[docs/syntax-2.0.md](docs/syntax-2.0.md)** the language reference, **[docs/stdlib-2.0.md](docs/stdlib-2.0.md)** the stdlib surface
 - **[docs/guide-ai-agents.md](docs/guide-ai-agents.md)** the agent workflow, **[docs/mcp-reference.md](docs/mcp-reference.md)** every MCP verb, **[docs/commands-reference.md](docs/commands-reference.md)** every subcommand
 - **[docs/conformance.md](docs/conformance.md)** every construct against every tier, **[docs/crash-recovery.md](docs/crash-recovery.md)** the WAL and what honestly survives a crash
-- **[docs/v2.0-roadmap.md](docs/v2.0-roadmap.md)** what is done and what is in flight, **[CONTRIBUTING.md](CONTRIBUTING.md)** the workflow and the pre-commit contract
+- **[CHANGELOG.md](CHANGELOG.md)** what changed in each release, **[docs/v2.0-roadmap.md](docs/v2.0-roadmap.md)** what is done and what is in flight, **[CONTRIBUTING.md](CONTRIBUTING.md)** the workflow and the pre-commit contract
 
 ## Acknowledgments
 
