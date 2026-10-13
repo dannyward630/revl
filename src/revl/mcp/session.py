@@ -2914,15 +2914,24 @@ class Session:
         a rollback never carries the generation it leaves into the one it
         returns to (the F4 rule in `_plan_swap`). So besides the components
         the target withdraws, every running component holding live state loses
-        it, and is named here, with a note that says so."""
-        held = self.live_state_components()
+        it, and is named here, with a note that says so. A failure to read
+        the live state is said in the note, and never stops the undo."""
+        try:
+            held, unread = self.live_state_components(), None
+        except Exception as exc:  # noqa: BLE001 - a report, never a fault
+            held, unread = [], f"{type(exc).__name__}: {exc}"
         out = {
             "provisions": p["provisions"]["withdrawn"],
             "components": sorted(set(p["components"]["withdrawn"]) | set(held)),
             "teardownOrder": p["teardownOrder"],
         }
         if held:
-            out["note"] = undo_cold_start_note(held, to)
+            out["note"] = undo_cold_start_note(held, to, done=True)
+        elif unread is not None:
+            out["note"] = (
+                f"the running components' live state could not be read "
+                f"({unread}), so a component whose state this cold start drops "
+                f"may be missing from `components`")
         return out
 
     def undo(self, to: int | None = None) -> dict:
@@ -2977,6 +2986,9 @@ class Session:
                                    admitted_name(target["snapshot"]))
         except RevlError as error:
             diag = classify(error)
+            # nothing ran, so no state was dropped: the list stays as the
+            # plan, but the note saying it "is dropped" does not apply
+            dossier["stateDropped"].pop("note", None)
             return {
                 "undone": False,
                 "refused": True,

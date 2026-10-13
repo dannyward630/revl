@@ -128,6 +128,7 @@ def test_the_swaps_undo_advice_names_the_state_it_will_not_restore():
     changed = _swapped_with_state()
     note = changed.get("undoNote")
     assert note and "MeterBook" in note and "revl_change" in note, changed
+    assert "would be dropped" in note
 
 
 @needs_runtime
@@ -214,3 +215,48 @@ def test_undo_names_a_template_whose_live_instance_loses_its_state():
     assert undone["dossier"]["stateDropped"]["components"] == ["Worker"]
     read = _call("revl_call", {"key": "admin", "method": "read", "args": ["a"]})
     assert read["result"] is None          # the undo started it cold
+
+
+@needs_runtime
+def test_an_unreadable_live_state_says_so_and_the_undo_still_runs(monkeypatch):
+    """Reading live state is a report: if it raises, the undo still runs,
+    lists no component it cannot see, and says why in the note."""
+    from revl.mcp.session import Session
+
+    _swapped_with_state()
+
+    def broken(self):
+        raise RuntimeError("frame registry unavailable")
+
+    monkeypatch.setattr(Session, "live_state_components", broken)
+    undone = _call("revl_undo", {})
+    assert undone["ok"] is True and undone["undone"] is True, undone
+    dropped = undone["dossier"]["stateDropped"]
+    assert dropped["components"] == []
+    assert "could not be read" in dropped["note"]
+    assert "frame registry unavailable" in dropped["note"]
+    assert _meter_call("version")["result"] == 1
+    # the undo's own `undo` advice survives the same failure
+    assert undone["undo"]["tool"] == "revl_undo" and "undoNote" not in undone
+
+
+@needs_runtime
+def test_a_refused_undo_keeps_the_state_and_claims_no_drop(monkeypatch):
+    """A refused undo changed nothing: the dossier still plans which
+    components would lose state, but carries no note saying it was dropped,
+    and the state is still there."""
+    from revl.errors import RevlError
+    from revl.mcp import persist
+
+    _swapped_with_state()
+
+    def rejects(*_args, **_kwargs):
+        raise RevlError("meter.rvl", 1, "this checker no longer admits it")
+
+    monkeypatch.setattr(persist, "_recompile", rejects)
+    refused = _call("revl_undo", {})
+    assert refused["ok"] is False and refused["refused"] is True, refused
+    dropped = refused["dossier"]["stateDropped"]
+    assert dropped["components"] == ["MeterBook"]
+    assert "note" not in dropped, dropped
+    assert _meter_call("get", "l1")["result"] == "l1"

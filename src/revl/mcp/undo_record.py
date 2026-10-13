@@ -86,14 +86,17 @@ _LEASE_NO_INVERSE = ("only a fresh lease claim has an exact inverse (its "
                      "expiry back, which no call restores")
 
 
-def undo_cold_start_note(components: list[str], to: int | None) -> str:
+def undo_cold_start_note(components: list[str], to: int | None, *,
+                         done: bool = False) -> str:
     """Issue #2346: what an undo does to live state, said where a caller reads
-    it (the forward call's `undoNote`, the undo dossier's `stateDropped`)."""
+    it (the forward call's `undoNote`, the undo dossier's `stateDropped`).
+    `done` is True only for an undo that ran; advice says "would be"."""
     target = f"generation {to}" if to is not None else "the earlier generation"
+    verb = "is dropped" if done else "would be dropped"
     return (f"revl_undo re-admits {target}'s sources and starts it cold: a "
             f"`handoff` is not run in reverse (a rollback never carries the "
             f"generation it leaves into the one it returns to), so the live "
-            f"state held by {', '.join(components)} is dropped. A forward "
+            f"state held by {', '.join(components)} {verb}. A forward "
             f"change that re-applies that generation's source (revl_change "
             f"with `replace` and `commit: true`) keeps the state of a "
             f"component that declares a `handoff` on both sides, and of a "
