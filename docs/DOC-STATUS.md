@@ -74,7 +74,7 @@ regenerated rather than edited.
 | collections.md | needs-work | 34 | yes |
 | commands-reference.md | current | 0 |  |
 | component-leases.md | needs-work | 33 |  |
-| composition-bootstrap.md | needs-work | 1 |  |
+| composition-bootstrap.md | needs-work | 0 |  |
 | composition-layers.md | needs-work | 20 |  |
 | composition-rows.md | needs-work | 24 |  |
 | conformance.md | needs-work | 0 |  |
@@ -166,7 +166,7 @@ regenerated rather than edited.
 | stdlib-list.md | current | 14 |  |
 | stdlib-str.md | current | 13 |  |
 | stdlib-value.md | current | 26 |  |
-| stdlib-version.md | needs-work | 11 |  |
+| stdlib-version.md | needs-work | 0 |  |
 | strings.md | needs-work | 39 |  |
 | swap.md | needs-work | 19 |  |
 | syntax-2.0.md | needs-work | 0 |  |
@@ -184,5 +184,5 @@ regenerated rather than edited.
 | why-runtime.md | needs-work | 29 |  |
 | why-traces.md | needs-work | 26 |  |
 | wit-bridge.md | needs-work | 41 |  |
-| witnessed-fs.md | needs-work | 14 |  |
+| witnessed-fs.md | needs-work | 0 |  |
 <!-- docgen:doc-status end -->
