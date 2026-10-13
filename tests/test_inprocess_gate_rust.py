@@ -87,6 +87,7 @@ from revl import gate as py_gate  # noqa: E402
 from revl.compiler import compile_source  # noqa: E402
 from revl.errors import RevlError  # noqa: E402
 from revl.holes import refuse_admission  # noqa: E402
+from revl.parser import parse_text  # noqa: E402
 from revl.run_rust import rust_runtime_reason  # noqa: E402
 
 # The reference refusal rendered in the GATE's guarantee vocabulary. Imported
@@ -212,6 +213,18 @@ def _py_verdict(source: str) -> tuple[bool, str | None]:
     return (verdict.admitted, verdict.code)
 
 
+def _py_tag(source: str, error: RevlError) -> str:
+    """The guarantee tag of a py refusal. A refusal the PARSER raises is `BAD`,
+    the crate's tag for a parse failure (`COVERED_LAYER`); the oracle's
+    classifier has no parse class and would answer `OUT:` for it, though the
+    rust gate decides it (issue #2359 brought the statement grammar in)."""
+    try:
+        parse_text(source, "<string>")
+    except RevlError:
+        return "BAD"
+    return oracle._classify(error)
+
+
 def _py_reference(source: str) -> tuple[str, str]:
     """`(tag, message)` - `("", "")` when the py admission gate ADMITS.
 
@@ -224,7 +237,7 @@ def _py_reference(source: str) -> tuple[str, str]:
         refuse_admission(compile_source(source))
         return ("", "")
     except RevlError as error:
-        return (oracle._classify(error), error.message)
+        return (_py_tag(source, error), error.message)
 
 
 def _py_manifest_reference(source: str, base: dict) -> tuple[str, str]:
@@ -242,7 +255,7 @@ def _py_manifest_reference(source: str, base: dict) -> tuple[str, str]:
         compile_source(source, manifest=dict(base))
         return ("", "")
     except RevlError as error:
-        return (oracle._classify(error), error.message)
+        return (_py_tag(source, error), error.message)
 
 
 # ------------------------------------------- the release-blocking direction
@@ -462,7 +475,7 @@ def test_every_rust_admission_is_a_py_admission(report):
     manifest` requires a real admission on both questions, so this cannot pass
     by the crate admitting nothing. And the batch carries candidates the rust
     gate raises no objection to while py REFUSES them (the hole draft,
-    `incomplete_provide`, `syntax_error`), so an admission surface that read a
+    `incomplete_provide`), so an admission surface that read a
     no-objection as a green would red here rather than somewhere downstream.
     """
     import inprocess_gate_harness as py_harness  # noqa: PLC0415

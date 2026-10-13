@@ -70,7 +70,8 @@ An agent should not have to work out which of `revl_undo`, `revl_rollback`,
 `revl_restore` and `revl_unload` reverts the call it just made. So every
 successful mutating MCP call answers with `undo: {tool, arguments}`, the one
 call that returns the session to the state it had before, byte for byte (the
-snapshot's `sources` and `manifest`):
+snapshot's `sources` and `manifest`; running state is not part of that promise,
+see the dossier below):
 
 | the call | its `undo` |
 |---|---|
@@ -103,7 +104,17 @@ Because an undo is a change, its plan is computed like any change:
 * **what unloads** — the components the revert tears down (the reactive cascade,
   `withdrawn`);
 * **what state drops** — item 53's "state: dropped" honesty, in reverse: the
-  provisions the older shape no longer serves are named, not silently lost;
+  provisions the older shape no longer serves are named, not silently lost.
+  An undo re-admits the target cold (`respawn`) and does not run a `handoff`
+  in reverse, since a rollback never carries the generation it leaves into the
+  one it returns to. So `stateDropped.components` lists every running component
+  that holds live state, a provider whose store is non-empty or a template with
+  a stateful live instance, plus the components the target withdraws, with a
+  `note` when any state is lost (issue #2346). The forward call that offered
+  the undo says the same in its `undoNote`. A forward `revl_change` with
+  `replace` that re-applies the earlier source keeps the state of a component
+  that declares a `handoff` on both sides, and of a template's live instances;
+  any other component starts cold either way;
 * **the interim boundary crossings that no undo can un-emit** — §6.1.
 
 ## What no undo can un-emit (compensation is not inversion)

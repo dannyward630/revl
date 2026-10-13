@@ -111,6 +111,107 @@ path, which is what the resolution needs:
   - a `use "m" as alias` import, which makes the whole module a dependency;
   - a dependency that declares externs none of which lowered natively.
 
+  An extern declaration is read as a whole, host bodies included, so a
+  column-0 line of host code inside `@py { ... }` is not taken for a
+  top-level declaration of its own (issue #2308). The body is scanned as the
+  self-host lexer scans it (brace depth, `"` strings skipped), not as the
+  reference lexer does; a body whose brace sits in a `'` string or a comment is
+  misread by both self-host scans alike, its externs do not lower, and the
+  module is refused.
+- Last, the driver links the types an imported service carries (issue #2308).
+  A `use "./lib.rvl" { Store }` that names only a service makes no pure
+  dependency, but the reference's `compile_files` still brings the PUBLIC record
+  and variant types the service's operations name, closed over the types their
+  fields and case payloads name (its `carried` list, issue #1899), and appends
+  them to the merged `types` table after the document's own. `ul_link_types`
+  does the same, in the module's declaration order, each type once, and sets
+  `ir_version` to 3 as a type table does in the reference. It refuses with
+  `REFUSED|LINK|` where the reference would rename apart (a document's own type
+  of the same name), where two modules carry one name, and where any type the
+  service's module declares, public or private, has no native `types` entry.
+  The last covers a transparent alias (`pub type Al = Cell`, or a private
+  `type Id = Int`): the producer expands it in the service row and in record
+  fields and writes no entry for it, so the link would carry `Cell` where the
+  reference carries `Al`, or print `id: Int` where the reference keeps `id: Id`.
+  The module's type declarations are found by token at bracket depth 0, at any
+  column, so an indented declaration or a second one on the same line counts.
+  The native producer does not lower that second one, so such a module is
+  refused. The scan reads the text the way the reference lexer does
+  (`src/revl/lexer.py`): `//` comments, `"` and `'` strings with only the
+  `\<quote>` and `\\` escapes, `"""` strings, backtick templates and their
+  `${...}` interpolations, and `@backend { ... }` host bodies under that
+  backend's string and comment rules. A brace or quote inside any of them does
+  not move the scan. It fails closed: an unterminated string, template or host
+  body, a bracket closing below depth 0, an unclosed bracket, or a `type`
+  keyword inside brackets refuses the link, since the reference rejects all of
+  them. A `pub verified type` or `pub endorse[...] type` is read as public (the
+  native producer lowers neither, so that link refuses too).
+- Once the link succeeds, the driver types the document's calls to the
+  services it imports (issue #2329). `admit_src` reads only the document, so a
+  `store.put("x")` against a `put(id: Int)` declared in the imported module used
+  to be admitted and emitted, where the reference checker refuses it.
+  `tc_admit_imports` admits the document again with the declaration text of
+  every imported service appended (from `service` to its closing brace, found
+  by the same reference-lexer scan; a leading `pub` or `commutative` is left
+  off), and returns that verdict as `REFUSED|<TAG>|<message>`, the reference's
+  own message where the gate types the call the way the reference does. The
+  module's type declarations are not appended. The gate types a built-in
+  parameter type, and a carried record or variant by name, without them. A
+  transparent alias never reaches this pass: the type link above refuses a
+  module that declares one, which is what refuses the issue's reproducer (a
+  private `type Id = Int` parameter). It refuses with `REFUSED|LINK|` where
+  the appended text would type the calls differently: a service the native IR
+  has a row for whose text the scan cannot read, and a declaration that names
+  a type the document also declares (any identifier of the declaration text
+  counts, so a parameter or comment word of that spelling refuses too). The
+  types the service carries (its record and variant types, issue #2362) are
+  appended too, rendered from the module's native `types` table, so the gate
+  can hold a record literal to a carried record parameter field-wise. A
+  generic carried type is left out.
+- The gate's own call-site rules, in a single document and through an import
+  (issue #2362):
+  - A requirement call with the wrong number of arguments is refused with the
+    reference's ``store.put` takes 1 argument(s), 2 given``.
+  - A record literal passed for a nominal record parameter is held to the
+    record's fields (the same field set, each compatible) through the `field
+    <Type>.<name>` rows. A record named inside a field type, whole or as a type
+    argument (`In`, `Opt[In]`, `List[In]`), is expanded the same way, four
+    levels deep. So is a record named in a container parameter (`put(r:
+    Opt[Row])`, `put(r: List[Row])`), so `store.put([{ id: "x" }])` gets the
+    reference's argument message.
+  - A record literal passed for a variant parameter is refused with the
+    reference's argument message.
+  - A requirement call is typed at its operation's declared return wherever
+    it appears (`reqret <root>.<op>` rows), so `= store.put(1) + 1` is held to
+    the method's result like any other value.
+  - A `fn m() = <expr>` provide method is typed as the `return <expr>` the
+    reference makes of it, and a returned value's requirement calls are decided
+    before the return's own check, in the reference's order.
+  - Through an import, a T1 from the document read alone yields to the import
+    admission's verdict when that refuses too, so the call's message wins as
+    it does in the reference.
+
+  Still refused differently from the reference (all refusals, none emits):
+  - In a single document, a record literal for a generic record parameter
+    (`Cell[Int]`) is refused by name (`TYPE|... is not typed by the native
+    gate`), not typed.
+  - A record literal nested past the shape expansion (more than five levels
+    for a record parameter, four inside a container one) is refused by name
+    (`TYPE|... nested deeper than 5 levels`), valid or not.
+  - Through an import, an operator whose operand type only the imported
+    declaration gives (`store.put(1) + 1` with `put -> Int`) is refused by
+    name (`LINK|an operator on an imported service call's result ...`): the
+    document is lowered without the declaration, so its IR would lack the
+    `operands` the reference writes (the py tier's overflow guard). The
+    check lowers the import admission text too and compares the typed
+    operators. It refuses valid programs of that shape too (`= store.put(1) +
+    1`, `+ n`, `let x = store.put(1)` then `x + 1`), because their native
+    bytes would differ; typing the imported call in the IR would admit them.
+  - A wrong argument count to an unmarked `emission` operation refuses with
+    the wiring's G4 where the reference reports the count first.
+  - Through an import, a record literal for a carried generic record
+    (`Cell[T]`) gets a T1 where the reference admits (issue #2374).
+
 This is the honest multi-file native compile: the whole chain still runs in revl,
 and the only host crossing is the read the reference loader also performs. It
 closes the `cli.rvl` entry on the py and go tiers. `tests/test_selfhost_compile.py`
@@ -122,6 +223,37 @@ with a bounded walk upward, which is what both `use`-carrying documents in the
 corpus need (`cli.rvl` and `backends/typescript/tests/fixtures/fr3_json_int.rvl`
 both resolve importer-relative). A document relying on an environment search path
 is not covered.
+
+Before anything is linked, every used module is admitted (issue #2332,
+`compile.rvl::ad_used_modules_refusal`): depth first from the document, each
+module once, its whole text is read by the self-host front end, and the first
+one that does not read refuses the document with
+`REFUSED|BAD|<module>: <message>`. As in the reference loader, a `use` target
+that resolves to nothing refuses with `cannot find imported module`, and a
+module reached again while it is still being read refuses with `import cycle`.
+A program-grammar refusal names its line where one can be placed, and a
+top-level expression-bodied fn (`fn f(x: Int) -> Int = x`, valid revl) is
+named as not supported by the self-host compiler.
+
+The admission runs the whole parse stage of the native gate
+(`lower.rvl::parse_refusal`, issue #2359), the same steps `admit_src` runs on
+the document: the foreign-construct redirects, the nesting limit, the program
+grammar, and `stmt_parse_scan`, which reads the statement-level and type
+declaration rules the reference parser raises and `parse_prog` does not
+(`fail` outside an activation body, `await` in a sync method, lifecycle
+statements outside a `lifecycle test`, `??` mixed with `||` or `&&`, a plain
+access after `?.`, a dynamic realm label, an unclassified extern, the
+computer-use teardown rule, a union alias, a keyword as a field name).
+
+Known gaps of the admission:
+
+- Admitting a used `selfhost/lower.rvl` or `selfhost/emit_rust.rvl` under the
+  python tier's default recursion limit raises `RecursionError` instead of a
+  named refusal: `parse_prog` recurses once per top-level declaration, the depth
+  `admit_src` already has on those files.
+- The upward walk above can find a module the reference does not (it has no
+  ancestor search), and an imported name the module does not export is not
+  refused; both are tracked in issue #2363.
 
 ### All six tiers, measured
 
@@ -145,7 +277,7 @@ document the **fully-native** chain does not reproduce is therefore a
 they are named document by document in
 [`LOWER_GAP_DOCS`](../tests/test_selfhost_compile.py).
 
-Tiers whose whole corpus survives the fully-native chain: `py`, `ts`, `go`, `java`, `wasm`.
+Tiers whose whole corpus survives the fully-native chain: `py`, `go`, `java`, `wasm`.
 
 The per-tier counts are not stored here, because they move with every
 corpus document a pull request adds. Print them with
@@ -281,7 +413,7 @@ only `revl_index_of` compares elements and so needs `T: PartialEq`. The prelude
 `impl<T: Clone> RevlListOps<T>` and `revl_index_of` moves to a separate
 `impl<T: Clone + PartialEq> RevlListSearchOps<T>`. A `Vec<Value>` (`cordis::Value`
 is `Clone` but NOT `PartialEq`) therefore reaches `.revl_length()` and the other
-size/copy ops — which the fused `T: Clone + PartialEq` bound rejected outright —
+size/copy ops - which the fused `T: Clone + PartialEq` bound rejected outright -
 while `.revl_index_of()` on a `PartialEq` element type resolves exactly as before
 (both traits are emitted together in every module's prelude). An isolation crate
 over a `Vec<Value>` (`Clone`, non-`PartialEq`) compiles `length`/`slice`/`concat`/
@@ -324,7 +456,7 @@ emitter's entry takes the interchange IR as an `Any`, which erases to the opaque
 
 The constructor for that slot already shipped: `stdlib/json.rvl::json_parse`,
 whose `@rs` body is `Value::new(serde_json::from_str::<serde_json::Value>(&s)..)`
-— the same boxing `stdlib/value.rvl`'s `@rs` accessors downcast back out. What
+i.e. the same boxing `stdlib/value.rvl`'s `@rs` accessors downcast back out. What
 was missing was the COMPOSITION, and it is a revl document, not rust:
 
 ```
@@ -335,8 +467,8 @@ pub fn drive(ir_text: Str) -> Str { return emit_rust_src(json_parse(ir_text)) }
 ```
 
 `tools/bench_selfhost_rust.py::driver_document` generates exactly that, which
-turns an IR-consuming emitter into a `Str -> Str` filter a generated `main` — or
-any embedder — can call. One stage earlier, `selfhost/lower.rvl::lower_to_ir`
+turns an IR-consuming emitter into a `Str -> Str` filter a generated `main` - or
+any embedder - can call. One stage earlier, `selfhost/lower.rvl::lower_to_ir`
 already renders the IR as JSON TEXT, so the same composition spells the WHOLE
 native chain: revl source in, rust source out, in one binary. That is what
 `selfhost/compile.rvl::compile_to` is on the py tier; compile.rvl itself cannot
@@ -346,9 +478,9 @@ CPython-only `py_repr` extern has no `@rs` body.
 Two gates hold the result, each checking that the comparison it just passed is
 capable of failing (a byte comparison that cannot fail is not evidence):
 
-* `test_the_rust_emitter_runs_as_rust_and_matches_the_reference` — the emitter,
+* `test_the_rust_emitter_runs_as_rust_and_matches_the_reference` - the emitter,
   run natively over the whole byte-exact corpus, emits the reference's bytes;
-* `test_the_whole_native_chain_runs_as_rust_and_matches_the_reference` — source
+* `test_the_whole_native_chain_runs_as_rust_and_matches_the_reference` - source
   in, rust out, over the subset `tests/test_selfhost_compile.py` already holds
   the native chain to (its `RUST_FUNCTION_DOCS` + `RUST_COMPONENT_DOCS`; the rest
   of the emitter corpus is excluded there for the same reason, the native IR
@@ -362,7 +494,7 @@ One manifest requirement comes with this. `stdlib/value.rvl`'s `value_keys` /
 `value_children` read a record's fields in INSERTION order, which `serde_json`
 preserves only under its `preserve_order` feature (its default map is sorted), so
 `backends/rust/emit.py::cargo_toml` now enables it. Measured, not assumed:
-without it, 10 of the 34 emit_rust corpus documents — the record-shaped ones —
+without it, 10 of the 34 emit_rust corpus documents - the record-shaped ones -
 emit rust that differs from the reference's when the emitter is RUN.
 
 What Stage 4 still needs after this is no longer an emit gap:

@@ -87,9 +87,12 @@ def _cascade_names(plan: dict | None) -> list[str]:
     return [entry["component"] for entry in (plan or {}).get("cascade") or []]
 
 
-def cascade_refusal(arguments: dict, plan: dict | None) -> dict | None:
+def cascade_refusal(arguments: dict, plan: dict | None, *,
+                    cold: bool = False) -> dict | None:
     """A withdrawal that would strand dependents, asked for without
-    `cascade: true`: refused from the plan, before anything is applied."""
+    `cascade: true`: refused from the plan, before anything is applied. On a
+    `cold` call the plan came from the composition the call carries (issue
+    #2225), and the refusal says that nothing was loaded either."""
     component, cascade = _withdraw_spec(arguments["withdraw"])
     stranded = (plan or {}).get("cascade") or []
     if cascade or not stranded:
@@ -103,7 +106,10 @@ def cascade_refusal(arguments: dict, plan: dict | None) -> dict | None:
                                         f"provider: {lost}"}],
             "hint": "pass {withdraw: {component, cascade: true}} to withdraw the "
                     "whole cascade together, or replace the dependents first",
-            "note": "verification failed on the plan; nothing was applied"}
+            **({"loaded": False} if cold else {}),
+            "note": "verification failed on the plan; nothing was "
+                    + ("loaded or applied, so the session is still cold"
+                       if cold else "applied")}
 
 
 def edit_arguments(intent: str, arguments: dict, plan: dict | None) -> dict:
@@ -214,8 +220,25 @@ def shape(intent: str, result: dict, plan: dict | None, withdrawn: list[str],
             else result.get("note")
     elif not committed:
         out["note"] = (result.get("note") or "the change was not committed") \
-            + "; the running composition is unchanged"
+            + "; the running composition is unchanged" \
+            + _held_unchanged(result)
     return out
+
+
+def _held_unchanged(result: dict) -> str:
+    """Issue #2230: a refusal while a proposal is held leaves that proposal as
+    it was, and saying only that the running composition is unchanged reads as
+    if nothing was ever staged. A stale proposal cannot commit, so it is
+    offered only the discard."""
+    proposal = result.get("proposal")
+    if result.get("ok") is not False or not proposal:
+        return ""
+    if proposal.get("stale"):
+        return (", and your held proposal is still held and unchanged; it is "
+                "stale, so it cannot commit: drop it with revl_change "
+                "{discard: true}")
+    return (", and your held proposal is still held and unchanged (commit it "
+            "with revl_change {commit: true}, or drop it with {discard: true})")
 
 
 def component_source(vs: dict, spec: dict) -> str:

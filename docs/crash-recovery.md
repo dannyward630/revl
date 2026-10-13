@@ -23,7 +23,48 @@ WAL write, flush and fsync failures stop the crossing before its host body.
 `--allow-unsynced-wal` explicitly permits fsync failures for an unsuitable
 target; it prints a warning and records the durability opt-out in the WAL.
 Write and flush failures still propagate. This option forfeits the durability
-guarantee and applies only to the single-process Python backend.
+guarantee. The flag applies only to the single-process Python backend; the
+other tiers use the environment variable below.
+
+The go, rust and java recording sinks (emitted with `--record`, writing to
+`$REVL_WAL`) and the wasm host drain fail the same way: a WAL that cannot be
+opened, written or fsynced stops the process instead of running on. The go
+sink writes its header from the package `init` and the java sink when the
+`Components` class loads, so a failed header fsync stops the run before any
+component body. The rust sink is opened by each component factory, so there
+too a failed open or header fsync stops the run before the first mutation.
+`REVL_WAL_ALLOW_UNSYNCED=1` is their explicit opt-out for a target that cannot
+fsync: it prints a warning, adds `"durability": "unsynced-opt-out"` to the
+header and writes a `durability-opt-out` record, the same marks
+`--allow-unsynced-wal` leaves.
+
+On these three tiers, in a document with components, an `extern emission fn`
+is wrapped at its definition: the wrapper writes and fsyncs an `effect` record
+of kind `emission` with the Python backend's record shape (without the
+component, step, origin or arguments), then runs the host body, then writes
+`emission-complete` with the original `seq`. An `emit` through a required
+service or an instance provision (the Python `_ServiceProxy` path) is
+journalled the same way at its call site, and so is a `compensate` call
+through a service method the service table marks `emission`, when it runs.
+A crossing inside a computer-use (UI) scope registers its compensation
+through that scope and is not journalled this way yet. A
+body that panics or throws writes `emission-failed`, as Python's
+`_call_within` does. Its `error.type` is the exception's class on java,
+`panic` on go, and `panic` or `early-return` (a `?` that left the body) on
+rust; the message is left out because these tiers have no redaction funnel
+for it. The crossing stays unresolved either way. A start record that cannot
+be made durable stops the process, so the host body never runs unless its
+start record reached disk.
+
+When an fsync fails without either opt-out, the Python WAL, the wasm host
+drain and the go, rust and java sinks truncate the file back to its length
+before that record, so recovery reads the record as absent rather than as a
+durable one. They fsync the file again after the cut so a power loss cannot
+bring the record back, unless that fsync fails as well; on a target that
+refused the first fsync it does, and the run has stopped either way. The
+compiled sinks also cut a record whose write failed part way, so no torn
+record is left behind; the Python WAL and the wasm drain cut only after a
+failed fsync.
 
 `revl run app.rvl --wal run.wal --require-settled-wal` refuses before activation
 when the existing WAL has an emission without completion, an approved deferred

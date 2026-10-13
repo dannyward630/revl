@@ -26,7 +26,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from revl import compile_files, compile_source  # noqa: E402
+from revl import compile_source  # noqa: E402
+from _compiled_ir import compiled_ir  # noqa: E402
 from revl.ownership import (  # noqa: E402
     _FRESH,
     _bound_names,
@@ -84,7 +85,7 @@ _SELFHOST_DOCS = [
 
 def _functions(doc: str):
     if doc.startswith("selfhost/"):
-        return compile_files([str(ROOT / doc)]).get("functions") or []
+        return compiled_ir(ROOT / doc).get("functions") or []
     return compile_source((CORPUS_DIR / doc).read_text()).get("functions") or []
 
 

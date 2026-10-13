@@ -28,7 +28,7 @@
 //     keyword renaming, `// (empty body)`); `_v3_stmt` (let/assign, return,
 //     if/while/for, bare-expr, assert); and the base `_expr` algebra (lit, name,
 //     var incl `None`->`Optional.empty()`, bin incl `??`/`==`/exact-arith/`/`/
-//     comparisons/`&&`, un incl `Math.negateExact`, the 2.0 call and the `fn`
+//     comparisons/`&&`, un incl `revlNeg`, the 2.0 call and the `fn`
 //     call with `Some`/`None`, the widen markers, field, index, ternary, list,
 //     the empty `maplit`, and non-float `${..}` interpolation).
 //
@@ -69,13 +69,13 @@
 // Reported for follow-on java-emitter slices, deliberately OUT of this slice —
 // each is a real reference surface this slice does not reach (its fixtures avoid
 // it), NOT an approximation. Where a covered fixture could plausibly reach one, a
-// loud `<<DEFER-*>>` marker keeps a byte diff from silently passing (item 207):
+// loud `<<UNSUPPORTED-*>>` marker keeps a byte diff from silently passing (item 207):
 //   * a local bound to an UNANNOTATED `Map.empty()` (issue #274): the reference
 //     learns the map's value type from the body's `m.set(k, v)` writers, or falls
 //     back to the raw `java.util.Map`; neither is ported (the HOST `Map.new()`
 //     inference is). The annotated `var m: Map[Str, Int] = Map.empty()` IS covered
 //     (its pin rides on the literal), and the unannotated one surfaces
-//     `<<DEFER-map-local-unpinned>>`;
+//     `<<UNSUPPORTED-map-local-unpinned>>`;
 //   * the whole item-130 `Stream[T]` surface, which the reference java backend
 //     now LOWERS (the emitted `Stream`/`Subscription`/`EventContract` runtime,
 //     the `subscribe` acquisition, and the `stream-iter` loop behind
@@ -91,23 +91,23 @@
 //     225; isolate/intercept realm PLACEMENT in item 235; host `let-effect` binds
 //     and body-level `effect`/`emit`/`if`/`fail`/`await` in item 238 — see COVERS.)
 //     A component outside the supported subset routes to
-//     `<<DEFER-component-nonsimple:N>>`;
+//     `<<UNSUPPORTED-component-nonsimple:N>>`;
 //   * spawn/instances (`_v3_spawn`/`instance-get`/`RevlSpawnHandle`), timers and
 //     routers; and the `Pool` host runtime — `_emit_host_stubs` emits Map/Job, but
-//     a `Pool` acquisition surfaces a loud `<<DEFER-host-stub:Pool>>`;
+//     a `Pool` acquisition surfaces a loud `<<UNSUPPORTED-host-stub:Pool>>`;
 //   * the built-in Result surface — `Ok`/`Err` construction and `match`, the
 //     sealed `RevlResult` (`_emit_result_type`), and `_emit_checked_div_helpers`,
 //     so the `checked_*` builtin methods stay behind a loud
-//     `<<DEFER-checked-div:..>>`; and the `revlDivFloor`/`revlDivEuclid`/`revlMod`
+//     `<<UNSUPPORTED-checked-div:..>>`; and the `revlDivFloor`/`revlDivEuclid`/`revlMod`
 //     int-arith block, so `div_floor`/`div_euclid`/`mod` stay behind a loud
-//     `<<DEFER-int-arith:..>>` (`div_trunc` is inline `Math.divideExact` and IS
+//     `<<UNSUPPORTED-int-arith:..>>` (`div_trunc` is the `revlDivTrunc` stdlib group and IS
 //     covered);
 //   * functional record-update `{r | f = e}` — the JAVA reference itself RAISES on
 //     `record_update` (only python/typescript emit it), a structural exclusion;
 //   * externs (`_emit_v3_externs`), in-file `test`/lifecycle-test emission, and
 //     the canonical Float->Str `revlFtoa` (so `${aFloat}` interpolation is
 //     excluded, since it also pulls in the `_emit_ftoa_helper` block, and a Float
-//     `to_str()` receiver surfaces `<<DEFER-ftoa:to_str>>`);
+//     `to_str()` receiver surfaces `<<UNSUPPORTED-ftoa:to_str>>`);
 //   * java-specific NUANCES — the `_reject_fn_type` refusal of a declared function
 //     type, local `let`-bound arrows and their `_inline_arrow` beta-reduction, and
 //     `let_pattern` (the reference threads a per-`_V3Ctx` emission-order index
@@ -125,7 +125,7 @@
 // scan), no `@py` needed.
 use "../stdlib/value.rvl" {
   value_kind, value_is_null, value_field, value_keys,
-  value_list, value_at, value_str, value_bool, value_opt, value_int
+  value_list, value_at, value_str, value_bool, value_opt, value_int, value_children
 }
 use "../stdlib/str.rvl" { trim, split_top, last_index_of, rstrip }
 use "../stdlib/list.rvl" { list_contains, list_sort, list_dedup }
@@ -309,9 +309,9 @@ fn java_bin_ops(op: Str) -> Str {
   return ""
 }
 fn exact_method(op: Str) -> Str {
-  if (op == "+") { return "addExact" }
-  if (op == "-") { return "subtractExact" }
-  return "multiplyExact"
+  if (op == "+") { return "revlAdd" }
+  if (op == "-") { return "revlSub" }
+  return "revlMul"
 }
 fn is_addsubmul(op: Str) -> Bool { return op == "+" || op == "-" || op == "*" }
 fn is_int_operand(opnd: Str) -> Bool { return opnd == "Int" || opnd == "Int32" }
@@ -391,12 +391,13 @@ fn covers_variant(ctx: Ctx, patterns: List[Str]) -> Bool {
 // -------------------------------------------------------------------- types
 // `_split_v3_types`: split `A, B` on top-level commas (bridged to str.split_top).
 // `_java_v3_type`: IR v3 surface type -> Java type. `boxed` picks the reference-
-// wrapper form for a type-ARGUMENT position (only long/double/boolean box in the
-// v3 table — `int`/`String`/etc. pass through, matching the reference's inline
-// dict, which is intentionally narrower than the v1/v2 `_BOXED`).
+// wrapper form for a type-ARGUMENT position (long/int/double/boolean box in the
+// v3 table, `_V3_BOXED`; `String`/`byte[]`/etc. pass through, and `void` is not
+// a type argument at all, which is the reference's gap too).
 fn box(java_type: Str, boxed: Bool) -> Str {
   if (!boxed) { return java_type }
   if (java_type == "long") { return "java.lang.Long" }
+  if (java_type == "int") { return "java.lang.Integer" }
   if (java_type == "double") { return "java.lang.Double" }
   if (java_type == "boolean") { return "java.lang.Boolean" }
   return java_type
@@ -422,12 +423,15 @@ fn java_v3_type(tv: Any, boxed: Bool) -> Str {
   // the JDK's functional interfaces are neither generic over arity nor usable
   // with primitives without boxing (the reference's `_reject_fn_type`, which
   // RAISES). A pure emitter fn cannot `fail`, so the refusal surfaces as a loud
-  // out-of-subset `<<DEFER-fn-type>>` marker, keeping a byte diff from silently
+  // out-of-subset `<<UNSUPPORTED-fn-type>>` marker, keeping a byte diff from silently
   // mangling the type. `.map`/`.filter`/`.reduce` reach here through their
   // `list_map`/`list_filter`/`list_reduce` function-value parameters.
-  if (name.startsWith("(")) { return "<<DEFER-fn-type>>" }
+  if (name.startsWith("(")) { return "<<UNSUPPORTED-fn-type>>" }
   let tm = type_map(name)
   if (tm != "") { return box(tm, boxed) }
+  // `Any` has no `type_map` entry; it is the open type, `Object` in every
+  // position (issue #2303).
+  if (name == "Any") { return "Object" }
   if (name.indexOf("[") >= 0) {
     let lb = name.indexOf("[")
     let base = name.slice(0, lb)
@@ -445,9 +449,11 @@ fn java_v3_type(tv: Any, boxed: Bool) -> Str {
     if (base == "Result" && args.length() == 2) {
       return `RevlResult<${java_v3_type(args[0], true)}, ${java_v3_type(args[1], true)}>`
     }
-    var objs = []
-    for (a of args) { objs = objs.push("Object") }
-    return `${base}<${objs.join(", ")}>`
+    // A user generic type applies its arguments boxed (`Bx<java.lang.Long>`),
+    // matching the type parameters `emit_v3_types` declares (issue #2303).
+    var applied = []
+    for (a of args) { applied = applied.push(java_v3_type(a, true)) }
+    return `${base}<${applied.join(", ")}>`
   }
   // A user type name (`_ident`) — mapped to its emitted class/interface name.
   return mangle(name)
@@ -541,7 +547,7 @@ fn render_bin(node: Any, ctx: Ctx, counter: Int) -> Rendered {
     return { text: `(((double) (${left})) / ((double) (${right})))`, counter: c }
   }
   if (is_addsubmul(op) && is_int_operand(opnd)) {
-    return { text: `Math.${exact_method(op)}(${left}, ${right})`, counter: c }
+    return { text: `${exact_method(op)}(${left}, ${right})`, counter: c }
   }
   // Java has NO relational operator on `String`: `(a < b)` reached javac as
   // "bad operand types for binary operator '<'", so a document that ordered
@@ -565,7 +571,7 @@ fn render_un(node: Any, ctx: Ctx, counter: Int) -> Rendered {
     return { text: `(~${r.text})`, counter: r.counter }
   }
   if (op == "-") {
-    if (is_int_operand(node_operands(node))) { return { text: `Math.negateExact(${r.text})`, counter: r.counter } }
+    if (is_int_operand(node_operands(node))) { return { text: `revlNeg(${r.text})`, counter: r.counter } }
     return { text: `(-${r.text})`, counter: r.counter }
   }
   return { text: `<<UNSUPPORTED-UN:${op}>>`, counter: r.counter }
@@ -615,7 +621,7 @@ fn v3_len(target: Str) -> Str { return `revlLength(${target})` }
 fn v3_builtin(method: Str, target: Str, args: List[Str], recv: Str) -> Str {
   if (method == "checked_div_trunc" || method == "checked_div_floor"
       || method == "checked_div_euclid" || method == "checked_mod") {
-    return `<<DEFER-checked-div:${method}>>`
+    return `<<UNSUPPORTED-checked-div:${method}>>`
   }
   if (method == "length") { return `revlLength(${target})` }
   if (method == "push") { return `revlPush(${target}, ${args[0]})` }
@@ -633,12 +639,13 @@ fn v3_builtin(method: Str, target: Str, args: List[Str], recv: Str) -> Str {
     if (recv == "Str") { return `revlParseInt(${target})` }
     return `((long) (${target}))`
   }
-  if (method == "to_int32") { return `Math.toIntExact(${target})` }
-  // `div_trunc` truncates toward zero; `Math.divideExact` truncates identically
-  // and throws on the one overflow (`Int.MIN / -1`) plain `/` would wrap.
-  if (method == "div_trunc") { return `Math.divideExact(${target}, ${args[0]})` }
+  if (method == "to_int32") { return `revlToInt32(${target})` }
+  // `div_trunc` truncates toward zero; `revlDivTrunc` (Math.divideExact under
+  // it) truncates identically and faults on the one overflow (`Int.MIN / -1`)
+  // plain `/` would wrap.
+  if (method == "div_trunc") { return `revlDivTrunc(${target}, ${args[0]})` }
   if (method == "div_floor" || method == "div_euclid" || method == "mod") {
-    return `<<DEFER-int-arith:${method}>>`
+    return `<<UNSUPPORTED-int-arith:${method}>>`
   }
   if (method == "indexOf") { return `revlIndexOf(${target}, ${args[0]})` }
   if (method == "split") { return `revlSplit(${target}, ${args[0]})` }
@@ -656,8 +663,13 @@ fn v3_builtin(method: Str, target: Str, args: List[Str], recv: Str) -> Str {
   if (method == "keys") { return `revlMapKeys(${target})` }
   if (method == "remove") { return `revlMapRemove(${target}, ${args[0]})` }
   if (method == "to_str") {
-    if (recv == "Float") { return `<<DEFER-ftoa:to_str>>` }
+    if (recv == "Float") { return `<<UNSUPPORTED-ftoa:to_str>>` }
     return `String.valueOf(${target})`
+  }
+  // The reverse of `codepoint_at` (issue #2285): a lambda binds the receiver
+  // once and checks the scalar range before `Character.toChars`.
+  if (method == "to_char") {
+    return `((java.util.function.LongFunction<String>) (_cp) -> (_cp < 0 || _cp > 0x10FFFF || (_cp >= 0xD800 && _cp <= 0xDFFF)) ? "" : new String(Character.toChars((int) _cp))).apply(${target})`
   }
   // The reference raises `unknown builtin method`; a pure self-host emitter fn
   // cannot fail, so the refusal travels as a loud marker (item 207).
@@ -682,7 +694,7 @@ fn render_list(node: Any, ctx: Ctx, counter: Int) -> Rendered {
 fn render_adt(case: Str, args: List[Str], ctx: Ctx) -> Str {
   let owner = map_get(ctx.ca, case)
   if (resolved(owner)) { return `new ${mangle(owner)}.${case}(${args.join(", ")})` }
-  if (case == "Ok" || case == "Err") { return `<<DEFER-result-ctor:${case}>>` }
+  if (case == "Ok" || case == "Err") { return `<<UNSUPPORTED-result-ctor:${case}>>` }
   return `<<UNSUPPORTED-ADT:${case}>>`
 }
 
@@ -714,7 +726,7 @@ fn render_call(node: Any, ctx: Ctx, counter: Int) -> Rendered {
     if (resolved(map_get(ctx.ca, name))) { return { text: render_adt(name, args, ctx), counter: c } }
     if (name == "Some") { return { text: `java.util.Optional.of(${args[0]})`, counter: c } }
     if (name == "None") { return { text: "java.util.Optional.empty()", counter: c } }
-    if (name == "Ok" || name == "Err") { return { text: `<<DEFER-result-ctor:${name}>>`, counter: c } }
+    if (name == "Ok" || name == "Err") { return { text: `<<UNSUPPORTED-result-ctor:${name}>>`, counter: c } }
     return { text: `${name}(${args.join(", ")})`, counter: c }
   }
   if (ck == "field") {
@@ -1104,7 +1116,7 @@ fn let_keyword(node: Any, ctx: Ctx) -> Str {
     // `java.util.Map`. Both need a whole-body walk over the builtin surface
     // this slice does not cover, so the answer is a loud marker rather than a
     // guess (item 207). No covered fixture reaches it.
-    return "<<DEFER-map-local-unpinned>>"
+    return "<<UNSUPPORTED-map-local-unpinned>>"
   }
   if (node_kind(value) == "adt") {
     let owner = map_get(ctx.ca, value_str(value_field(value, "case")))
@@ -1294,6 +1306,15 @@ fn v3_types_need_value_helpers(types: Any) -> Bool {
   return false
 }
 
+// `_v3_type_params`: `<T, U>` for a generic type declaration, empty for a plain
+// one (issue #2303).
+fn type_params(spec: Any) -> Str {
+  var names = []
+  for (p of value_list(value_field(spec, "params"))) { names = names.push(mangle(value_str(p))) }
+  if (names.length() == 0) { return "" }
+  return `<${names.join(", ")}>`
+}
+
 // `_emit_v3_types`: a user `record` type as a `public static final class` (public
 // final fields + a canonical ctor + the structural `equals`/`hashCode` above), a
 // `variant` type as a `public sealed interface … permits …` with one
@@ -1305,7 +1326,7 @@ fn emit_v3_types(types: Any) -> List[Str] {
     let spec = value_field(types, name)
     let kind = value_str(value_field(spec, "kind"))
     if (kind == "record") {
-      out = out.push(`public static final class ${mn} {`)
+      out = out.push(`public static final class ${mn}${type_params(spec)} {`)
       let fields = value_field(spec, "fields")
       let fnames = value_keys(fields)
       for (f of fnames) {
@@ -1501,13 +1522,13 @@ fn set_rn(ctx: Ctx, rn: Map[Str, Str]) -> Ctx {
 // `return <lit|name>` (or an empty void body), NO requires, NO config, NO
 // isolate/intercept, and body steps that are all `provide`.
 //
-// Everything richer is DEFERRED, each behind a loud `<<DEFER-*>>` marker so a byte
+// Everything richer is DEFERRED, each behind a loud `<<UNSUPPORTED-*>>` marker so a byte
 // diff can never silently pass on an unported form (item 207's discipline):
 //   * the MODERN `_emit_component_modern` path — isolate/intercept, effectful
 //     method bodies, and any `if`/`fail`/`await`/`return` or `setup` body step
 //     (the `Context.EffectScope fx` provider shape). Detected conservatively:
 //     anything outside the simple predicate below routes to a
-//     `<<DEFER-component-nonsimple:NAME>>` marker;
+//     `<<UNSUPPORTED-component-nonsimple:NAME>>` marker;
 //   * component `config` (the `<Comp>Plugin(params)` ctor + `_config_default_lit`
 //     application) — a config-carrying component stays LEGACY but is deferred here;
 //   * required-service routing (`req`/the `ctx.get(..)` locals + provider fields),
@@ -1517,7 +1538,7 @@ fn set_rn(ctx: Ctx, rn: Map[Str, Str]) -> Ctx {
 //     CordisException import widening.
 // The provider METHOD body reuses the v1 `_expr` surface for the two kinds the
 // simple unit forces — `lit` (`_lit`) and `name` (a bound param, `_ident`) — and
-// marks any other kind `<<DEFER-method-expr:KIND>>`.
+// marks any other kind `<<UNSUPPORTED-method-expr:KIND>>`.
 
 // `_emit_service_interfaces_v3`: each `service` -> a `public interface S` with one
 // method per op (param names `_ident`ed/mangled, a `void` return when the op
@@ -1555,7 +1576,7 @@ fn v1_method_expr(node: Any) -> Str {
   let k = node_kind(node)
   if (k == "lit") { return java_lit(node) }
   if (k == "name") { return mangle(value_str(value_field(node, "id"))) }
-  return `<<DEFER-method-expr:${k}>>`
+  return `<<UNSUPPORTED-method-expr:${k}>>`
 }
 
 // `_method_body` (SUBSET): a single `return <expr>` inlines to `return <expr>;`
@@ -1580,7 +1601,7 @@ fn method_body(method: Any, ret_is_void: Bool) -> Str {
     if (value_str(value_field(s0, "step")) == "return") {
       let e = value_field(s0, "expr")
       if (value_is_null(e)) {
-        if (!ret_is_void) { return "<<DEFER-bare-return-nonvoid>>" }
+        if (!ret_is_void) { return "<<UNSUPPORTED-bare-return-nonvoid>>" }
         return "return;"
       }
       let value = v1_method_expr(e)
@@ -1627,7 +1648,7 @@ fn list_nonempty(v: Any) -> Bool {
 // (config/requires/isolate/intercept absent, every step a `provide`, every method
 // empty or a lone `return [<lit|name>]`), so anything it admits the reference emits
 // via the legacy path with a lit/name body — and anything it rejects gets a loud
-// `<<DEFER-component-nonsimple:NAME>>` rather than a wrong-shaped emission.
+// `<<UNSUPPORTED-component-nonsimple:NAME>>` rather than a wrong-shaped emission.
 fn method_simple_ok(method: Any) -> Bool {
   let steps = value_list(value_field(method, "body"))
   if (steps.length() == 0) { return true }
@@ -1658,7 +1679,7 @@ fn component_simple_ok(comp: Any) -> Bool {
 // inference. `_emit_host_stubs`: walk the whole IR collecting the host ROOTS used
 // (a `host` acquisition node, or a `field` access on a `var` named after a host
 // root), then emit each used root's runtime class. Map/Job are ported; Pool stays
-// a loud `<<DEFER-host-stub:Pool>>` (no covered fixture reaches it).
+// a loud `<<UNSUPPORTED-host-stub:Pool>>` (no covered fixture reaches it).
 fn collect_hosts(node: Any, acc: List[Str]) -> List[Str] {
   let k = value_kind(node)
   if (k == "record") {
@@ -1689,7 +1710,7 @@ fn emit_host_stubs(ir: Any) -> List[Str] {
   for (host of list_sort(used)) {
     if (host == "Job") { out = out.concat(job_runtime()) }
     if (host == "Map") { out = out.concat(map_runtime()) }
-    if (host == "Pool") { out = out.push("<<DEFER-host-stub:Pool>>") }
+    if (host == "Pool") { out = out.push("<<UNSUPPORTED-host-stub:Pool>>") }
   }
   return out
 }
@@ -1893,7 +1914,8 @@ fn map_value_expr_type(node: Any, var_types: Map[Str, Str], comp: Any, services:
     // map_inference_builtins.rvl).
     if (method == "length" || method == "charCodeAt" || method == "codepoint_at"
         || method == "indexOf" || method == "to_int") { return "Int" }
-    if (method == "charAt" || method == "join" || method == "repeat" || method == "to_str" || method == "slice") { return "Str" }
+    if (method == "charAt" || method == "join" || method == "repeat" || method == "to_str"
+        || method == "to_char" || method == "slice") { return "Str" }
     if (method == "split") { return "List[Str]" }
     if (method == "concat") { return map_value_expr_type(value_field(node, "target"), var_types, comp, services, functions, ctx, types) }
     return ""
@@ -2159,7 +2181,7 @@ fn await_join(node: Any, ctx: Ctx, counter: Int) -> Rendered {
 // are not reached by the covered corpus (the gate rejects them); a loud marker
 // keeps a byte diff from silently passing if one ever arrives.
 fn emit_setup_stmt(step: Any, ctx: Ctx, pad: Str, counter: Int) -> Sout {
-  return { lines: [pad.concat(`<<DEFER-setup-step:${value_str(value_field(step, "step"))}>>`)], counter: counter }
+  return { lines: [pad.concat(`<<UNSUPPORTED-setup-step:${value_str(value_field(step, "step"))}>>`)], counter: counter }
 }
 
 // ============================================== RevlFrame teardown (item 321)
@@ -2301,7 +2323,7 @@ fn stdlib_block_header() -> List[Str] {
 // The helper group ORDER of `_stdlib_helper_source` (first-declaration order),
 // which is the order `_emit_stdlib_helpers` emits the selected groups in.
 fn stdlib_group_names() -> List[Str] {
-  return ["revlLength", "revlSlice", "revlIndexOf", "revlCharAt", "revlCharCodeAt", "revlConcat", "revlPush", "revlSplit", "revlJoin", "revlRepeat", "revlParseInt", "revlMapSet", "revlMapGet", "revlMapHas", "revlStrCmp", "revlMapRemove", "revlMapKeys"]
+  return ["revlLength", "revlSlice", "revlIndexOf", "revlCharAt", "revlCharCodeAt", "revlConcat", "revlPush", "revlSplit", "revlJoin", "revlRepeat", "revlParseInt", "revlMapSet", "revlMapGet", "revlMapHas", "revlStrCmp", "revlMapRemove", "revlMapKeys", "revlAdd", "revlSub", "revlMul", "revlNeg", "revlToInt32", "revlDivTrunc"]
 }
 
 // Each group VERBATIM (its own leading comment lines ride with it, so a group
@@ -2505,6 +2527,80 @@ fn stdlib_group_lines(name: Str) -> List[Str] {
       "    java.util.List<String> ks = new java.util.ArrayList<>(m.keySet());",
       "    ks.sort((a, b) -> revlStrCmp(a, b));",
       "    return java.util.List.copyOf(ks);",
+      "}",
+    ]
+  }
+  if (name == "revlAdd") {
+    return [
+      "// Int / Int32 overflow TRAPS (docs/arithmetic.md) and says so in revl's own",
+      "// words, `revl: Int overflow` / `revl: Int32 overflow`, as py/ts/go/rust do.",
+      "// Math.*Exact throws ArithmeticException with the JDK's text (`long",
+      "// overflow`), so each helper re-raises it; the `int` overloads serve Int32.",
+      "private static long revlAdd(long a, long b) {",
+      "    try { return Math.addExact(a, b); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int overflow\"); }",
+      "}",
+      "private static int revlAdd(int a, int b) {",
+      "    try { return Math.addExact(a, b); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+      "}",
+    ]
+  }
+  if (name == "revlSub") {
+    return [
+      "private static long revlSub(long a, long b) {",
+      "    try { return Math.subtractExact(a, b); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int overflow\"); }",
+      "}",
+      "private static int revlSub(int a, int b) {",
+      "    try { return Math.subtractExact(a, b); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+      "}",
+    ]
+  }
+  if (name == "revlMul") {
+    return [
+      "private static long revlMul(long a, long b) {",
+      "    try { return Math.multiplyExact(a, b); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int overflow\"); }",
+      "}",
+      "private static int revlMul(int a, int b) {",
+      "    try { return Math.multiplyExact(a, b); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+      "}",
+    ]
+  }
+  if (name == "revlNeg") {
+    return [
+      "private static long revlNeg(long a) {",
+      "    try { return Math.negateExact(a); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int overflow\"); }",
+      "}",
+      "private static int revlNeg(int a) {",
+      "    try { return Math.negateExact(a); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+      "}",
+    ]
+  }
+  if (name == "revlToInt32") {
+    return [
+      "// Int -> Int32 narrowing is checked: out of the int range faults.",
+      "private static int revlToInt32(long a) {",
+      "    try { return Math.toIntExact(a); }",
+      "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+      "}",
+    ]
+  }
+  if (name == "revlDivTrunc") {
+    return [
+      "// div_trunc: Math.divideExact truncates toward zero and faults on the one",
+      "// overflow (Int.MIN / -1); a zero divisor keeps the JDK's own fault.",
+      "private static long revlDivTrunc(long a, long b) {",
+      "    try { return Math.divideExact(a, b); }",
+      "    catch (ArithmeticException e) {",
+      "        if (b == 0L) { throw e; }",
+      "        throw new ArithmeticException(\"revl: Int overflow\");",
+      "    }",
       "}",
     ]
   }
@@ -3004,7 +3100,7 @@ fn emit_component_stmts(comp: Any, services: Any, cname: Str, steps: List[Any], 
 // `AsyncPlugin` coloring (`apply(..) throws Exception`, `_await_join`) and the
 // `fail`->`CordisException` throw. A component is emitted here when it needs the
 // modern path AND falls inside the supported subset (`modern_supported` &&
-// `needs_modern_subset`); anything else routes to `<<DEFER-component-nonsimple>>`.
+// `needs_modern_subset`); anything else routes to `<<UNSUPPORTED-component-nonsimple>>`.
 // DEFERRED (slice 6+, each a loud marker or a structural DEFER): spawn/instances,
 // timers, routers, the `Pool` runtime, `setup` blocks, and method-body
 // `let`/`assign`/`await`/arrow bindings.
@@ -3519,7 +3615,7 @@ fn emit_component(comp: Any, services: Any, ctx: Ctx, types: Any, functions: Lis
     if (modern_supported(comp) && needs_modern_subset(comp)) {
       return emit_component_modern(comp, services, ctx, types, functions, wnames)
     }
-    return [`<<DEFER-component-nonsimple:${name}>>`]
+    return [`<<UNSUPPORTED-component-nonsimple:${name}>>`]
   }
   let cname = mangle(name)
   let provs = value_field(comp, "provides")
@@ -3617,6 +3713,25 @@ fn deferred_test_markers(ir: Any) -> List[Str] {
   }
   for (t of value_list(value_field(ir, "fault_tests"))) {
     out = out.push(`<<UNSUPPORTED-FAULT-TEST:${value_str(value_field(t, "name"))}>>`)
+  }
+  return out
+}
+
+// Issue #2389: the reference spells a namespaced provision key (`acme::greeter`)
+// as a mangled host identifier (`_host_key`, issue #1914), and this port does
+// not port that mangling yet, so it would write the raw `::` key into host
+// names. Until it does, the port names every namespaced key it meets instead
+// of emitting a silent difference.
+fn namespaced_key_markers(ir: Any) -> List[Str] {
+  var out = []
+  for (c of value_list(value_field(ir, "components"))) {
+    let cname = value_str(value_field(c, "name"))
+    for (table of ["requires", "provides"]) {
+      for (k of value_keys(value_field(c, table))) {
+        let mark = `<<UNSUPPORTED-NAMESPACED-KEY:${cname}.${k}>>`
+        if (k.indexOf("::") >= 0 && !list_contains(out, mark)) { out = out.push(mark) }
+      }
+    }
   }
   return out
 }
@@ -3724,7 +3839,90 @@ pub fn emit_java_src(ir: Any) -> Str {
   // silence (issue #1123).
   let test_markers = deferred_test_markers(ir)
   if (test_markers.length() > 0) { out = out.concat(test_markers) }
+  // The reference refusals the class body above cannot carry, one named marker
+  // each (issue #2383): a deferred emission called from a component, a
+  // `validated` crossing and a required `Stream[T]` coeffect.
+  out = out.concat(deferred_emission_markers(ir)).concat(validated_markers(ir))
+  out = out.concat(required_stream_markers(ir))
+  out = out.concat(namespaced_key_markers(ir))
   return rstrip(out.join(newline())).concat(newline())
+}
+
+fn flag_of(node: Any, field: Str) -> Bool { return value_bool(value_field(node, field)) }
+
+fn java_ir_nodes(n: Any) -> List[Any] {
+  var out = [n]
+  for (c of value_children(n)) { out = out.concat(java_ir_nodes(c)) }
+  return out
+}
+
+// `_refuse_validated_emissions`: a `validated` crossing (a service operation
+// or an extern) needs the response-validation seam this tier does not have, so
+// the reference refuses the document. The port names each one, as the rust
+// and ts ports do (issue #2383).
+fn validated_markers(ir: Any) -> List[Str] {
+  var wheres: List[Str] = []
+  var nodes: List[Any] = []
+  let services = value_field(ir, "services")
+  for (sname of value_keys(services)) {
+    let methods = value_field(value_field(services, sname), "methods")
+    for (mname of value_keys(methods)) {
+      wheres = wheres.push(`${sname}.${mname}`)
+      nodes = nodes.push(value_field(methods, mname))
+    }
+  }
+  for (e of value_list(value_field(ir, "externs"))) {
+    wheres = wheres.push(value_str(value_field(e, "name")))
+    nodes = nodes.push(e)
+  }
+  var out = []
+  var i = 0
+  while (i < nodes.length()) {
+    if (flag_of(nodes[i], "validated")) { out = out.push(`<<UNSUPPORTED-VALIDATED:${wheres[i]}>>`) }
+    i = i + 1
+  }
+  return out
+}
+
+// A required `Stream[T]` coeffect is not lowered on cordis4j, and the
+// reference refuses the component by name. One spelling on every tier
+// (issue #2383).
+fn required_stream_markers(ir: Any) -> List[Str] {
+  var out = []
+  for (c of value_list(value_field(ir, "components"))) {
+    let rq = value_field(c, "requires")
+    for (k of value_keys(rq)) {
+      if (value_kind(value_field(rq, k)) == "str" && value_str(value_field(rq, k)).startsWith("Stream[")) {
+        out = out.push(`<<UNSUPPORTED-REQUIRED-STREAM:${value_str(value_field(c, "name"))}.${k}>>`)
+      }
+    }
+  }
+  return out
+}
+
+// `refuse_deferred_on_ownerless_tier`: a component that calls a `deferred`
+// emission needs a session owner runtime this tier does not have. The port
+// names each call site (issue #2383).
+fn deferred_emission_markers(ir: Any) -> List[Str] {
+  var deferred = []
+  for (e of value_list(value_field(ir, "externs"))) {
+    if (list_contains(["emission"], value_str(value_field(e, "class"))) && flag_of(e, "deferred")) {
+      deferred = deferred.push(value_str(value_field(e, "name")))
+    }
+  }
+  var out = []
+  if (deferred.length() == 0) { return out }
+  for (c of value_list(value_field(ir, "components"))) {
+    let cname = value_str(value_field(c, "name"))
+    for (n of java_ir_nodes(c)) {
+      let name = value_str(value_field(n, "name"))
+      let mark = `<<UNSUPPORTED-DEFERRED-EMISSION:${cname}.${name}>>`
+      if (node_kind(n) == "fn" && list_contains(deferred, name) && !list_contains(out, mark)) {
+        out = out.push(mark)
+      }
+    }
+  }
+  return out
 }
 
 // ---------------------------------------------------------------- in-file tests
@@ -3741,9 +3939,9 @@ test "bin-op table and exact-method map the arithmetic surface" {
   assert java_bin_ops("<=") == "<="
   assert java_bin_ops("/") == "/"
   assert java_bin_ops("&&") == "&&"
-  assert exact_method("+") == "addExact"
-  assert exact_method("-") == "subtractExact"
-  assert exact_method("*") == "multiplyExact"
+  assert exact_method("+") == "revlAdd"
+  assert exact_method("-") == "revlSub"
+  assert exact_method("*") == "revlMul"
 }
 
 test "keyword-colliding identifiers are renamed by appending underscore" {

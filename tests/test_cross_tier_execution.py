@@ -763,15 +763,15 @@ DIVERGENCES = {
     # refuses with E0308 and TypeScript no longer computes the wrong answer.
     # Asserted positively in WIDENING below; docs/arithmetic.md has the write-up.
     # ~~"negating Int.MIN does not trap on every tier"~~ **Closed.** go now
-    # negates through `revlSub(0, x)`, java through `Math.negateExact`, ts
+    # negates through `revlSub(0, x)`, java through `revlNeg`, ts
     # through `revlI64(-x)` — so every bounded tier faults on `-Int.MIN` exactly
     # as it does on any other Int overflow. Asserted positively below
     # (test_negation_of_int_min_traps + the per-tier emit checks).
     # ~~"Int.MIN / -1 does not trap on every tier"~~ **Closed.** Integer division
     # overflows at exactly this input (quotient 2^63; mod is fine). python now
     # bounds the faulting quotient through `_revl_i64`, go through `revlDivTrunc`
-    # / `revlDivFloor` (which panic), java through `Math.divideExact` /
-    # `Math.negateExact`; the checked forms return `Err("revl: Int overflow")`.
+    # / `revlDivFloor` (which panic), java through `revlDivTrunc` /
+    # `revlNeg`; the checked forms return `Err("revl: Int overflow")`.
     # rust/wasm/ts already trapped. Asserted positively below
     # (test_div_int_min_traps + the checked-Err and per-tier emit checks).
     #
@@ -822,8 +822,8 @@ DIVERGENCES = {
 #     emitter now guards `starts_with('+')`.
 #   - `div_trunc(Int.MIN, -1)` overflows (quotient 2^63) and TRAPS on every
 #     tier. java's plain `/` wrapped back to `Int.MIN`; it now uses
-#     `Math.divideExact`, which throws like the `Math.*Exact` family already
-#     used for `+`/`-`/`*`.
+#     `revlDivTrunc`, which throws like `revlAdd`/`revlSub`/`revlMul`
+#     already used for `+`/`-`/`*`.
 #   - A NEGATIVE SLICE bound is END-RELATIVE on every tier (the PO decision for
 #     #549: py and ts already sliced python/JS-style, so the reference follows
 #     them). go/rust/java used to clamp the negative bound to 0 (the wrong
@@ -1601,7 +1601,7 @@ def test_every_bounded_tier_uses_the_same_trap_message():
                             ("go", 'panic("revl: Int overflow")'),
                             ("python", "revl: Int overflow"),
                             ("typescript", "throw new RangeError('revl: Int overflow')"),
-                            ("java", "Math.addExact")):
+                            ("java", 'throw new ArithmeticException("revl: Int overflow")')):
         emitted = _emit(backend, INT_OVERFLOW)
         assert needle in emitted, (backend, emitted[:400])
 
@@ -1667,7 +1667,7 @@ def test_bounded_tiers_emit_checked_int_negation():
     """The static half for go/java/ts: an Int negation renders through the
     tier's checked mechanism, never the host's wrapping unary minus."""
     assert "revlSub(0, " in _emit("go", NEG_INT_MIN)
-    assert "Math.negateExact(" in _emit("java", NEG_INT_MIN)
+    assert "revlNeg(" in _emit("java", NEG_INT_MIN)
     assert "revlI64(-" in _emit("typescript", NEG_INT_MIN)
 
 
@@ -1898,7 +1898,7 @@ def test_every_tier_imposes_the_i32_bound_on_arithmetic():
         "go": "revlAddI32",
         "python": "_revl_i32(",
         "typescript": "revlI32(",
-        "java": "Math.addExact",
+        "java": "revlAdd(",
         "wasm": "$int32_add",
     }
     for backend, needle in checks.items():
@@ -1917,7 +1917,7 @@ def test_narrowing_is_explicit_and_checked_on_every_tier():
         "go": "revlToI32",
         "python": "_revl_i32(",
         "typescript": "revlI32(Number(",
-        "java": "Math.toIntExact",
+        "java": "revlToInt32(",
         "wasm": "$int32_narrow",
     }
     for backend, needle in checks.items():

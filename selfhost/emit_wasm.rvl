@@ -841,7 +841,7 @@ fn trap_free_operand(node: Any, s: Scope) -> Bool {
 
 fn render_bin(node: Any, s: Scope, depth: Int) -> WExpr {
   let op = node_op(node)
-  if (op == "??") { return { wat: "<<DEFER-coalesce>>", ty: "" } }
+  if (op == "??") { return { wat: "<<UNSUPPORTED-coalesce>>", ty: "" } }
   // `/` is TRUE division: `Int / Int` is Float (docs/arithmetic.md), `7 / 2` is
   // 3.5, and Float is refused on this tier BY NAME: the same refusal the
   // reference raises. `i64.div_s` here was a silent 3 in the one position the
@@ -1533,10 +1533,10 @@ fn emit_function(fnode: Any, strs: Map[Str, Str], rectypes: Any, functions: List
     // closures and no function references, so a function value cannot be a param
     // or result (the reference's `_check_type`, which RAISES). A pure emitter fn
     // cannot `fail`, so the refusal surfaces as a loud out-of-subset
-    // `<<DEFER-fn-type>>` marker. `.map`/`.filter`/`.reduce` reach here through
+    // `<<UNSUPPORTED-fn-type>>` marker. `.map`/`.filter`/`.reduce` reach here through
     // their `list_map`/`list_filter`/`list_reduce` function-value parameters.
     if (ptype != "Unit") {
-      let pw = ptype.startsWith("(") ? "<<DEFER-fn-type>>" : wty(ptype)
+      let pw = ptype.startsWith("(") ? "<<UNSUPPORTED-fn-type>>" : wty(ptype)
       sig = sig.push(`(param $p_${pname} ${pw})`)
     }
     slots = slots.set(pname, `(local.get $p_${pname})`)
@@ -1544,7 +1544,7 @@ fn emit_function(fnode: Any, strs: Map[Str, Str], rectypes: Any, functions: List
   }
   let return_ty = value_str(value_field(fnode, "returns"))
   if (return_ty != "Unit" && return_ty != "") {
-    let rw = return_ty.startsWith("(") ? "<<DEFER-fn-type>>" : wty(return_ty)
+    let rw = return_ty.startsWith("(") ? "<<UNSUPPORTED-fn-type>>" : wty(return_ty)
     sig = sig.push(`(result ${rw})`)
   }
 

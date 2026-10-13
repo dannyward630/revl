@@ -1,12 +1,16 @@
-"""Issue #2216: the session cache for the selector's tests/ listing keys on the
-names in the directory, so any change to them recomputes the listing, and an
-unchanged directory is listed once."""
+"""Issue #2216: `tools/affected_tests.py` caches its listing of tests/ on the
+root and a hash of the entry names in the directory, so any change to them
+lists the directory again, and an unchanged directory is listed once. The
+cache lives in the selector, so every caller of `select()` gets it."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from _test_listing_cache import cached_test_files, listing_key
+from _load_by_path import load_by_path
+
+ROOT = Path(__file__).resolve().parents[1]
+at = load_by_path("affected_tests", ROOT / "tools" / "affected_tests.py")
 
 
 def _tree(tmp_path: Path, *names: str) -> Path:
@@ -21,30 +25,33 @@ def _glob(root: Path):
     return sorted((root / "tests").glob("test_*.py"))
 
 
-def _counting():
+def _counting(monkeypatch):
+    """Count the selector's real listings while its cache answers the rest."""
     calls = []
+    original = at._list_test_files
 
-    def original(root):
+    def listing(root):
         calls.append(root)
-        return _glob(root)
+        return original(root)
 
-    return cached_test_files(original), calls
+    monkeypatch.setattr(at, "_list_test_files", listing)
+    return calls
 
 
 def test_the_key_changes_when_an_entry_is_added(tmp_path):
     root = _tree(tmp_path, "test_a.py")
-    before = listing_key(root)
+    before = at._test_listing_key(root)
     (root / "tests" / "test_b.py").write_text("", encoding="utf-8")
-    assert listing_key(root) != before
+    assert at._test_listing_key(root) != before
 
 
 def test_the_key_changes_when_an_entry_is_renamed_or_removed(tmp_path):
     root = _tree(tmp_path, "test_a.py", "test_b.py")
-    first = listing_key(root)
+    first = at._test_listing_key(root)
     (root / "tests" / "test_b.py").rename(root / "tests" / "test_c.py")
-    second = listing_key(root)
+    second = at._test_listing_key(root)
     (root / "tests" / "test_c.py").unlink()
-    third = listing_key(root)
+    third = at._test_listing_key(root)
     assert len({first, second, third}) == 3
 
 
@@ -52,39 +59,49 @@ def test_the_key_ignores_file_contents_and_names_the_root(tmp_path):
     """The listing reads names only, so an edit to a test is not an input; two
     roots with the same names are still two keys."""
     root = _tree(tmp_path / "one", "test_a.py")
-    before = listing_key(root)
+    before = at._test_listing_key(root)
     (root / "tests" / "test_a.py").write_text("x = 1\n", encoding="utf-8")
-    assert listing_key(root) == before
+    assert at._test_listing_key(root) == before
     other = _tree(tmp_path / "two", "test_a.py")
-    assert listing_key(other) != before
+    assert at._test_listing_key(other) != before
 
 
-def test_an_unchanged_directory_is_listed_once(tmp_path):
+def test_an_unchanged_directory_is_listed_once(tmp_path, monkeypatch):
     root = _tree(tmp_path, "test_a.py", "helper.py")
-    files, calls = _counting()
-    assert files(root) == _glob(root)
-    assert files(root) == _glob(root)
+    calls = _counting(monkeypatch)
+    assert at._test_files(root) == _glob(root)
+    assert at._test_files(root) == _glob(root)
     assert len(calls) == 1
 
 
-def test_a_changed_directory_is_listed_again(tmp_path):
+def test_a_changed_directory_is_listed_again(tmp_path, monkeypatch):
     root = _tree(tmp_path, "test_a.py")
-    files, calls = _counting()
-    files(root)
+    calls = _counting(monkeypatch)
+    at._test_files(root)
     (root / "tests" / "test_b.py").write_text("", encoding="utf-8")
-    assert [p.name for p in files(root)] == ["test_a.py", "test_b.py"]
+    assert [p.name for p in at._test_files(root)] == ["test_a.py", "test_b.py"]
     assert len(calls) == 2
 
 
 def test_a_caller_cannot_change_the_cached_listing(tmp_path):
     root = _tree(tmp_path, "test_a.py")
-    files, _ = _counting()
-    files(root).clear()
-    assert files(root) == _glob(root)
+    at._test_files(root).clear()
+    assert at._test_files(root) == _glob(root)
 
 
-def test_a_root_without_tests_falls_through_to_the_original(tmp_path):
-    files, calls = _counting()
-    assert files(tmp_path) == []
-    assert files(tmp_path) == []
+def test_a_root_without_tests_falls_through_to_the_glob(tmp_path, monkeypatch):
+    calls = _counting(monkeypatch)
+    assert at._test_files(tmp_path) == []
+    assert at._test_files(tmp_path) == []
     assert len(calls) == 2
+
+
+def test_select_answers_from_the_cache_on_a_second_ask(monkeypatch):
+    """The point of the cache: `select()` itself, asked twice about one file,
+    lists tests/ once, and gives the same answer both times."""
+    monkeypatch.setattr(at, "_TEST_FILES_CACHE", {})
+    calls = _counting(monkeypatch)
+    first = at.select(["src/revl/a2a_boundary.py"], ROOT)
+    assert len(calls) == 1
+    assert at.select(["src/revl/a2a_boundary.py"], ROOT) == first
+    assert len(calls) == 1

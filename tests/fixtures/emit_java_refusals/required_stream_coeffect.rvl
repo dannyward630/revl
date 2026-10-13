@@ -1,0 +1,15 @@
+// A component that declares a required `Stream[T]` coeffect. The cordis4j
+// reference REFUSES this by name: a requirement on this tier resolves against
+// a SERVICE, and a `Stream[T]` is not one. The same document as
+// tests/fixtures/emit_rust_refusals/required_stream_coeffect.rvl, here so the
+// line-coverage gate drives both java halves over it:
+//
+//   backends/java/emit.py raises the EmitError
+//   selfhost/emit_java.rvl::required_stream_markers emits
+//   `<<UNSUPPORTED-REQUIRED-STREAM:Fulfiller.feed>>` (issue #2383)
+event OrderCreated(key: order_id) { order_id: Str, quantity: Int }
+service Ship { emission fn dispatch(id: Str) }
+
+component Fulfiller requires feed: Stream[OrderCreated], ship: Ship {
+  on OrderCreated as e { emit ship.dispatch(e.order_id) }
+}

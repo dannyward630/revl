@@ -376,20 +376,27 @@ class TierRefusal(Exception):
 def _emit_for_tier(ir: dict, tier: str) -> str:
     """Load the reference emitter for `tier` and emit `ir` to target source.
     The emitter modules live under `backends/<dir>/emit.py` and expose a
-    module-level `emit(ir) -> str`; loaded the same way `tools/conformance.py`
-    loads them, so what the gate emits is real reference emitter output.
+    module-level `emit(ir) -> str`; the module is the cached one every other
+    loader shares, so what the gate emits is real reference emitter output.
 
     A tier limit raised by the emitter leaves as `TierRefusal`; anything else it
-    raises is a fault and propagates unchanged (issue #1406)."""
-    import importlib.util  # noqa: PLC0415
+    raises is a fault and propagates unchanged (issue #1406).
 
-    from ._paths import backends_root  # noqa: PLC0415
+    The module is shared (issue #2204), so the gate now reuses the java and go
+    emitter modules, which hold module-global render state, where it used to
+    exec a fresh one per call. Sequential reuse is safe because each `emit()`
+    restores or re-initialises that state (java and rust save and restore it
+    in a `finally`, go resets it on the way out and on entry, python sets it
+    on entry), which the tests alternate programs over every tier to check.
+    Two threads calling `compile_to`
+    concurrently would still race on those module globals; a caller that
+    compiles from several threads must serialise the emit."""
+    from .placement import backend_emit_module  # noqa: PLC0415 - off the compile graph
     from .refusal import refusals  # noqa: PLC0415
-    tier_dir = _tier_dir(tier)
-    path = backends_root() / tier_dir / "emit.py"
-    spec = importlib.util.spec_from_file_location(f"revl_gate_{tier_dir}_emit", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # issue #2204: the one cached loader, so this is the module bundle and the
+    # tier runners hold (one `EmitError` per tier). It used to exec the emitter
+    # afresh on every call, which also paid the module's import cost each time.
+    module = backend_emit_module(_tier_dir(tier))
     try:
         return module.emit(ir)
     except refusals(module) as refusal:

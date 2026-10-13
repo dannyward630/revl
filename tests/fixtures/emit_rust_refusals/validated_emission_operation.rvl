@@ -19,8 +19,8 @@
 // as a script with revl not importable. The refusal's text is asserted by
 // tests/test_validated_tier_refusal_1373.py.
 //
-// selfhost/emit_rust.rvl has no counterpart to this refusal: it does not
-// read the `validated` modifier.
+// selfhost/emit_rust.rvl names the crossing instead
+// (`<<UNSUPPORTED-VALIDATED:Model.complete>>`, issue #2367).
 service Model { emission validated fn complete(h: Str) -> Str }
 component Agent requires model: Model {
   emit model.complete("p")

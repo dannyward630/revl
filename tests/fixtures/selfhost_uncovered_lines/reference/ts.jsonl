@@ -2,9 +2,9 @@
 
 ["function", "activation-dispatcher-residuals-component-step-enters-witnes", "_component_step", 12, 12]
 
-["reason", "backends-typescript-emit-py-reject-service-key-refuses", "backends/typescript/emit.py::_reject_service_key: refuses a provide/require key that would collide with a cordis Context member, an inherited JS prototype member, or the reserved _-prefixed namespace (a loud host-safety error over a silent wrong resolution). Every corpus key is host-safe, so _is_reserved_service_key returns early and the refusal body with its per-case messages never runs."]
+["reason", "backends-typescript-emit-py-reject-service-key-refuses", "backends/typescript/emit.py::_reject_service_key: refuses a provide/require key that would collide with a cordis Context member, an inherited JS prototype member, or the reserved _-prefixed namespace (a loud host-safety error over a silent wrong resolution). tests/fixtures/emit_ts_refusals/reserved_service_key.rvl (issue #2390) reaches the refusal through its first refused key, `then`; the reference stops there, so the other per-case message arms stay unrun."]
 
-["function", "backends-typescript-emit-py-reject-service-key-refuses", "_reject_service_key", 8, 8]
+["function", "backends-typescript-emit-py-reject-service-key-refuses", "_reject_service_key", 3, 3]
 
 ["reason", "canonical-type-parser-fallbacks-split-fn-type-rejects", "Canonical type parser fallbacks: `_split_fn_type` rejects missing arrows/unclosed parameter lists; `_split_ts_types` tracks nested generic bracket depth; `_ts_type` and `_ts_v3_type` erase unknown nominal/generic arguments; `_v3_surface_type` retains legacy unstamped literal/name inference. Frontend canonical type strings and stamped expressions exercise the supported paths, including the #957 `Map` subscript's declared value type"]
 

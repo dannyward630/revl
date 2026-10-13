@@ -60,6 +60,9 @@ CRATE = "cordis4j"
 # golden oracle + the selfhost mirror both run with record off, so neither
 # shifts). Mirrors backends/go/emit.py's `_RECORD_MODE`.
 _RECORD_MODE = False
+# issue #2345: set while a v3 document's record sink is emitted, so the
+# service-emission sites know the journalling helpers are present.
+_JOURNAL_SINK = False
 
 # issue #1369 (item 522 slice 3): the document's computer-use externs, by name,
 # and its provide methods that run in a UI scope, keyed by
@@ -1212,6 +1215,17 @@ def _split_v3_types(inner: str) -> list[str]:
     return parts
 
 
+# The v3 type-argument spelling of each primitive (#2303). Every primitive
+# TYPE_MAP can produce is here, so `List[Int32]` is `List<java.lang.Integer>`
+# and not the invalid `List<int>`.
+_V3_BOXED = {
+    "long": "java.lang.Long",
+    "int": "java.lang.Integer",
+    "double": "java.lang.Double",
+    "boolean": "java.lang.Boolean",
+}
+
+
 def _java_v3_type(name: object, *, boxed: bool = False) -> str:
     """IR v3 surface type -> Java type for emitted v3 classes."""
     if name is None or name == "Unit":
@@ -1224,11 +1238,11 @@ def _java_v3_type(name: object, *, boxed: bool = False) -> str:
         java_type = TYPE_MAP[name]
         if not boxed:
             return java_type
-        return {
-            "long": "java.lang.Long",
-            "double": "java.lang.Double",
-            "boolean": "java.lang.Boolean",
-        }.get(java_type, java_type)
+        return _V3_BOXED.get(java_type, java_type)
+    if name == "Any":
+        # No TYPE_MAP entry: `Any` is the open type, so it is `Object` in every
+        # position (a bare `Any` would name a class that does not exist).
+        return "Object"
     if "[" in name:
         base = name[: name.index("[")]
         inner = name[name.index("[") + 1 : name.rindex("]")]
@@ -1247,7 +1261,12 @@ def _java_v3_type(name: object, *, boxed: bool = False) -> str:
                 f"RevlResult<{_java_v3_type(args[0], boxed=True)}, "
                 f"{_java_v3_type(args[1], boxed=True)}>"
             )
-        return base + "<" + ", ".join("Object" for _ in args) + ">"
+        # A user generic type (`Bx[Int]`) applies its arguments boxed:
+        # `Bx<java.lang.Long>`. The class declares the same parameters
+        # (`_emit_v3_types`), so an `Object` here would not type-check a read
+        # of a field whose declared type is the parameter (#2303).
+        return base + "<" + ", ".join(
+            _java_v3_type(a, boxed=True) for a in args) + ">"
     if name == "Row" and name not in _V3_DECLARED_TYPES:
         # The host Pool's query-result row: undeclared by the document, handed
         # back by the runtime. `Pool.query` here returns `java.util.List<Object>`,
@@ -1478,8 +1497,9 @@ def _v3_builtin(method: object, target: str, args: list[str],
     # Euclidean remainder, which is non-negative for either sign of b.
     # Int/Int32 width conversions (docs/arithmetic.md). Widening Int32 -> Int is
     # an explicit `(long)` cast; narrowing Int -> Int32 goes through
-    # Math.toIntExact, which throws ArithmeticException out of the int range —
-    # the same fault the other Int32 operations give.
+    # `revlToInt32` (Math.toIntExact under it), which faults out of the int
+    # range with revl's own `revl: Int32 overflow`, like the other Int32
+    # operations.
     if method == "to_int":
         if recv == "Str":
             # Str.to_int (FR-9, docs/stdlib-2.0.md §Str.to_int): Long.parseLong
@@ -1489,20 +1509,20 @@ def _v3_builtin(method: object, target: str, args: list[str],
             return f"revlParseInt({target})"
         return f"((long) ({target}))"
     if method == "to_int32":
-        return f"Math.toIntExact({target})"
+        return f"revlToInt32({target})"
     if method == "div_trunc":
         # `div_trunc` truncates toward zero (Java `/` already does), but the
         # true quotient of `Int.MIN / -1` is 2^63 — one past Int.MAX — so it
         # must TRAP like every other Int overflow (docs/arithmetic.md, and the
         # reference py/go/rust/wasm all fault here). Plain `/` WRAPS back to
-        # Int.MIN with no trap — the #549 java divergence. `Math.divideExact`
-        # truncates identically and throws ArithmeticException on that one
-        # overflow (and on a zero divisor), matching the `Math.*Exact` family
-        # already used for `+`/`-`/`*`/unary minus.
-        return f"Math.divideExact({target}, {args[0]})"
+        # Int.MIN with no trap: the #549 java divergence. `revlDivTrunc`
+        # (`Math.divideExact` under it) truncates identically, faults on that
+        # one overflow with revl's `revl: Int overflow` (and on a zero
+        # divisor), matching `revlAdd`/`revlSub`/`revlMul`/`revlNeg`.
+        return f"revlDivTrunc({target}, {args[0]})"
     # `div_floor`, `div_euclid` and `mod` all go through a static helper
     # rather than an inline `Math.*` expression, for the same reason
-    # `div_trunc` reaches for `Math.divideExact`: the java primitives here are
+    # `div_trunc` reaches for `revlDivTrunc`: the java primitives here are
     # PARTIAL where revl's definitions are total, and each was answering a
     # value instead of trapping or answering the wrong value outright.
     #   * `Math.floorDiv(Int.MIN, -1)` is DOCUMENTED to overflow and return
@@ -1564,6 +1584,16 @@ def _v3_builtin(method: object, target: str, args: list[str],
         if recv == "Float":
             return f"revlFtoa({target})"
         return f"String.valueOf({target})"
+    # The reverse of `codepoint_at` (issue #2285, docs/stdlib-2.0.md
+    # §Int.to_char): a one-code-point Str for a Unicode scalar value, "" for
+    # anything else. `Character.toChars` throws above U+10FFFF and hands back
+    # a lone surrogate for U+D800..U+DFFF, so the range is checked first; the
+    # lambda binds the receiver once.
+    if method == "to_char":
+        return ("((java.util.function.LongFunction<String>) (_cp) -> "
+                "(_cp < 0 || _cp > 0x10FFFF || (_cp >= 0xD800 && _cp <= 0xDFFF))"
+                " ? \"\" : new String(Character.toChars((int) _cp)))"
+                f".apply({target})")
     raise EmitError(f"unknown builtin method {method!r}")
 
 
@@ -1711,6 +1741,56 @@ def _stdlib_helper_source() -> list[str]:
         "    java.util.List<String> ks = new java.util.ArrayList<>(m.keySet());",
         "    ks.sort((a, b) -> revlStrCmp(a, b));",
         "    return java.util.List.copyOf(ks);",
+        "}",
+        "// Int / Int32 overflow TRAPS (docs/arithmetic.md) and says so in revl's own",
+        "// words, `revl: Int overflow` / `revl: Int32 overflow`, as py/ts/go/rust do.",
+        "// Math.*Exact throws ArithmeticException with the JDK's text (`long",
+        "// overflow`), so each helper re-raises it; the `int` overloads serve Int32.",
+        "private static long revlAdd(long a, long b) {",
+        "    try { return Math.addExact(a, b); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int overflow\"); }",
+        "}",
+        "private static int revlAdd(int a, int b) {",
+        "    try { return Math.addExact(a, b); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+        "}",
+        "private static long revlSub(long a, long b) {",
+        "    try { return Math.subtractExact(a, b); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int overflow\"); }",
+        "}",
+        "private static int revlSub(int a, int b) {",
+        "    try { return Math.subtractExact(a, b); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+        "}",
+        "private static long revlMul(long a, long b) {",
+        "    try { return Math.multiplyExact(a, b); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int overflow\"); }",
+        "}",
+        "private static int revlMul(int a, int b) {",
+        "    try { return Math.multiplyExact(a, b); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+        "}",
+        "private static long revlNeg(long a) {",
+        "    try { return Math.negateExact(a); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int overflow\"); }",
+        "}",
+        "private static int revlNeg(int a) {",
+        "    try { return Math.negateExact(a); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+        "}",
+        "// Int -> Int32 narrowing is checked: out of the int range faults.",
+        "private static int revlToInt32(long a) {",
+        "    try { return Math.toIntExact(a); }",
+        "    catch (ArithmeticException e) { throw new ArithmeticException(\"revl: Int32 overflow\"); }",
+        "}",
+        "// div_trunc: Math.divideExact truncates toward zero and faults on the one",
+        "// overflow (Int.MIN / -1); a zero divisor keeps the JDK's own fault.",
+        "private static long revlDivTrunc(long a, long b) {",
+        "    try { return Math.divideExact(a, b); }",
+        "    catch (ArithmeticException e) {",
+        "        if (b == 0L) { throw e; }",
+        "        throw new ArithmeticException(\"revl: Int overflow\");",
+        "    }",
         "}",
         "",
     ]
@@ -2384,12 +2464,14 @@ def _expr(
             # (`revlDiv(float64(a), float64(b))`).
             return f"(((double) ({left})) / ((double) ({right})))"
         if op in ("+", "-", "*") and node.get("operands") in ("Int", "Int32"):
-            # Int/Int32 overflow traps (docs/arithmetic.md); Math.*Exact throws
-            # ArithmeticException, which is exactly the fault we want. Each has
-            # an `int` overload as well as a `long` one, so an Int32 operand
-            # (a Java `int`) resolves to the 32-bit check with no extra code.
-            exact = {"+": "addExact", "-": "subtractExact", "*": "multiplyExact"}[op]
-            return f"Math.{exact}({left}, {right})"
+            # Int/Int32 overflow traps (docs/arithmetic.md). Math.*Exact throws
+            # ArithmeticException("long overflow"), the JDK's words, so the
+            # helpers re-raise it as revl's own `revl: Int overflow` (#2381),
+            # the text every other hosted tier gives. Each helper has an `int`
+            # overload as well as a `long` one, so an Int32 operand (a Java
+            # `int`) resolves to the 32-bit check and says `revl: Int32 overflow`.
+            helper = {"+": "revlAdd", "-": "revlSub", "*": "revlMul"}[op]
+            return f"{helper}({left}, {right})"
         if op in ("<", ">", "<=", ">=") and node.get("operands") == "Str":
             # Java has NO relational operator on `String`: `(a < b)` reached
             # javac as "bad operand types for binary operator '<'", so a
@@ -2414,10 +2496,11 @@ def _expr(
             return f"(~{operand})"
         if node.get("op") == "-":
             if node.get("operands") in ("Int", "Int32"):
-                # negating Long.MIN / Integer.MIN_VALUE overflows; Math.negateExact
-                # (long and int overloads) throws the same ArithmeticException as
-                # the other Int/Int32 operations (docs/arithmetic.md)
-                return f"Math.negateExact({operand})"
+                # negating Long.MIN / Integer.MIN_VALUE overflows; `revlNeg`
+                # (long and int overloads over Math.negateExact) raises the same
+                # revl-worded fault as the other Int/Int32 operations
+                # (docs/arithmetic.md)
+                return f"revlNeg({operand})"
             return f"(-{operand})"
         raise EmitError(f"unsupported unary operator {node.get('op')!r}")
 
@@ -3285,7 +3368,7 @@ def _uses_checked_div(ir: dict) -> bool:
 
 
 #: The named integer-division forms whose java lowering is a static helper
-#: (`div_trunc` stays inline: `Math.divideExact` is already total-or-throwing).
+#: (`div_trunc` stays a stdlib-block helper, `revlDivTrunc`, which these call).
 #: The two `checked_*` forms below CALL those helpers, so their presence pulls
 #: the block in as well.
 _INT_ARITH_METHODS = ("div_floor", "div_euclid", "mod",
@@ -3317,7 +3400,7 @@ def _emit_int_arith_helpers() -> list[str]:
 
     * `Math.floorDiv(Long.MIN_VALUE, -1)` is documented to overflow and return
       `Long.MIN_VALUE`. The true quotient is 2^63, one past Int.MAX, so it must
-      TRAP — which `Math.divideExact` does, and which py/ts/go/rust all did.
+      TRAP, which `revlDivTrunc` does, and which py/ts/go/rust all did.
     * div_euclid's negative-divisor arm was `-Math.floorDiv(a, -b)`. `-b` wraps
       for `b == Long.MIN_VALUE` and the leading `-` wraps for `b == -1`, so the
       one expression carried both a wrong answer and a missing trap. The shape
@@ -3334,12 +3417,12 @@ def _emit_int_arith_helpers() -> list[str]:
         "// unary minus and Math.abs are each partial at Long.MIN_VALUE, so",
         "// the Int.MIN edges are named here rather than wrapping silently.",
         "private static long revlDivFloor(long a, long b) {",
-        "    long q = Math.divideExact(a, b);",
+        "    long q = revlDivTrunc(a, b);",
         "    if (a % b != 0L && ((a < 0L) != (b < 0L))) { q -= 1L; }",
         "    return q;",
         "}",
         "private static long revlDivEuclid(long a, long b) {",
-        "    long q = Math.divideExact(a, b);",
+        "    long q = revlDivTrunc(a, b);",
         "    if (a % b < 0L) { q = b > 0L ? q - 1L : q + 1L; }",
         "    return q;",
         "}",
@@ -3625,13 +3708,20 @@ def _emit_v3_secret_members(members: list[str]) -> list[str]:
     return lines
 
 
+def _v3_type_params(spec: dict) -> str:
+    """`<T, U>` for a generic type declaration, empty for a plain one (#2303)."""
+    params = [_ident(p, "type parameter") for p in spec.get("params") or []]
+    return "<" + ", ".join(params) + ">" if params else ""
+
+
 def _emit_v3_types(types: dict) -> list[str]:
     lines: list[str] = []
     for name, spec in types.items():
         name = _ident(name, "type name")
         if spec.get("kind") == "record":
             shape = " implements RevlSecretShape" if _SECRET_MODE else ""
-            lines.append(f"public static final class {name}{shape} {{")
+            lines.append(
+                f"public static final class {name}{_v3_type_params(spec)}{shape} {{")
             fields = spec.get("fields") or {}
             for field, ftype in fields.items():
                 field = _ident(field, "record field")
@@ -3819,7 +3909,106 @@ def _java_extern_config_bind(ext: dict) -> str:
             f"_REVL_CFG_DEFAULTS_{suffix});")
 
 
-def _emit_v3_externs(externs: list) -> list[str]:
+def _journalled_emission(name: str, params: str, forward: str,
+                         ret: str) -> tuple[list[str], str]:
+    """Issue #2345: in record mode an `extern emission fn` is journalled before
+    its body runs, as the py tier journals a host-extern emission
+    (backends/python/replay.py, `Timeline.record_emission`). The declared name
+    becomes a wrapper that writes the durable start record
+    (`revlRecordEmissionStart`, which throws when the record cannot be made
+    durable), calls the body under an inner name, then settles the record.
+    Returns the wrapper lines and the inner name the body is emitted under."""
+    inner = f"_revl_emission_{name}"
+    lines = [f"public static {ret} {name}({params}) {{",
+             f"    int _revlEm = revlRecordEmissionStart({_string(name)}, "
+             f"{_string(name)}, null);"]
+    if ret == "void":
+        lines.append(f"    try {{ {inner}({forward}); }}")
+    else:
+        lines.append(f"    {ret} _revlOut;")
+        lines.append(f"    try {{ _revlOut = {inner}({forward}); }}")
+    lines.append("    catch (Throwable _revlT) "
+                 "{ revlRecordEmissionFailed(_revlEm, _revlT); throw _revlT; }")
+    lines.append('    revlRecordEmissionOutcome(_revlEm, "emission-complete");')
+    if ret != "void":
+        lines.append("    return _revlOut;")
+    lines.extend(["}", ""])
+    return lines, inner
+
+
+def _service_emission(node, requires: dict):
+    """Issue #2345: the (key, method, service) of an `emit` that crosses
+    through a required service or an instance provision (the py tier's
+    `_ServiceProxy` and `_SpawnRecorder` paths), or None for an extern call,
+    which its own definition wrapper journals."""
+    if not isinstance(node, dict) or node.get("kind") != "call":
+        return None
+    callee = node.get("callee")
+    if isinstance(callee, dict):
+        target = callee.get("target")
+        if callee.get("kind") != "field" or not isinstance(target, dict) \
+                or target.get("kind") != "instance-get":
+            return None
+        service = target.get("service")
+        return (str(target.get("key") or "instance"), str(callee.get("name")),
+                service if isinstance(service, str) else None)
+    target = node.get("target")
+    if "method" not in node or not isinstance(target, dict) \
+            or target.get("kind") != "req":
+        return None
+    key = str(target.get("name") or "call")
+    service = (requires or {}).get(key)
+    return (key, str(node["method"]), service if isinstance(service, str) else None)
+
+
+def _has_service_emits(node) -> bool:
+    """Whether any `emit` in the components crosses through a service."""
+    if isinstance(node, dict):
+        if node.get("step") == "emit" and (
+                _service_emission(node.get("expr"), {})
+                or _service_emission(node.get("compensate"), {})):
+            return True
+        return any(_has_service_emits(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_service_emits(v) for v in node)
+    return False
+
+
+def _journal_service_stmt(node, env, call: str) -> str:
+    """`call;`, or in record mode a block that makes the service emission's
+    start record durable before the call and writes its outcome after
+    (issue #2345), `emission-failed` when the call throws."""
+    if not _JOURNAL_SINK:
+        return f"{call};"
+    component = getattr(env, "component", None) or {}
+    desc = _service_emission(node, component.get("requires") or {})
+    if desc is None:
+        return f"{call};"
+    key, method, service = desc
+    svc = _string(service) if service else "null"
+    return (f"{{ int _revlEm = revlRecordEmissionStart({_string(key)}, "
+            f"{_string(method)}, {svc}); try {{ {call}; }} catch (Throwable _revlT) "
+            f"{{ revlRecordEmissionFailed(_revlEm, _revlT); throw _revlT; }} "
+            f"revlRecordEmissionOutcome(_revlEm, \"emission-complete\"); }}")
+
+
+def _is_emission_method(services: dict, service, method: str) -> bool:
+    """Whether `service.method` is declared `emission` in the service table:
+    a compensation through a service is journalled only then, as py's
+    `_ServiceProxy` wraps only the service's `emission` methods."""
+    spec = (((services or {}).get(service) or {}).get("methods") or {}).get(method)
+    return bool(isinstance(spec, dict) and spec.get("emission"))
+
+
+def _has_emission_externs(externs: list) -> bool:
+    """Issue #2345: does the document declare an `extern emission fn`, which
+    record mode journals before its body runs?"""
+    return any(ext.get("class") == "emission" for ext in externs)
+
+
+def _emit_v3_externs(externs: list, journal: bool = False) -> list[str]:
+    """`journal` (record mode with components, issue #2345) wraps each
+    `extern emission fn` so its durable start record is written first."""
     lines: list[str] = []
     # item 378 Stage 5: emit the config seam once, before the externs, when any
     # extern carries a config schema (byte-identical when none do).
@@ -3845,6 +4034,13 @@ def _emit_v3_externs(externs: list) -> list[str]:
         # keeps the declared name's signature under a private name and the
         # public one registers what it returns, so no call site changes.
         secret_return = bool(_SECRET_MODE and ext.get("secret_return"))
+        if journal and ext.get("class") == "emission":
+            wrapper, name = _journalled_emission(
+                name, params,
+                ", ".join(_ident(p.get("name"), "extern parameter name")
+                          for p in ext.get("params") or []),
+                ret)
+            lines.extend(wrapper)
         if secret_return:
             impl = f"_revl_secret_{name}"
             forward = ", ".join(_ident(p.get("name"), "extern parameter name")
@@ -6314,7 +6510,8 @@ def _map_value_expr_type(node: object, var_types: dict, env: _Env,
         if method in ("length", "charCodeAt", "codepoint_at", "indexOf",
                       "to_int"):
             return "Int"
-        if method in ("charAt", "join", "repeat", "to_str", "slice"):
+        if method in ("charAt", "join", "repeat", "to_str", "to_char",
+                      "slice"):
             return "Str"
         if method == "split":
             return "List[Str]"
@@ -7521,14 +7718,17 @@ private static java.nio.channels.FileChannel revlWalChannel;
 private static int revlWalSeq = 0;
 private static final java.util.List<Integer> revlWalSeqs = new java.util.ArrayList<>();
 private static final Object revlWalLock = new Object();
+private static boolean revlWalUnsynced = false;
 
 static {
     revlWalOpen();
 }
 
 // Wire the sink to REVL_WAL (unset -> no-op recording) and stamp the header.
-// Runs once at class load. A failed open leaves the sink null (recording is
-// silently off) rather than crashing a composition that only wanted to run.
+// Runs once at class load. A set REVL_WAL that cannot be opened, or a header
+// that cannot be made durable, fails class initialisation (issue #2345), so no
+// component body runs without its log. REVL_WAL_ALLOW_UNSYNCED=1 is the
+// explicit opt-out for a target that cannot fsync; it is stamped into the log.
 private static void revlWalOpen() {
     String path = System.getenv("REVL_WAL");
     if (path == null || path.isEmpty()) {
@@ -7538,28 +7738,71 @@ private static void revlWalOpen() {
         revlWalOut = new java.io.FileOutputStream(path, true);
         revlWalChannel = revlWalOut.getChannel();
     } catch (java.io.IOException open) {
-        revlWalOut = null;
-        revlWalChannel = null;
-        return;
+        throw new java.io.UncheckedIOException(
+                "revl: cannot open the write-ahead log REVL_WAL", open);
+    }
+    revlWalUnsynced = "1".equals(System.getenv("REVL_WAL_ALLOW_UNSYNCED"));
+    String durability = "";
+    if (revlWalUnsynced) {
+        System.err.println("warning: REVL_WAL_ALLOW_UNSYNCED=1 disables the WAL fsync guarantee");
+        durability = ",\"durability\":\"unsynced-opt-out\"";
     }
     revlWalWrite("{\"record\":\"header\",\"walVersion\":1,\"generation\":1,\"guarantee\":"
-            + revlWalStr(REVL_WAL_GUARANTEE) + "}");
+            + revlWalStr(REVL_WAL_GUARANTEE) + durability + "}");
+    if (revlWalUnsynced) {
+        revlWalWrite("{\"record\":\"durability-opt-out\",\"fromSeq\":0}");
+    }
 }
 
 // One durable JSON line: write, flush, and fsync (FileChannel.force(true))
 // before returning — the write-ahead discipline the py tier uses, so a record a
 // caller saw acknowledged is on disk before the effect it describes may matter.
+// A failed write or fsync throws: a record that never became durable must stop
+// the run, never pass silently. Only the REVL_WAL_ALLOW_UNSYNCED opt-out lets a
+// failed fsync through.
 private static void revlWalWrite(String json) {
     if (revlWalOut == null) {
         return;
     }
     synchronized (revlWalLock) {
+        long start = -1;
+        try {
+            start = revlWalChannel.size();
+        } catch (java.io.IOException size) {
+            start = -1;
+        }
         try {
             revlWalOut.write((json + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
             revlWalOut.flush();
-            revlWalChannel.force(true);
-        } catch (java.io.IOException ignored) {
+        } catch (java.io.IOException write) {
+            revlWalCut(start);
+            throw new java.io.UncheckedIOException("revl: write-ahead log write failed", write);
         }
+        try {
+            revlWalChannel.force(true);
+        } catch (java.io.IOException sync) {
+            if (!revlWalUnsynced) {
+                revlWalCut(start);
+                throw new java.io.UncheckedIOException("revl: write-ahead log fsync failed", sync);
+            }
+        }
+    }
+}
+
+// revlWalCut drops a record whose write or fsync failed (issue #2345), as the
+// py WriteAheadLog and the wasm drain do, so recovery reads it as absent, then
+// fsyncs the cut so a power loss cannot bring it back. Best effort: the caller
+// throws either way, and on a target that refused the record's fsync this
+// fsync fails too.
+private static void revlWalCut(long start) {
+    if (start < 0) {
+        return;
+    }
+    try {
+        revlWalChannel.truncate(start);
+        revlWalChannel.force(true);
+    } catch (java.io.IOException cut) {
+        // the record stays, unsynced; the run still stops on the caller's throw
     }
 }
 
@@ -7581,6 +7824,52 @@ public static void revlRecordTransactional(String receiver, String method, Strin
                 + ",\"origin\":" + call
                 + ",\"witness\":null,\"idempotency\":null}");
     }
+}
+
+// revlRecordEmissionStart journals one host-extern emission BEFORE its body
+// runs (issue #2345), the record the py tier writes for the same crossing
+// (backends/python/replay.py, Timeline.record_emission): an `effect` of kind
+// `emission`, one-way, no inverse. Fsync'd before it returns, and a failed fsync
+// throws, so the host body never runs unless its start record is on disk.
+// Returns the record's seq, or -1 when REVL_WAL is unset.
+public static int revlRecordEmissionStart(String key, String method, String service) {
+    if (revlWalOut == null) {
+        return -1;
+    }
+    synchronized (revlWalLock) {
+        int seq = revlWalSeq++;
+        String label = revlWalStr(key.equals(method) ? key : key + "." + method);
+        revlWalWrite("{\"record\":\"effect\",\"seq\":" + seq
+                + ",\"component\":null,\"stepIndex\":null,\"kind\":\"emission\",\"label\":" + label
+                + ",\"site\":null,\"source\":null,\"origin\":{}"
+                + ",\"boundary\":{\"class\":\"emission\",\"referent\":\"process-crossing\""
+                + ",\"compensated\":false,\"detail\":{\"key\":" + revlWalStr(key)
+                + ",\"method\":" + revlWalStr(method)
+                + ",\"service\":" + (service == null ? "null" : revlWalStr(service)) + ",\"args\":[]}}"
+                + ",\"inverse\":{\"reconstructible\":false,"
+                + "\"reason\":\"an emission is a one-way crossing; it has no inverse\"}}");
+        return seq;
+    }
+}
+
+// revlRecordEmissionOutcome settles a journalled emission once its body
+// returned. A body that throws is settled by revlRecordEmissionFailed instead.
+public static void revlRecordEmissionOutcome(int seq, String outcome) {
+    if (revlWalOut == null || seq < 0) {
+        return;
+    }
+    revlWalWrite("{\"record\":" + revlWalStr(outcome) + ",\"seq\":" + seq + "}");
+}
+
+// revlRecordEmissionFailed writes `emission-failed` for a body that threw, as
+// the py tier's _call_within does. Only the exception's type is kept: this tier
+// has no redaction funnel for its message.
+public static void revlRecordEmissionFailed(int seq, Throwable error) {
+    if (revlWalOut == null || seq < 0) {
+        return;
+    }
+    revlWalWrite("{\"record\":\"emission-failed\",\"seq\":" + seq
+            + ",\"error\":{\"type\":" + revlWalStr(error.getClass().getSimpleName().isEmpty() ? error.getClass().getName() : error.getClass().getSimpleName()) + "}}");
 }
 
 // revlRecordDischarge writes the commit-path proof that every recorded
@@ -7913,7 +8202,8 @@ def _method_body_lines(
                 # even when it throws
                 lines.append(f"{_ui_crossing_statement(stmt, v3_ctx, rename, env, lines)};")
                 continue
-            lines.append(f"{_site_compensated_call(stmt, v3_ctx, rename, env)};")
+            lines.append(_journal_service_stmt(
+                stmt.get("expr"), env, _site_compensated_call(stmt, v3_ctx, rename, env)))
             if stmt.get("compensate") is not None:
                 _emit_compensation_track(
                     lines, "", stmt["expr"], stmt["compensate"], v3_ctx, env, frame_expr,
@@ -8120,6 +8410,15 @@ def _emit_compensation_track(
     ever violated (matching the honest-degrade spirit of the contract, not a
     reachable path)."""
     compensate_expr = _expr(compensate, v3_ctx, rename, env)
+    # issue #2345: a compensation through a service `emission` method is
+    # journalled like an `emit`; the lambda then takes a block body
+    desc = _service_emission(compensate, (getattr(env, "component", None) or {})
+                             .get("requires") or {})
+    if desc is not None and _is_emission_method(
+            getattr(env, "services", None) or {}, desc[2], desc[1]):
+        journalled = _journal_service_stmt(compensate, env, compensate_expr)
+        if journalled != f"{compensate_expr};":
+            compensate_expr = "{ " + journalled + " }"
     if frame_expr is None:  # pragma: no cover — _component_needs_frame forces frame_expr
         out.append(f"{pad}fx.track(Disposables.of(() -> {compensate_expr}));")
         return
@@ -8284,7 +8583,8 @@ def _emit_component_stmts(
             _emit_bracket_track(out, pad, step["acquire"], step["undo"], v3_ctx, env,
                                 frame_expr, None, step)
         elif kind == "emit":
-            out.append(f"{pad}{_site_compensated_call(step, v3_ctx, None, env)};")
+            out.append(pad + _journal_service_stmt(
+                step.get("expr"), env, _site_compensated_call(step, v3_ctx, None, env)))
             if step.get("compensate") is not None:
                 _emit_compensation_track(
                     out, pad, step["expr"], step["compensate"], v3_ctx, env, frame_expr)
@@ -9034,7 +9334,8 @@ def _emit_component(
             out.append(f"            undos.add(Disposables.of(() -> {_expr(step['undo'], None, None, env)}));")
             disposers.append("effect")
         elif kind == "emit":
-            out.append(f"            {_expr(step['expr'], None, None, env)};")
+            out.append("            " + _journal_service_stmt(
+                step.get("expr"), env, _expr(step['expr'], None, None, env)))
         elif kind == "provide":
             key = step.get("name")
             service = step.get("service")
@@ -9119,7 +9420,7 @@ def _emit_v1(ir: dict, package_name: str) -> str:
     if _uses_revl_frame(ir):
         out.extend(["    " + line if line else line for line in _emit_revl_frame_runtime(_declared_crossings_used(ir))])
         # item 322 Slice 2: the durable WAL sink rides alongside the
-        # teardown frame, but ONLY under `--record` — off, this whole block
+        # teardown frame, but ONLY under `--record`; off, this whole block
         # is absent and the output is byte-identical. Mirrors `_emit_v3`'s
         # splice: a witnessed step's `revlRecordTransactional` calls are
         # emitted from the SHARED `_emit_witnessed_step`, so every ir_version
@@ -9176,7 +9477,7 @@ def _emit_v2(ir: dict, package_name: str) -> str:
     if _uses_revl_frame(ir):
         out.extend(["    " + line if line else line for line in _emit_revl_frame_runtime(_declared_crossings_used(ir))])
         # item 322 Slice 2: the durable WAL sink rides alongside the
-        # teardown frame, but ONLY under `--record` — off, this whole block
+        # teardown frame, but ONLY under `--record`; off, this whole block
         # is absent and the output is byte-identical. Mirrors `_emit_v3`'s
         # splice: a witnessed step's `revlRecordTransactional` calls are
         # emitted from the SHARED `_emit_witnessed_step`, so every ir_version
@@ -9393,7 +9694,8 @@ def _emit_v3(ir: dict, package_name: str) -> str:
     if _uses_map_index(ir):
         out.extend(["    " + line if line else line for line in _emit_map_index_helper()])
     if externs:
-        out.extend(["    " + line if line else line for line in _emit_v3_externs(externs)])
+        out.extend(["    " + line if line else line for line in _emit_v3_externs(
+            externs, journal=_RECORD_MODE and bool(components))])
     if functions:
         out.extend(["    " + line if line else line for line in _emit_v3_functions(functions, types, externs)])
     if tests:
@@ -9415,11 +9717,16 @@ def _emit_v3(ir: dict, package_name: str) -> str:
                     for line in _emit_spawn_handle(with_get=_uses_instance_get(ir))])
     if _uses_revl_frame(ir):
         out.extend(["    " + line if line else line for line in _emit_revl_frame_runtime(_declared_crossings_used(ir))])
-        # item 322 Slice 2: the durable WAL sink rides alongside the teardown
-        # frame, but ONLY under `--record` — off, this whole block is absent and
-        # the output is byte-identical (the golden oracle + selfhost gate).
-        if _RECORD_MODE:
-            out.extend(["    " + line if line else line for line in _emit_record_sink()])
+    # item 322 Slice 2: the durable WAL sink rides alongside the teardown
+    # frame, but ONLY under `--record`; off, this whole block is absent and
+    # the output is byte-identical (the golden oracle + selfhost gate). Issue
+    # #2345: also for a journalled `extern emission fn`.
+    global _JOURNAL_SINK
+    _JOURNAL_SINK = bool(_RECORD_MODE and components and (
+        _uses_revl_frame(ir) or _has_emission_externs(externs)
+        or _has_service_emits(components)))
+    if _JOURNAL_SINK:
+        out.extend(["    " + line if line else line for line in _emit_record_sink()])
     for component in components:
         out.extend(["    " + line if line else line for line in _emit_component(
             component, services, types, functions, externs, components,
@@ -9646,7 +9953,7 @@ def emit(ir: dict, package_name: str = "revl", record: bool = False) -> str:
 
     _refuse_fault_tests(ir)
 
-    global _RECORD_MODE, _LIFECYCLE_MODE, _V3_DECLARED_TYPES, _SECRET_MODE
+    global _RECORD_MODE, _JOURNAL_SINK, _LIFECYCLE_MODE, _V3_DECLARED_TYPES, _SECRET_MODE
     global _JOURNAL_MODE
     global _STREAM_ITER_COUNTER
     _STREAM_ITER_COUNTER = 0
@@ -9679,6 +9986,7 @@ def emit(ir: dict, package_name: str = "revl", record: bool = False) -> str:
         )
     finally:
         _RECORD_MODE = saved
+        _JOURNAL_SINK = False
         _LIFECYCLE_MODE = saved_lifecycle
         _JOURNAL_MODE = saved_journal
         _V3_DECLARED_TYPES = saved_types

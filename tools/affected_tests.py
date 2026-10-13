@@ -52,8 +52,10 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import importlib.util
 import io
+import os
 import re
 import subprocess
 import sys
@@ -545,11 +547,47 @@ def _norm(f: str) -> str:
 # --------------------------------------------------------------------------- #
 # Test-corpus index (pure, deterministic scan of tests/).                      #
 # --------------------------------------------------------------------------- #
-def _test_files(root: Path):
+# Issue #2216. `select()` lists tests/ once per word heuristic, about 22 times
+# per changed file, so a caller that asks about a few hundred files (this
+# module's own suite asks about every input of the site wheel) spent most of
+# its time globbing the same directory. The glob reads nothing but the entry
+# names of `<root>/tests`, so the listing is cached on the root and a SHA-256
+# of those names: adding, removing or renaming any entry changes the key and
+# the glob runs again. An edit inside a test file is not an input here.
+_TEST_FILES_CACHE: dict[tuple[str, str], tuple[Path, ...]] = {}
+
+
+def _test_listing_key(root: Path) -> tuple[str, str] | None:
+    """The root and a SHA-256 of every entry name in `<root>/tests`, or None
+    when that directory cannot be listed (the glob then runs uncached)."""
+    try:
+        names = sorted(os.fsencode(n) for n in os.listdir(Path(root) / "tests"))
+    except OSError:
+        return None
+    return str(root), hashlib.sha256(b"\0".join(names)).hexdigest()
+
+
+def _list_test_files(root: Path):
     d = root / "tests"
     if not d.is_dir():
         return []
     return sorted(d.glob("test_*.py"))
+
+
+def _test_files(root: Path):
+    """`tests/test_*.py` under `root`, sorted. A fresh list on every call, so
+    a caller that changes its result cannot change the cache."""
+    key = _test_listing_key(root)
+    if key is None:
+        return _list_test_files(root)
+    hit = _TEST_FILES_CACHE.get(key)
+    if hit is None:
+        hit = tuple(_list_test_files(root))
+        # Stored only when the names did not move under the glob, so a
+        # listing is never filed under a key it was not taken from.
+        if _test_listing_key(root) == key:
+            _TEST_FILES_CACHE[key] = hit
+    return list(hit)
 
 
 _READ_CACHE: dict[Path, str] = {}
@@ -1343,6 +1381,7 @@ def select(changed, root) -> dict:
         return _full("no changed files detected -> full (fail safe)")
 
     reach = compile_reachable(root)
+    ci_inputs = ci_backend_corpus_inputs(root)
 
     pytest_nodes: set[str] = set()
     backends: set[str] = set()
@@ -1413,6 +1452,16 @@ def select(changed, root) -> dict:
         if named_by:
             pytest_nodes |= named_by
             reasons.append(f"{f} (named by {len(named_by)} test(s))")
+
+        # --- the backend-job corpus (issue #2333) -------------------------- #
+        # tests/test_ci_backend_gate.py scans the text of every root test a
+        # `backend-*` job runs and of the modules those import. It runs on a
+        # pull request only when something selects it, so a change to one of
+        # those files that breaks a corpus guard went red on main instead.
+        in_ci_corpus = f in ci_inputs
+        if in_ci_corpus:
+            pytest_nodes.add("tests/test_ci_backend_gate.py")
+            reasons.append(f"{f} (read by the backend-job corpus)")
 
         # --- structural: always FULL --------------------------------------- #
         if f == "Makefile":
@@ -2137,21 +2186,39 @@ def ci_backend_corpus(root: Path) -> str:
 _IMPORT_NAME = re.compile(r"^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
 
 
-def _ci_backend_root_tests(root: Path, jobs: str) -> list:
-    """The text of every root test file a backend job step runs, and of the
-    tests/ and tools/ modules those import, transitively."""
+def _ci_backend_root_test_paths(root: Path, jobs: str) -> list:
+    """Every root test file a backend job step runs, and every tests/ and
+    tools/ module those import, transitively, as existing paths."""
     todo = [root / p for p in re.findall(r"tests/[A-Za-z0-9_]+\.py", jobs)]
-    seen, out = set(), []
+    seen = set()
     while todo:
         path = todo.pop()
         if path in seen or not path.is_file():
             continue
         seen.add(path)
         text = path.read_text(encoding="utf-8")
-        out.append(text)
         for name in _IMPORT_NAME.findall(text):
             todo += [root / "tests" / f"{name}.py", root / "tools" / f"{name}.py"]
-    return out
+    return sorted(seen)
+
+
+def _ci_backend_root_tests(root: Path, jobs: str) -> list:
+    """The text of every root test file a backend job step runs, and of the
+    tests/ and tools/ modules those import, transitively."""
+    return [p.read_text(encoding="utf-8")
+            for p in _ci_backend_root_test_paths(root, jobs)]
+
+
+def ci_backend_corpus_inputs(root: Path) -> frozenset:
+    """The repo-relative tests/ and tools/ files `ci_backend_corpus` reads.
+    tests/test_ci_backend_gate.py scans that text, so a change to any of these
+    files can turn it red (issue #2333): `select` re-runs it for each."""
+    jobs = _ci_backend_job_text(root)
+    # The tests the job steps name count whether or not the file still exists:
+    # deleting one reds the guard's anti-vacuity check.
+    named = set(re.findall(r"tests/[A-Za-z0-9_]+\.py", jobs))
+    return frozenset(named | {p.relative_to(root).as_posix()
+                              for p in _ci_backend_root_test_paths(root, jobs)})
 
 
 def _ci_backend_job_text(root: Path) -> str:
