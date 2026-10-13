@@ -1971,6 +1971,8 @@ lifecycle test "disk 100% full %d" {
   load P
   let n = call s.bump(41)
   assert n == 42
+  unload P
+  assert no_residue
 }
 """
 
@@ -1984,5 +1986,16 @@ def test_a_percent_in_a_lifecycle_test_name_is_not_a_go_format_verb():
     fatals = [ln.strip() for ln in src.splitlines()
               if 'revlT.Fatalf("lifecycle test' in ln]
     assert fatals, "no lifecycle Fatalf line was emitted"
+    # the assertion line and both residue lines
+    assert len(fatals) == 3, fatals
     for ln in fatals:
         assert "100%% full %%d" in ln and "100% full" not in ln, ln
+
+
+@pytest.mark.skipif(shutil.which("go") is None, reason="go is not installed")
+def test_go_runs_a_lifecycle_test_whose_name_has_a_percent():
+    from revl import compile_source  # noqa: PLC0415
+    from revl.test import RUNNERS  # noqa: PLC0415
+
+    status, message = RUNNERS["go"](compile_source(_PERCENT_TEST_NAME_SRC, "pct_name.rvl"))
+    assert status == "pass", message
