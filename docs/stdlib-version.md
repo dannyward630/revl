@@ -3,7 +3,7 @@
 ## Why this exists
 
 A consumer that vendors the revl stdlib holds byte-copies of `stdlib/*.rvl` in
-its own tree. The revl-harness, for example, copies `stdlib/{json,value,str}.rvl`
+its own tree. A downstream project, for example, copies `stdlib/{json,value,str}.rvl`
 so it can build without depending on a checkout. Those copies go stale silently.
 
 When item 104 added `value_is_object` to `stdlib/value.rvl` upstream, the
@@ -33,10 +33,10 @@ version it was copied at.
 
 Two sides compare:
 
-- **What a copy IS** — the `stdlib_version()` literal in *that copy* of
+- **What a copy IS**: the `stdlib_version()` literal in *that copy* of
   `stdlib/version.rvl`. A consumer reads it either by calling the function from
   the vendored copy, or by reading the file directly.
-- **What the compiler EXPECTS** — `EXPECTED_STDLIB_VERSION` in
+- **What the compiler EXPECTS**: `EXPECTED_STDLIB_VERSION` in
   `src/revl/stdlib_version.py`. This is not hand-maintained: the compiler reads
   it once from the stdlib it ships (`stdlib_root()`), so the compiler and its own
   bundled stdlib can never silently disagree. The single edit that bumps the
@@ -71,18 +71,18 @@ drift = check_drift("path/to/my/vendored/stdlib") # None if in sync, else a reas
 `check_drift` returns `None` when the copy matches, and a one-line explanation
 otherwise. It distinguishes three drifting shapes:
 
-- **no stamp** — the copy predates item 389 entirely (the item-104 case): its
+- **no stamp**: the copy predates item 389 entirely (the item-104 case): its
   symbol set is unknown and may lack what the compiler recommends;
-- **older stamp** — the copy is behind the compiler;
-- **newer stamp** — the copy is ahead of the compiler (a stdlib from a newer
+- **older stamp**: the copy is behind the compiler;
+- **newer stamp**: the copy is ahead of the compiler (a stdlib from a newer
   release paired with an older compiler).
 
 ## Drift detection in `revl doctor`
 
 `revl doctor` reports a `stdlib version stamp` check. It resolves the stdlib the
-import resolver would actually load — an entry on `REVL_IMPORT_PATH` that carries
+import resolver would actually load: an entry on `REVL_IMPORT_PATH` that carries
 a `stdlib/version.rvl` wins (this is how a consumer points the compiler at a
-vendored stdlib), otherwise the compiler's own bundled stdlib — reads its stamp,
+vendored stdlib), otherwise the compiler's own bundled stdlib. It reads its stamp
 and compares it against `EXPECTED_STDLIB_VERSION`.
 
 - In sync: `[ok] stdlib version stamp  1  loaded stdlib matches the version this compiler expects`
@@ -99,10 +99,10 @@ symbol is **added, removed, or changed** in signature or behaviour. That is: any
 change a consumer's vendored copy could fall behind.
 
 - Adding a `pub` fn or extern (item 104's `value_is_object` is the canonical
-  example) — bump.
-- Removing or renaming a `pub` symbol — bump.
-- Changing a `pub` symbol's signature or observable behaviour — bump.
-- Touching only comments, or a private (non-`pub`) helper — no bump needed.
+  example): bump.
+- Removing or renaming a `pub` symbol: bump.
+- Changing a `pub` symbol's signature or observable behaviour: bump.
+- Touching only comments, or a private (non-`pub`) helper: no bump needed.
 
 The stamp is a monotonic counter, not semver: it only has to increase, so
 "newer than expected" and "older than expected" are both distinguishable from
