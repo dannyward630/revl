@@ -1499,7 +1499,7 @@ def _v3_builtin(method: object, target: str, args: list[str],
         # true quotient of `Int.MIN / -1` is 2^63 — one past Int.MAX — so it
         # must TRAP like every other Int overflow (docs/arithmetic.md, and the
         # reference py/go/rust/wasm all fault here). Plain `/` WRAPS back to
-        # Int.MIN with no trap — the #549 java divergence. `revlDivTrunc`
+        # Int.MIN with no trap: the #549 java divergence. `revlDivTrunc`
         # (`Math.divideExact` under it) truncates identically, faults on that
         # one overflow with revl's `revl: Int overflow` (and on a zero
         # divisor), matching `revlAdd`/`revlSub`/`revlMul`/`revlNeg`.
@@ -3384,7 +3384,7 @@ def _emit_int_arith_helpers() -> list[str]:
 
     * `Math.floorDiv(Long.MIN_VALUE, -1)` is documented to overflow and return
       `Long.MIN_VALUE`. The true quotient is 2^63, one past Int.MAX, so it must
-      TRAP — which `revlDivTrunc` does, and which py/ts/go/rust all did.
+      TRAP, which `revlDivTrunc` does, and which py/ts/go/rust all did.
     * div_euclid's negative-divisor arm was `-Math.floorDiv(a, -b)`. `-b` wraps
       for `b == Long.MIN_VALUE` and the leading `-` wraps for `b == -1`, so the
       one expression carried both a wrong answer and a missing trap. The shape

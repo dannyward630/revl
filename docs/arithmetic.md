@@ -232,7 +232,7 @@ unsafe.
 | python | `_revl_i64` bound check — python is arbitrary precision, so it *imposes* the bound rather than detecting it |
 | typescript | `revlI64` bound check — `Int` is `BigInt`, which is also arbitrary precision, so this tier imposes the bound too |
 | rust | `checked_add` / `checked_sub` / `checked_mul` (rust's own default only checks in debug builds) |
-| java | `revlAdd` / `revlSub` / `revlMul` — `Math.addExact` / `subtractExact` / `multiplyExact` underneath, re-raised as revl's own text because the JDK's is `long overflow` |
+| java | `revlAdd` / `revlSub` / `revlMul`: `Math.addExact` / `subtractExact` / `multiplyExact` underneath, re-raised as revl's own text because the JDK's is `long overflow` |
 | go | `revlAdd` / `revlSub` / `revlMul` — Go has no checked arithmetic in std |
 | wasm | `$int_add` / `$int_sub` / `$int_mul` — wasm has no checked arithmetic either, so the sign test is emitted and the fault is `unreachable` |
 
@@ -293,7 +293,7 @@ range python imposes a line earlier, silently. It now goes through `_revl_i64`
 like any other subtraction, and the closure is asserted by execution. wasm had
 this right from the start: its emitter spells negation as a subtraction from
 zero through the checked helper. The three tiers that used to wrap or grow now
-follow suit — go emits `revlSub(0, x)`, java `revlNeg(x)` (over `Math.negateExact`), TypeScript
+follow suit: go emits `revlSub(0, x)`, java `revlNeg(x)` (over `Math.negateExact`), TypeScript
 `revlI64(-x)` — so `-Int.MIN` faults on every tier, asserted by execution
 across py/ts/go/java (`tests/test_cross_tier_execution.py`). No tier wraps.
 

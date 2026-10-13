@@ -763,15 +763,15 @@ DIVERGENCES = {
     # refuses with E0308 and TypeScript no longer computes the wrong answer.
     # Asserted positively in WIDENING below; docs/arithmetic.md has the write-up.
     # ~~"negating Int.MIN does not trap on every tier"~~ **Closed.** go now
-    # negates through `revlSub(0, x)`, java through `Math.negateExact`, ts
+    # negates through `revlSub(0, x)`, java through `revlNeg`, ts
     # through `revlI64(-x)` — so every bounded tier faults on `-Int.MIN` exactly
     # as it does on any other Int overflow. Asserted positively below
     # (test_negation_of_int_min_traps + the per-tier emit checks).
     # ~~"Int.MIN / -1 does not trap on every tier"~~ **Closed.** Integer division
     # overflows at exactly this input (quotient 2^63; mod is fine). python now
     # bounds the faulting quotient through `_revl_i64`, go through `revlDivTrunc`
-    # / `revlDivFloor` (which panic), java through `Math.divideExact` /
-    # `Math.negateExact`; the checked forms return `Err("revl: Int overflow")`.
+    # / `revlDivFloor` (which panic), java through `revlDivTrunc` /
+    # `revlNeg`; the checked forms return `Err("revl: Int overflow")`.
     # rust/wasm/ts already trapped. Asserted positively below
     # (test_div_int_min_traps + the checked-Err and per-tier emit checks).
     #
@@ -822,8 +822,8 @@ DIVERGENCES = {
 #     emitter now guards `starts_with('+')`.
 #   - `div_trunc(Int.MIN, -1)` overflows (quotient 2^63) and TRAPS on every
 #     tier. java's plain `/` wrapped back to `Int.MIN`; it now uses
-#     `Math.divideExact`, which throws like the `Math.*Exact` family already
-#     used for `+`/`-`/`*`.
+#     `revlDivTrunc`, which throws like `revlAdd`/`revlSub`/`revlMul`
+#     already used for `+`/`-`/`*`.
 #   - A NEGATIVE SLICE bound is END-RELATIVE on every tier (the PO decision for
 #     #549: py and ts already sliced python/JS-style, so the reference follows
 #     them). go/rust/java used to clamp the negative bound to 0 (the wrong
