@@ -14,7 +14,7 @@ project's shared core plus every interface, and exports `mf_files(mode: Str) ->
 List[Str]`, resolved by boot mode (`voice`, `code`, `cli`). Its own header
 states the intent plainly: the host's only role left is to bootstrap-compile
 this one file, call `mf_files`/`mf_config` with the mode flag, and append the
-environment tier chosen by CLI flags. Everything the harness is lives in
+environment tier chosen by CLI flags. Everything the downstream project is lives in
 revl from there.
 
 ## The two-stage bootstrap
@@ -29,7 +29,7 @@ Resolving a manifest-driven composition takes the host two compiles, not one.
    revl can call it.
 2. **Ask it for the mode's files, then compile the rest.** `_composition()`
    calls `man.mf_files(mode)` to get the real file list, appends whatever the
-   environment tier adds (in the harness's case, the model provider and the
+   environment tier adds (in that project's case, the model provider and the
    persistence layer; see the comment above `_composition` for the exact
    fields), and compiles that list as the actual, running composition.
 

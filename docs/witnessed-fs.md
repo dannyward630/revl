@@ -397,7 +397,7 @@ fs.write(path, data: str, *, expect=<prior_digest | fs.ABSENT | None>) -> fs.Wri
 ```
 
 `expect=` is checked on the descriptor `open_confined_write` verified, **before**
-the snapshot and before the truncate, so a refusal never mutates the target, so
+the snapshot and before the truncate, so a refusal never mutates the target, and
 there is no partial write:
 
 - `fs.ABSENT`: refuse (`EEXPECT`) if the target already exists; the existing
