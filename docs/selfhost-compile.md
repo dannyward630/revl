@@ -413,7 +413,7 @@ only `revl_index_of` compares elements and so needs `T: PartialEq`. The prelude
 `impl<T: Clone> RevlListOps<T>` and `revl_index_of` moves to a separate
 `impl<T: Clone + PartialEq> RevlListSearchOps<T>`. A `Vec<Value>` (`cordis::Value`
 is `Clone` but NOT `PartialEq`) therefore reaches `.revl_length()` and the other
-size/copy ops — which the fused `T: Clone + PartialEq` bound rejected outright —
+size/copy ops - which the fused `T: Clone + PartialEq` bound rejected outright -
 while `.revl_index_of()` on a `PartialEq` element type resolves exactly as before
 (both traits are emitted together in every module's prelude). An isolation crate
 over a `Vec<Value>` (`Clone`, non-`PartialEq`) compiles `length`/`slice`/`concat`/
@@ -456,7 +456,7 @@ emitter's entry takes the interchange IR as an `Any`, which erases to the opaque
 
 The constructor for that slot already shipped: `stdlib/json.rvl::json_parse`,
 whose `@rs` body is `Value::new(serde_json::from_str::<serde_json::Value>(&s)..)`
-— the same boxing `stdlib/value.rvl`'s `@rs` accessors downcast back out. What
+i.e. the same boxing `stdlib/value.rvl`'s `@rs` accessors downcast back out. What
 was missing was the COMPOSITION, and it is a revl document, not rust:
 
 ```
@@ -467,8 +467,8 @@ pub fn drive(ir_text: Str) -> Str { return emit_rust_src(json_parse(ir_text)) }
 ```
 
 `tools/bench_selfhost_rust.py::driver_document` generates exactly that, which
-turns an IR-consuming emitter into a `Str -> Str` filter a generated `main` — or
-any embedder — can call. One stage earlier, `selfhost/lower.rvl::lower_to_ir`
+turns an IR-consuming emitter into a `Str -> Str` filter a generated `main` - or
+any embedder - can call. One stage earlier, `selfhost/lower.rvl::lower_to_ir`
 already renders the IR as JSON TEXT, so the same composition spells the WHOLE
 native chain: revl source in, rust source out, in one binary. That is what
 `selfhost/compile.rvl::compile_to` is on the py tier; compile.rvl itself cannot
@@ -478,9 +478,9 @@ CPython-only `py_repr` extern has no `@rs` body.
 Two gates hold the result, each checking that the comparison it just passed is
 capable of failing (a byte comparison that cannot fail is not evidence):
 
-* `test_the_rust_emitter_runs_as_rust_and_matches_the_reference` — the emitter,
+* `test_the_rust_emitter_runs_as_rust_and_matches_the_reference` - the emitter,
   run natively over the whole byte-exact corpus, emits the reference's bytes;
-* `test_the_whole_native_chain_runs_as_rust_and_matches_the_reference` — source
+* `test_the_whole_native_chain_runs_as_rust_and_matches_the_reference` - source
   in, rust out, over the subset `tests/test_selfhost_compile.py` already holds
   the native chain to (its `RUST_FUNCTION_DOCS` + `RUST_COMPONENT_DOCS`; the rest
   of the emitter corpus is excluded there for the same reason, the native IR
@@ -494,7 +494,7 @@ One manifest requirement comes with this. `stdlib/value.rvl`'s `value_keys` /
 `value_children` read a record's fields in INSERTION order, which `serde_json`
 preserves only under its `preserve_order` feature (its default map is sorted), so
 `backends/rust/emit.py::cargo_toml` now enables it. Measured, not assumed:
-without it, 10 of the 34 emit_rust corpus documents — the record-shaped ones —
+without it, 10 of the 34 emit_rust corpus documents - the record-shaped ones -
 emit rust that differs from the reference's when the emitter is RUN.
 
 What Stage 4 still needs after this is no longer an emit gap:

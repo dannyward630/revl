@@ -6,7 +6,7 @@ returns. This is the complete set, verified against `src/revl/mcp/server.py`
 query verbs appended to it).
 
 <!-- docgen:mcp-verb-count begin -->
-The server has exactly the verbs below, one section each (`python3 tools/docgen.py --show mcp-verb-count` counts them). By default `tools/list` advertises the core tier and `revl_verbs` returns the rest — or calls one, given `name` and `args`; see "Find a verb".
+The server has exactly the verbs below, one section each (`python3 tools/docgen.py --show mcp-verb-count` counts them). By default `tools/list` advertises the core tier and `revl_verbs` returns the rest - or calls one, given `name` and `args`; see "Find a verb".
 <!-- docgen:mcp-verb-count end -->
 
 Start the server with `revl mcp serve` (see [commands-reference.md](commands-reference.md#revl-mcp)
@@ -311,7 +311,7 @@ and a test holds the two together. Every other verb is still served, and every
 one of them is **callable** without being listed: `revl_verbs` is itself a
 listed tool and takes `name` and `args`, so a call through it *is* the call it
 names (see below). A client that wants the whole list up front starts the
-server with `revl mcp serve --all-tools`, or sets `REVL_MCP_ALL_TOOLS=1` — that
+server with `revl mcp serve --all-tools`, or sets `REVL_MCP_ALL_TOOLS=1` - that
 costs about 22,800 extra cold-start tokens, where the hatch costs about a
 hundred. The core tier is `CORE` in `src/revl/mcp/disclosure.py`.
 
@@ -325,14 +325,14 @@ that topic's verbs; with `names` it returns those verbs' exact schemas. The
 schemas are the same objects the full list carries under `--all-tools`. An
 unknown topic or name is refused with `next` set to the no-argument call.
 
-With `name` and `args` it **calls** the verb `name` with the arguments `args` —
+With `name` and `args` it **calls** the verb `name` with the arguments `args` -
 the same handler, the same jail, authoring, operator and runtime gates, the
 same payload, the same `disk` block and `sessionState` footer as calling that
 verb directly. A verb that is not in the core tier is therefore one listed tool
 away, which is what issue #2073 is about: a function-calling model emits a call
 for a tool it was *shown*, so a schema returned as text is a document, not a
-tool. `revl_export` — the verb that writes the held source out, and so the one
-that prevents a silent no-op in an agent loop — is reachable this way.
+tool. `revl_export` - the verb that writes the held source out, and so the one
+that prevents a silent no-op in an agent loop - is reachable this way.
 
 A hatch that cannot name the verb it means refuses by name rather than
 answering the lookup: an unknown `name`, a missing `args`, or an `args` that is
@@ -463,13 +463,13 @@ check → admit → plan → swap into this one call; without it nothing is muta
 The acting, cross-host half of `revl_ship`: drive an admission-gated
 cross-machine reconfiguration of the running composition onto a second host
 (`via = ssh`) through the same leg `revl deploy` uses ([deploy.md](deploy.md),
-roadmap item 476, issue #830). Runs the deploy-map admission gate first —
+roadmap item 476, issue #830). Runs the deploy-map admission gate first -
 refusing a machine boundary without a pinned host key (`known_hosts`), an
-unknown `via`, a network provider, and so on — and reports the plan. Without
+unknown `via`, a network provider, and so on - and reports the plan. Without
 `apply`, or with `apply: false`, this is a REHEARSAL: it admits and plans and
 mutates NOTHING on either host. With `apply: true` it stages the attested
 bundle under each pinned host key and drives the coordinated
-PREPARE/COMMIT/ABORT protocol — the far host re-hashes the bytes it runs, the
+PREPARE/COMMIT/ABORT protocol - the far host re-hashes the bytes it runs, the
 conductor verifies the signed admission and COMMIT receipts, and a remote the
 conductor cannot settle on ABORT is `unresolved`, never a false rollback. The
 crossing is irreversible, so `apply: true` is additionally refused without the
@@ -584,8 +584,8 @@ change what the compiler sees and `formatted` is NOT returned ([fmt.md](fmt.md))
 What a diagnostic code means and how to fix it, the MCP twin of `revl explain`.
 The other half of a structured `revl_check` / `revl_admit` rejection, which
 already carries the code. Every code the compiler, the gate, the session and
-the HTTP faces emit has an entry — not only the design catalogue's, and
-barring the curriculum's reserved set noted below — and an unknown code
+the HTTP faces emit has an entry - not only the design catalogue's, and
+barring the curriculum's reserved set noted below - and an unknown code
 answers with the roster of known ones rather than with nothing.
 
 - Inputs: `code` (required; a diagnostic code such as `G4`, case-insensitive).
@@ -1102,8 +1102,8 @@ names and no comments is about 300.
 - Reads the running composition as the session holds it (edits included).
   With nothing loaded, pass `files` or `source` to read from.
 
-**The packaged stdlib (issue #2173).** `stdlib/` ships in the wheel — 20
-modules — but it is not a loaded buffer, so the only declaration reader could
+**The packaged stdlib (issue #2173).** `stdlib/` ships in the wheel - 20
+modules - but it is not a loaded buffer, so the only declaration reader could
 not reach it: `revl_source {}` asked for a symbol name, and a name the session
 does not hold answered "nothing is loaded". The vocabulary was therefore
 readable only by an agent that already knew it.
@@ -1112,7 +1112,7 @@ readable only by an agent that already knew it.
   stdlib itself: `{kind: "stdlib", root, packaged, modules, builtin, hint}`,
   where each module carries its `path` (`stdlib/<name>.rvl`), `packaged: true`,
   and its exported `symbols` by kind (`fn`, `type`, `service`, `component`,
-  `extern`, ...). That is the whole vocabulary in one call — which modules
+  `extern`, ...). That is the whole vocabulary in one call - which modules
   exist and what each one declares.
 - The `builtin` entry is the base type surface (`Str`, `List`, `Map`, `Int`,
   `Value`, ...) as `typecheck` admits it. Those methods are built into the
@@ -1123,7 +1123,7 @@ readable only by an agent that already knew it.
   stdlib: a bare name when it is unique (`list_sort`), `<module>.rvl:Name`
   (`str.rvl:trim`), or a base type's method as `Str.concat` or
   `builtin:Str.concat`. A name the stdlib does not declare is refused by
-  naming the stdlib, its root and its module count — never with "nothing is
+  naming the stdlib, its root and its module count - never with "nothing is
   loaded", which would send the caller back to the search this ends.
 - A call that names a source (`files`, `source`, `modules`), a modifier
   (`with`, `comments`) or `proposal` and no `symbol` keeps the refusal it has
@@ -1152,7 +1152,7 @@ changed. A member that shares a line with anything else (`provide p { fn a() =
 edit still reaches it. The answer is
 `{symbol, kind, buffer, line, text}`, plus `deps` as a list of the same shape.
 
-- Inputs: `symbol` (optional — with no `symbol` and nothing else asked for,
+- Inputs: `symbol` (optional - with no `symbol` and nothing else asked for,
   it answers with the packaged stdlib's modules and symbols); `with`;
   `comments`; `proposal` (true: read your speculative proposal, issue #1696);
   `files` / `source` when nothing is loaded.
@@ -1172,18 +1172,18 @@ actions split three ways by their checked extern classification, and nothing at
 runtime can move an action between classes
 ([245-session-commit.md](design/245-session-commit.md), Decision 2):
 
-- **(a) witnessed-revertible** — an `effect` over a `witnessed` extern (item
+- **(a) witnessed-revertible** - an `effect` over a `witnessed` extern (item
   243). Runs freely mid-session; its declared inverse is registered on the
   activation frame. On commit it discharges (the mutation persists); on abort it
   replays (the mutation reverts).
-- **(b) deferrable** — an `emission` extern declared `deferred`
+- **(b) deferrable** - an `emission` extern declared `deferred`
   (`extern emission deferred fn send(...)`). The call does NOT fire the host
   body; it ENQUEUES a descriptor on the session's deferral queue and returns
   Unit. On commit the queue flushes FIFO (each host body fires once); on abort
   the queue is dropped and nothing fires. Because nothing crossed, the abort is
   exact by construction. A deferred emission must return Unit, may not declare
   `compensate` or `async`, and may not appear in a teardown slot (all checked).
-- **(c) immediate** — a plain `emission` extern. Fires at the call. On abort it
+- **(c) immediate** - a plain `emission` extern. Fires at the call. On abort it
   has already crossed; `compensate` (item 247) may offset it.
 
 The commit is two-step and hash-bound. `revl_commit` derives its gate target
