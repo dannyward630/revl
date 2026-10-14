@@ -756,14 +756,14 @@ def test_the_teardown_bound_follows_revl_teardown_grace(tmp_path):
 
 
 # A correct inverse that outlasts the old 5 s default (issue #2356): a busy loop
-# (about a nanosecond a turn; the emitted module imports no `time`).
+# (about half a nanosecond a turn; the emitted module imports no `time`).
 _LONG_UNDO_DOC = '''
 service Vault { fn show(user: Str) -> Str }
 
 extern pure fn mark(what: Str) -> Str = @go {
 	if what == "INVERSE-RAN" {
 		sum := 0
-		for i := 0; i < 8000000000; i++ {
+		for i := 0; i < 16000000000; i++ {
 			sum += i & 3
 		}
 		println("SPIN", sum)
