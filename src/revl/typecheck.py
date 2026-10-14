@@ -159,15 +159,16 @@ def _scrutinee_spec(types: dict, scrutinee_t: str | None) -> dict | None:
     total projection `Aggregate[T] -> T` design note 543 section 3 says does
     not exist, so the provided types are resolved here.
 
-    Scoped to those two on purpose. A user ADT keeps the existing behaviour:
-    widening the lookup for every generic changes what the compiler admits for
-    programs that have nothing to do with model councils, and that belongs to
-    whoever owns the general rule.
+    A user generic variant resolves the same way (issue #2402): `Mb[Int]`
+    reads `Jj`'s payload as `Int` through `applied_variant_spec`. Before it,
+    every arm over an applied user generic bound an unknown-typed value, so
+    `Jj(x) => x` compiled in a function returning `Str` over an `Mb[Int]`.
     """
     spec = types.get(scrutinee_t or "")
     if spec is not None:
         return spec
-    return _model_answer.applied_spec(scrutinee_t)
+    return (applied_variant_spec(scrutinee_t, types)
+            or _model_answer.applied_spec(scrutinee_t))
 
 
 def match_arm_payload(cases_by_name: dict | None, scrutinee_t: str | None,
@@ -854,6 +855,68 @@ def nominal_record_fields(type_name: str | None,
         return None
     subst = dict(zip(params, args))
     return {name: substitute(ftype, subst) for name, ftype in fields.items()}
+
+
+def applied_variant_spec(type_name: str | None,
+                         types: dict | None) -> dict | None:
+    """The variant spec of an APPLIED user generic, payloads substituted.
+
+    The variant half of `nominal_record_fields` (issue #2402): `Mb[Int]`
+    against `type Mb[T] = Jj(T) | Nn` yields the `Mb` spec with `Jj`'s payload
+    read `Int`. A head that is not a declared generic variant, or a wrong
+    arity, is None, so a caller keeps whatever it answered before."""
+    if not types or not type_name:
+        return None
+    head, args = parse_type(type_name)
+    spec = types.get(head or "")
+    if not (isinstance(spec, dict) and spec.get("kind") == "variant"):
+        return None
+    params = list(spec.get("params") or ())
+    if not params or len(args) != len(params):
+        return None
+    subst = dict(zip(params, args))
+    return {
+        **spec,
+        "params": [],
+        "cases": [{**case, "payload": substitute(case.get("payload"), subst)}
+                  for case in spec.get("cases") or []],
+    }
+
+
+def generic_variant_params(adt: str | None, types: dict | None) -> list[str]:
+    """The declared type parameters of a user variant, [] for anything else
+    (a non-generic variant, a record, the built-in `Opt`/`Result` cases)."""
+    spec = (types or {}).get(adt or "")
+    if not (isinstance(spec, dict) and spec.get("kind") == "variant"):
+        return []
+    return list(spec.get("params") or ())
+
+
+def generic_case_type(name: str, case: dict, params: list[str],
+                      arg_t: str | None, types: dict, filename: str | None,
+                      line: int) -> str:
+    """The type of a generic variant case value built from `arg_t`.
+
+    `Jj(1)` for `type Mb[T] = Jj(T) | Nn` is `Mb[Int]`: the declared payload
+    unifies with the argument and binds `T`. A parameter the case does not
+    mention (every parameter of a bare `Nn`) is the `Any` placeholder the
+    built-in constructors use (`None` is `Opt[Any]`, `Ok(7)` is
+    `Result[Int, Any]`), which `join` fills from a sibling and a declared
+    boundary accepts. The ADT's parameters get their own markers so they
+    cannot be confused with an enclosing generic function's same-named `T`."""
+    adt = case["adt"]
+    markers = {p: f"{_TPARAM}{adt}.{p}" for p in params}
+    payload = substitute(case.get("payload"), markers)
+    subst: dict = {}
+    if payload and arg_t:
+        unify(payload, arg_t, subst, types)
+        bound = substitute(payload, subst)
+        if filename and not compatible(bound, arg_t, types):
+            shown = substitute(bound, {m: p for p, m in markers.items()})
+            raise mismatch(filename, line, f"`{name}(...)` payload",
+                           shown, arg_t,
+                           why=unresolved_nominal_reason(shown, arg_t, types))
+    return format_type(adt, [subst.get(markers[p]) or "Any" for p in params])
 
 
 def unresolved_nominal_reason(expected: str | None, actual: str | None,
@@ -2086,6 +2149,10 @@ def infer_ast(expr, tenv: dict, types: dict, filename: str | None = None) -> str
         case = (types.get(CASES_KEY) or {}).get(expr.name)
         if (case is not None and case.get("payload") is None
                 and not str(case.get("adt", "")).startswith(("Opt", "Result"))):
+            params = generic_variant_params(case["adt"], types)
+            if params:
+                return generic_case_type(expr.name, case, params, None,
+                                         types, filename, line)
             return case["adt"]
         # item 380 (the soundness hole): a bare reference to a top-level `fn`
         # is a first-class function value (docs/function-types.md — arrows and
@@ -2367,6 +2434,13 @@ def infer_ast(expr, tenv: dict, types: dict, filename: str | None = None) -> str
                 return call_function_value(expr, local, f"`{name}`", arg_types,
                                            tenv, types, filename, line)
             case = (types.get(CASES_KEY) or {}).get(name)
+            params = generic_variant_params(case and case["adt"], types)
+            if case is not None and params:
+                # issue #2402: a generic case binds its ADT's parameters from
+                # the argument, as a generic record's fields do.
+                return generic_case_type(name, case, params,
+                                         arg_types[0] if arg_types else None,
+                                         types, filename, line)
             if case is not None:
                 if filename and case["payload"] and arg_types and arg_types[0] and \
                         not compatible(case["payload"], arg_types[0], types):
@@ -2869,11 +2943,40 @@ def _check_arrow(expr, expected: str, ehead, eargs, tenv: dict, types: dict,
                    else want_return)
 
 
+def _check_generic_case(expr, ehead: str | None, eargs: list[str], tenv: dict,
+                        types: dict, filename: str) -> bool:
+    """Check a generic variant case call against an instantiation of its ADT.
+
+    `Jj(e)` where `Mb[Int]` is expected checks `e` against `Int`, the declared
+    payload with the expectation's arguments substituted, so a wrong payload is
+    reported as `Jj(...)` payload expects `Int` and a nested `Jj(Jj(1))` meets
+    `Mb[Mb[Int]]` from the outside in (issue #2402). False when the call is not
+    such a case, or the expectation names another type; the caller then infers
+    and compares as before."""
+    from .parser import ExprVar
+    callee = expr.callee
+    if not isinstance(callee, ExprVar) \
+            or parse_type(tenv.get(callee.name))[0] == FN_HEAD:
+        return False
+    case = (types.get(CASES_KEY) or {}).get(callee.name)
+    params = generic_variant_params(case and case["adt"], types)
+    if not params or case["adt"] != ehead or len(eargs) != len(params):
+        return False
+    payload = substitute(case.get("payload"), dict(zip(params, eargs)))
+    for i, arg in enumerate(expr.args):
+        if i == 0 and payload:
+            check_ast(arg, payload, tenv, types, filename,
+                      f"`{callee.name}(...)` payload")
+        else:
+            infer_ast(arg, tenv, types, filename)
+    return True
+
+
 def check_ast(expr, expected: str | None, tenv: dict, types: dict,
               filename: str, where: str) -> None:
     """Bidirectional check of a parser-AST expression against `expected`."""
-    from .parser import ExprArrow, ExprBlockArm, ExprIf, ExprList, ExprMatch, \
-        ExprRecord, ExprRecordUpdate
+    from .parser import ExprArrow, ExprBlockArm, ExprCall, ExprIf, ExprList, \
+        ExprMatch, ExprRecord, ExprRecordUpdate
 
     line = getattr(expr, "line", 0)
     # a hole in check position takes the expectation as its type and is done:
@@ -2909,6 +3012,9 @@ def check_ast(expr, expected: str | None, tenv: dict, types: dict,
     if isinstance(expr, ExprList) and ehead == "List":
         for item in expr.items:
             check_ast(item, eargs[0], tenv, types, filename, f"element of `{expected}`")
+        return
+    if isinstance(expr, ExprCall) and _check_generic_case(
+            expr, ehead, eargs, tenv, types, filename):
         return
     if isinstance(expr, ExprIf):
         infer_ast(expr.cond, tenv, types, filename)
