@@ -3818,6 +3818,10 @@ def _build_java_real(ir: dict, tmp: Path, jdk_bin: str, cordis_classes: str) -> 
 # only ever reached by a child that is genuinely wedged. Operators with a
 # legitimately long unwind raise it with `REVL_TEARDOWN_GRACE=<seconds>`.
 _TEARDOWN_GRACE = 30.0
+# The most a `REVL_TEARDOWN_GRACE` may ask for, a day. A larger value is clamped
+# to it, here and in the go, rust and ts runners alike, so both sides of a
+# teardown read the same number (issue #2356).
+_TEARDOWN_GRACE_MAX = 86400.0
 # Once a child HAS said DOWN its unwind is complete and proven; all that is
 # outstanding is its own exit (a flush, a socket close), which is bounded.
 _TEARDOWN_EXIT_GRACE = 5.0
@@ -3840,7 +3844,7 @@ def _teardown_grace() -> float:
         except ValueError:
             return _TEARDOWN_GRACE
         if value > 0:
-            return value
+            return min(value, _TEARDOWN_GRACE_MAX)
     return _TEARDOWN_GRACE
 
 

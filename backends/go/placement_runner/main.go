@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"os/signal"
@@ -212,6 +213,11 @@ const defaultTeardownGrace = 30 * time.Second
 // it.
 const teardownMargin = 2 * time.Second
 
+// maxTeardownGrace is the most REVL_TEARDOWN_GRACE may ask for, in seconds
+// (_TEARDOWN_GRACE_MAX in src/revl/placement.py); more is clamped, as the
+// conductor clamps it.
+const maxTeardownGrace = 86400
+
 // teardownBound is the wait the teardown gives its disposes: the conductor's
 // grace (REVL_TEARDOWN_GRACE seconds, the variable the stranded-teardown report
 // tells a user to raise, when it is a positive finite number, else the
@@ -221,8 +227,8 @@ func teardownBound() time.Duration {
 	grace := defaultTeardownGrace
 	if raw := os.Getenv("REVL_TEARDOWN_GRACE"); raw != "" {
 		secs, err := strconv.ParseFloat(raw, 64)
-		if err == nil && secs > 0 && secs <= 86400 {
-			grace = time.Duration(secs * float64(time.Second))
+		if err == nil && secs > 0 {
+			grace = time.Duration(math.Min(secs, maxTeardownGrace) * float64(time.Second))
 		}
 	}
 	margin := teardownMargin

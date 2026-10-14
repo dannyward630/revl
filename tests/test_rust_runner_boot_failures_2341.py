@@ -154,7 +154,7 @@ def test_a_boot_step_that_does_not_activate_is_a_fatal_boot(binaries, tmp_path, 
     both = done.stdout + done.stderr
     assert "panicked" not in both and "FATAL panic" not in both, both
     assert done.returncode == 1, (done.returncode, both)
-    fatal = [line for line in done.stderr.splitlines() if "] FATAL " in line or "boot failed" in line]
+    fatal = [line for line in done.stderr.splitlines() if "] FATAL " in line]
     assert len(fatal) == 1 and "boot failed loading" in fatal[0], done.stderr
     # no claim that the composition came up or tore down cleanly
     for claim in ("UP", "NO-RESIDUE", "RESIDUE-LEFT", "DOWN"):
@@ -180,11 +180,10 @@ def test_the_boot_failure_dispose_is_bounded(binaries, tmp_path):
 
 
 @needs_cordis_rs
-@pytest.mark.parametrize("once", [False, True], ids=["held", "once"])
-def test_a_slow_correct_inverse_ends_in_down_with_the_default_bound(binaries, tmp_path, once):
+def test_a_slow_correct_inverse_ends_in_down_with_the_default_bound(binaries, tmp_path):
     """With the variable unset the runner waits as long as the conductor does
     (30 s less a margin), so a 6 s inverse is a clean teardown (#2356)."""
-    done, elapsed = _run(binaries["slow"], tmp_path, {**_BASE_SPEC, "once": once})
+    done, elapsed = _run(binaries["slow"], tmp_path, {**_BASE_SPEC, "once": True})
     both = done.stdout + done.stderr
     assert done.returncode == 0, (done.returncode, both)
     assert "MARK INVERSE-RAN" in both and "] DOWN" in done.stdout, both

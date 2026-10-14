@@ -303,6 +303,9 @@ const DEFAULT_TEARDOWN_GRACE_SECS: f64 = 30.0;
 /// How long before the conductor's grace the runner gives up, so its FATAL line
 /// is always written before the conductor's kill can swallow it.
 const TEARDOWN_MARGIN_SECS: f64 = 2.0;
+/// The most `REVL_TEARDOWN_GRACE` may ask for (`_TEARDOWN_GRACE_MAX`); more is
+/// clamped, as the conductor clamps it.
+const MAX_TEARDOWN_GRACE_SECS: f64 = 86400.0;
 
 /// How long the teardown gives its disposes to settle: the conductor's grace
 /// (`REVL_TEARDOWN_GRACE` seconds when it is a positive finite number, else the
@@ -310,7 +313,7 @@ const TEARDOWN_MARGIN_SECS: f64 = 2.0;
 /// never exceeds half the grace, which keeps a short grace usable.
 fn teardown_bound() -> std::time::Duration {
     let grace = match std::env::var("REVL_TEARDOWN_GRACE").ok().and_then(|raw| raw.parse::<f64>().ok()) {
-        Some(secs) if secs.is_finite() && secs > 0.0 && secs <= 86400.0 => secs,
+        Some(secs) if secs > 0.0 => secs.min(MAX_TEARDOWN_GRACE_SECS),
         _ => DEFAULT_TEARDOWN_GRACE_SECS,
     };
     std::time::Duration::from_secs_f64(grace - TEARDOWN_MARGIN_SECS.min(grace / 2.0))
@@ -411,7 +414,7 @@ fn main() {
     // provides), and neither may panic (issue #2341).
     let activated = |fiber: &cordis::Fiber, what: String, fibers: &[(String, cordis::Fiber)]| {
         if let Err(error) = fiber.try_wait() {
-            fatal_boot(format!("boot failed loading {what}: {error}"), fibers);
+            fatal_boot(format!("FATAL boot failed loading {what}: {error}"), fibers);
         }
     };
     // The uncaught channel: a panic unwinding out of a host body prints from the
@@ -526,7 +529,7 @@ fn main() {
                             fibers.push((cname.to_string(), fiber));
                         }
                         Err(error) => {
-                            fatal_boot(format!("boot failed loading {cname}: {error}"), &fibers);
+                            fatal_boot(format!("FATAL boot failed loading {cname}: {error}"), &fibers);
                         }
                     }
                 }

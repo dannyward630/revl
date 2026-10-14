@@ -408,7 +408,7 @@ let stopping = false
 
 // The bound on the whole teardown, in ms, shared by every fiber's dispose as
 // the go runner shares one context. It is the conductor's grace
-// (`REVL_TEARDOWN_GRACE`, a positive finite number of seconds, at most a day;
+// (`REVL_TEARDOWN_GRACE`, a positive number of seconds, clamped to a day;
 // anything else is the conductor's default) less a margin, so the runner's
 // FATAL line is written before the conductor's kill can swallow it. The
 // default is `_TEARDOWN_GRACE` in `src/revl/placement.py`, the single source:
@@ -420,9 +420,11 @@ let stopping = false
 function teardownGraceMs(raw: string | undefined = process.env.REVL_TEARDOWN_GRACE): number {
   const DEFAULT_TEARDOWN_GRACE_S = 30
   const TEARDOWN_MARGIN_S = 2
+  // the most a grace may ask for (`_TEARDOWN_GRACE_MAX`); more is clamped
+  const MAX_TEARDOWN_GRACE_S = 86400
   const parsed = raw === undefined ? NaN : Number(raw)
-  const grace = Number.isFinite(parsed) && parsed > 0 && parsed <= 86400
-    ? parsed
+  const grace = parsed > 0
+    ? Math.min(parsed, MAX_TEARDOWN_GRACE_S)
     : DEFAULT_TEARDOWN_GRACE_S
   return (grace - Math.min(TEARDOWN_MARGIN_S, grace / 2)) * 1000
 }

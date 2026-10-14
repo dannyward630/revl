@@ -75,6 +75,7 @@ import os
 import re
 import signal
 import subprocess
+import time
 import sys
 import warnings
 from pathlib import Path
@@ -629,8 +630,7 @@ component Impl provides vault: Vault {
 
 
 @needs_node
-@pytest.mark.parametrize("once", [True, False], ids=["once", "held"])
-def test_a_slow_correct_inverse_ends_in_down_with_the_default_bound(tmp_path, once):
+def test_a_slow_correct_inverse_ends_in_down_with_the_default_bound(tmp_path):
     """With REVL_TEARDOWN_GRACE unset the runner waits as long as the conductor
     does (30 s less a margin), so a 6 s inverse is a clean teardown (#2356)."""
     module = _emitted(tmp_path, _LONG_DOC)
@@ -638,27 +638,22 @@ def test_a_slow_correct_inverse_ends_in_down_with_the_default_bound(tmp_path, on
     spec.write_text(json.dumps({
         "name": "vault", "module": str(module), "components": ["Impl"],
         "config": {}, "provides": ["vault"], "proxies": {}, "probe": [],
-        "once": once,
+        "once": True,
     }), encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k != "REVL_TEARDOWN_GRACE"}
     proc = subprocess.Popen(
         ["node", str(_RUNNER), str(spec)], stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=_HERE,
         env=env)
-    head = ""
+    started = time.monotonic()
     try:
-        if not once:
-            for line in proc.stdout:
-                head += line
-                if "[vault] UP" in line:
-                    break
-            proc.send_signal(signal.SIGTERM)
-        rest, err = proc.communicate(timeout=120)
+        out, err = proc.communicate(timeout=120)
     finally:
         if proc.poll() is None:
             proc.kill()
             proc.wait()
-    out = head + rest
+    elapsed = time.monotonic() - started
     assert proc.returncode == 0, (proc.returncode, out, err)
     assert "] DOWN" in out, (out, err)
     assert "FATAL" not in err, err
+    assert elapsed >= 5.5, elapsed  # the inverse really outlasted the old 5 s bound

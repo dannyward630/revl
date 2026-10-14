@@ -4,7 +4,8 @@ clean teardown.
 `src/revl/placement.py` reads `DOWN` as the runner's proof that its LIFO unwind
 finished. The rust runner discarded `dispose()`'s result and printed `DOWN`
 regardless, and had no bound at all. Now a dispose that fails, or that does not
-settle inside the bound (`REVL_TEARDOWN_GRACE` seconds, default 5), ends the
+settle inside the bound (the conductor's `REVL_TEARDOWN_GRACE` less a margin,
+default 30 seconds), ends the
 process with one scrubbed FATAL line on stderr, no residue verdict, no `DOWN`,
 and exit 1. This drives the real runner binary (cargo + cordis-rs) in a private
 CARGO_TARGET_DIR outside the tree.
