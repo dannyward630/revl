@@ -4566,7 +4566,11 @@ TOOLS = [
                        "swap. The answer carries a `disk` block (issue #2037): "
                        "when disk still holds the change this retracted, it names "
                        "the stale path and points at `revl_export`, the one verb "
-                       "that writes the reverted source out.",
+                       "that writes the reverted source out. The restored "
+                       "generation starts cold, so the answer also carries "
+                       "`stateDropped` (issue #2424): `components` names each "
+                       "component whose live state was discarded, with a "
+                       "`note`.",
         "inputSchema": {"type": "object", "properties": {}},
         "annotations": {"readOnlyHint": False, "destructiveHint": True},
         "handler": _tool_rollback,

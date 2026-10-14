@@ -2426,11 +2426,47 @@ class Session:
         # operator retries it (item 372's activation health gate refuses a
         # rollback to a generation that no longer activates).
         restored, restored_origin = self.previous, self.previous_origin
+        # what the cold start below discards, read BEFORE it runs (issue
+        # #2424): afterwards the live state is already gone.
+        dropped = self._rollback_state_dropped(restored)
         # rollback restores the *code* of the previous generation; it keeps
         # today's teardown semantics for instances (no cross-generation state
         # migration back), so it stays byte-identical to the pre-item-10 path.
         return self.swap(restored, origin=restored_origin,
-                         migrate="respawn") | {"rolledBack": True}
+                         migrate="respawn") | {"rolledBack": True,
+                                               "stateDropped": dropped}
+
+    def _rollback_state_dropped(self, restored: dict) -> dict:
+        """The rollback result's `stateDropped` (issue #2424), the same shape
+        as the undo dossier's (`_undo_state_dropped`): `components` names every
+        running component the rollback takes down with live state, or that the
+        restored generation no longer has, and `note` says what was lost. A
+        rollback re-admits through `respawn`, a cold start that carries none of
+        the generation it leaves (the F4 rule in `swap`). A failure to read the
+        live state is said in the note and never stops the rollback."""
+        try:
+            held, unread = self.live_state_components(), None
+        except Exception as exc:  # noqa: BLE001 - a report, never a fault
+            held, unread = [], f"{type(exc).__name__}: {exc}"
+        withdrawn = (set(self._component_names(self.ir))
+                     - set(self._component_names(restored)))
+        out = {"components": sorted(withdrawn | set(held))}
+        if held:
+            out["note"] = (
+                f"revl_rollback restores the previous generation's code and "
+                f"starts it cold: a `handoff` is not run in reverse, so the "
+                f"live state held by {', '.join(held)} is dropped. A forward "
+                f"change that re-applies that generation's source (revl_change "
+                f"with `replace` and `commit: true`) keeps the state of a "
+                f"component that declares a `handoff` on both sides, and of a "
+                f"template's live instances; any other component starts cold "
+                f"either way.")
+        elif unread is not None:
+            out["note"] = (
+                f"the running components' live state could not be read "
+                f"({unread}), so a component whose state this cold start drops "
+                f"may be missing from `components`")
+        return out
 
     # -- the live SLO producer (roadmap item 473, issue #825) --------------
     #
