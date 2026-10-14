@@ -6949,22 +6949,21 @@ def test_the_call_and_signature_layer_reaches_a_module_fn_body(admit):
 
 
 def test_a_defaulted_parameter_list_builds_no_signature_row(admit):
-    """A signature carrying a DEFAULT (item 187) gets no row, so the arity
-    window is never counted: a call omitting the default must not be refused
-    short. `params_at` cannot spell such a list, and `sig_walk` gates the row on
-    it spelling the whole one.
+    """A signature carrying a DEFAULT (item 187) never has its arity window
+    counted: a call omitting the default must not be refused short. Its row is
+    marked `sigd`, and `tk_named` answers the named refusal before the count.
 
-    The gate still refuses this program, and the refusal is the PARSER's, not
-    this slice's — `fb_span`/`p_fn` read the same parameter list and neither
-    spells a default, so `fn g(a: Int, b: Str = "s")` never reaches a body. That
-    divergence is older than this slice (the reference admits the program) and
-    is not closed here; what is asserted is that the CALL layer adds nothing to
-    it, which is what the withheld row buys."""
+    The gate still refuses this program (the reference admits it). Since issue
+    #2397 the declaration parses, and the refusal is the named one for a call
+    that omits a defaulted argument, whose call-site expansion the self-host
+    does not mirror; what is asserted is that the arity count adds nothing to
+    it."""
     src = ('fn g(a: Int, b: Str = "s") -> Int { return a }\n'
            "fn f() -> Int { return g(1) }\n")
     assert _ref(src) == ("", "")
     got = admit(src)
-    assert got.startswith("BAD|"), got
+    assert got.startswith("UNSUPPORTED|"), got
+    assert "self-host compiler" in got, got
     assert "argument(s)" not in got, got
 
 

@@ -233,7 +233,8 @@
 
 use "./lexer.rvl" { Token, lex_src }
 use "./parser.rvl" { Expr, ParamN, InitN, ArmN, PartN, CallN, FieldN,
-                    is_bad, expr_at, params_at, type_at, nesting_limit,
+                    is_bad, expr_at, params_at, fn_params_at, param_defaults_at, ParamDflt,
+                    type_at, nesting_limit,
                     is_record_key, unesc }
 // The shared type-SPELLING algebra (docs/design/457-selfhost-type-layer.md
 // §3.1, slice T1). It is a leaf module with no AST dependency and its own
@@ -2742,12 +2743,17 @@ fn inverse_slots(ts: List[Token], i: Int, depth: Int, acc: Str, fresh: Bool) -> 
 
 fn p_fn(ts: List[Token], i: Int, pg: Prog) -> PStep {
   let nm = tkc(ts, i + 1).text
-  let ps = params_at(ts, fn_params_i(ts, i))
+  let ps = fn_params_at(ts, fn_params_i(ts, i))
   var rti = ret_at(ts, ps.i)
   let cachePure = ati(ts, rti, "cache") && atw(ts, rti + 1, "pure")
   if (cachePure) { rti += 2 }
   if (!atk(ts, rti, "{")) {
     return mk_step(bad_prog(pg, "expected { after fn signature"), rti)
+  }
+  let dmiss = dp_order_miss(param_defaults_at(ts, fn_params_i(ts, i)), 0, false)
+  if (dmiss != "") {
+    return mk_step(bad_prog(pg, "parameter `".concat(dmiss)
+      .concat("` has no default but follows a defaulted parameter")), rti)
   }
   let bend = close_brace(ts, rti)
   if (bend == 0 - 1) {
@@ -2761,6 +2767,87 @@ fn p_fn(ts: List[Token], i: Int, pg: Prog) -> PStep {
                               asyncParams: async_params_of(ps.ps),
                               body: body, cachePure: cachePure,
                               line: tkc(ts, i).line, caps: [], inv: "" }), bend)
+}
+
+// Issue #2397: defaults are trailing (`parser.py::fn_decl`, item 187). The
+// name of the first parameter without a default that follows a defaulted
+// one, else "".
+// Issue #2397, the call sites. The reference expands an omitted defaulted
+// argument at each call (`_lower_pure_expr` reads the signature's
+// `defaults`), and the IR producer here does not, so EVERY mention of a
+// defaulted `fn` other than a call passing all of its arguments is a named
+// refusal, wherever it sits (a component body or a test as much as a `fn`).
+// The signature-table check in `tk_named` answers the same for the calls it
+// reaches; this scan is the one that cannot be bypassed.
+fn dp_call_refusal(ts: List[Token]) -> Verd {
+  let fs = dp_defaulted_fns(ts)
+  if (fs.size() == 0) { return no_verd() }
+  var j = 0
+  while (j < ts.length() && !atk(ts, j, "eof")) {
+    let t = tkc(ts, j)
+    let decl = j > 0 && atw(ts, j - 1, "fn")
+    let member = j > 0 && atk(ts, j - 1, ".")
+    if (t.kind == "ident" && fs.has(t.text) && !decl && !member) {
+      let n = match fs.lookup(t.text) { Some(v) => v, None => 0 }
+      if (!atk(ts, j + 1, "(") || dp_arg_count(ts, j + 2) != n) {
+        return mk_verd(tagged("UNSUPPORTED", "a use of `".concat(t.text)
+          .concat("` other than a call passing every argument, its defaulted ones")
+          .concat(" included, is not supported by the self-host compiler")), t.line)
+      }
+    }
+    j += 1
+  }
+  return no_verd()
+}
+
+// Each `fn` declaring a default, with its parameter count.
+fn dp_defaulted_fns(ts: List[Token]) -> Map[Str, Int] {
+  var acc: Map[Str, Int] = Map.empty()
+  var j = 0
+  while (j < ts.length() && !atk(ts, j, "eof")) {
+    if (atw(ts, j, "fn") && atk(ts, j + 1, "ident")) {
+      let ds = param_defaults_at(ts, fn_params_i(ts, j))
+      if (dp_has_default(ds, 0)) { acc = acc.set(tkc(ts, j + 1).text, ds.length()) }
+    }
+    j += 1
+  }
+  return acc
+}
+
+// The arguments of a call whose `(` sits just before `j`: commas at depth 0
+// plus one, or 0 for `()`; -1 when the list never closes.
+fn dp_arg_count(ts: List[Token], j0: Int) -> Int {
+  var j = j0
+  var depth = 0
+  var n = 0
+  var any = false
+  while (j < ts.length() && !atk(ts, j, "eof")) {
+    let up = atk(ts, j, "(") || atk(ts, j, "[") || atk(ts, j, "{")
+    let down = atk(ts, j, ")") || atk(ts, j, "]") || atk(ts, j, "}")
+    if (down && depth == 0) { return any ? n + 1 : 0 }
+    if (atk(ts, j, ",") && depth == 0) {
+      n += 1
+      any = false
+    } else {
+      any = true
+      if (up) { depth += 1 }
+      if (down) { depth -= 1 }
+    }
+    j += 1
+  }
+  return 0 - 1
+}
+
+fn dp_has_default(ds: List[ParamDflt], k: Int) -> Bool {
+  if (k >= ds.length()) { return false }
+  return ds[k].has || dp_has_default(ds, k + 1)
+}
+
+fn dp_order_miss(ds: List[ParamDflt], k: Int, seen: Bool) -> Str {
+  if (k >= ds.length()) { return "" }
+  if (ds[k].has) { return dp_order_miss(ds, k + 1, true) }
+  if (seen) { return ds[k].name }
+  return dp_order_miss(ds, k + 1, false)
 }
 
 type MethsR = { xs: List[MSig], i: Int, ok: Bool }
@@ -13876,7 +13963,9 @@ fn tk_check(e: Expr, expected: Str, env: List[Bind], where_: Str) -> TInf {
     Lst(l)    => parse_head(expected) == "List"
                    ? tk_check_list(l.items, 0, expected, env)
                    : tk_check_flat(e, expected, env, where_),
-    If(f)     => grec_mentioned(expected, env)
+    // issue #2405 (gap 2): a settled expectation checks each branch too, so
+    // a disagreeing branch is refused against the expectation, not the join
+    If(f)     => grec_mentioned(expected, env) || tk_settled(expected)
                    ? tk_check_if(f.cond, f.then_, f.els, expected, env, where_)
                    : tk_check_flat(e, expected, env, where_),
     Match(m)  => grec_mentioned(expected, env)
@@ -14381,7 +14470,23 @@ fn tk_if(cond: Expr, then_: Expr, els: Expr, env: List[Bind]) -> TInf {
   if (grec_mentioned(a.ty, env) || grec_mentioned(b.ty, env)) {
     return tk_if_join(a.ty, b.ty, env)
   }
+  // issue #2405 (gap 2): two branches of known, unknown-free types that no
+  // `join` meets draw the reference's refusal; the annotation engine's join
+  // still types every other pair
+  if (tk_settled(a.ty) && tk_settled(b.ty) && tk_join(a.ty, b.ty, env) == "") {
+    return tk_if_join(a.ty, b.ty, env)
+  }
   return tk_ok(join_ty(a.ty, b.ty))
+}
+
+// A type this checker knows with no unknown inside: not "", and no wildcard
+// or gradual `?` position, no `Any` and no inferred bottom `Never`. A
+// comparison between two settled types is the reference's own comparison;
+// one over an unknown is where the two checkers' inference may differ.
+fn tk_settled(t: Str) -> Bool {
+  if (t == "") { return false }
+  return t.indexOf("?") < 0 && t.indexOf("Any") < 0 && t.indexOf("Never") < 0
+    && t.indexOf("_") < 0
 }
 
 // Issue #2403: the reference's ternary rule, `join` with the declared-type
@@ -14753,16 +14858,20 @@ fn sig_walk(ts: List[Token], i: Int, decls: List[Bind],
     return sig_walk(ts, p_component(ts, i, empty_prog()).i, decls, acc, al)
   }
   if (t.text == "fn") {
-    let ps = params_at(ts, fn_params_i(ts, i))
+    let ps = fn_params_at(ts, fn_params_i(ts, i))
     let nx = p_fn(ts, i, empty_prog()).i
     if (!ps.ok) { return sig_walk(ts, nx, decls, acc, al) }
     let ret = atk(ts, ps.i, "arrow") ? taint_strip(type_at(ts, ps.i + 1).ty) : ""
     let tps = collect_tparams(ps.ps, ret, decls, explicit_tparams(ts, i))
     let sps = alias_subst_params(ps.ps, al)
     let sret = alias_subst(ret, al)
+    let rows = sig_put(acc, tkc(ts, i + 1).text, sps, sret, tps,
+                       sig_raw_fnty(sps, sret))
+    let ds = param_defaults_at(ts, fn_params_i(ts, i))
     return sig_walk(ts, nx, decls,
-                    sig_put(acc, tkc(ts, i + 1).text, sps, sret, tps,
-                            sig_raw_fnty(sps, sret)), al)
+                    dp_has_default(ds, 0)
+                      ? rows.push({ name: sig_key("sigd", tkc(ts, i + 1).text), ty: "1" })
+                      : rows, al)
   }
   return sig_walk(ts, skip_line(ts, i), decls, acc, al)
 }
@@ -15120,6 +15229,12 @@ fn tk_named(c: CallN, env: List[Bind], argTys: List[Str]) -> TCall {
   if (tenv_get(env, "case ".concat(n)) != "") { return tk_miss() }
   let ps = sig_params(env, n)
   let ret = tenv_get(env, sig_key("sigr", n))
+  if (c.args.length() != ps.length() && tenv_get(env, sig_key("sigd", n)) == "1") {
+    // issue #2397: the reference fills an omitted defaulted argument in at
+    // the call site; that expansion is not mirrored
+    return tk_hit(tk_no("UNSUPPORTED", "a call to `".concat(n)
+      .concat("` that omits a defaulted argument is not supported by the self-host compiler")))
+  }
   if (c.args.length() != ps.length()) {
     return tk_hit(tk_no("T1",
       "`".concat(n).concat("` takes ").concat(ps.length().to_str())
@@ -16499,9 +16614,10 @@ fn fb_walk(steps: List[FbStep], i: Int, scope: List[Bind], tys: List[Bind],
     // `x op= e` desugars to `x = x op e` before the value is typed, exactly as
     // `_lower_pure_stmt` composes it, so a mixed-width compound assignment is
     // the same refusal the spelled-out form draws. The declared-vs-inferred
-    // comparison at an assignment is NOT made here: it is the one position the
-    // reference widens a bottom at (`widen_bottom`), and an approximation of
-    // that rule refuses accumulator code the reference admits.
+    // comparison at an assignment is made below only between two settled
+    // types: it is the one position the reference widens a bottom at
+    // (`widen_bottom`), and an approximation of that rule refuses accumulator
+    // code the reference admits.
     // issue #1157: the rust emitter MOVES a once-read binding whose initialiser
     // is an untyped ternary, so `s.value` read again below borrowed after the
     // move and the regenerated crate did not compile. The annotation is what
@@ -16513,6 +16629,15 @@ fn fb_walk(steps: List[FbStep], i: Int, scope: List[Bind], tys: List[Bind],
                                         paren: false })
     let r = tk_infer(val, tys)
     if (r.v != "") { return fb_type_refuse(r.v, s.line, scope, tys) }
+    // issue #2405 (gap 1): where the variable's type and the value's are both
+    // settled, no bottom is left to widen, so the reference's comparison is
+    // made as it makes it
+    let held_ty = tenv_get(tys, s.name)
+    if (tk_settled(held_ty) && tk_settled(r.ty) && !tk_compat_env(held_ty, r.ty, tys)) {
+      return fb_type_refuse(tk_mismatch("assignment to `".concat(s.name)
+        .concat("` (a `").concat(tk_render(held_ty)).concat("` variable)"),
+        held_ty, r.ty).v, s.line, scope, tys)
+    }
     let lo = tk_low(val, tys)
     if (lo != "") { return fb_type_refuse(lo, s.line, scope, tys) }
     return fb_walk(steps, i + 1, scope, tys, ret)
@@ -16734,7 +16859,7 @@ fn fb_span(ts: List[Token], i: Int) -> FbSpan {
   // reads the list itself (`explicit_tparams`)
   let p0 = fn_params_i(ts, i)
   if (!atk(ts, p0 - 1, "(")) { return fb_no_span() }
-  let ps = params_at(ts, p0)
+  let ps = fn_params_at(ts, p0)
   var reti = ps.i
   var ret = ""
   var retDecl = ""
@@ -16945,6 +17070,90 @@ fn fb_refusal(ts: List[Token], i: Int) -> Verd {
   // substitute over (docs/design/457 T2c).
   return fb_refusal_at(ts, i,
     tk_alias_rows(al, nr_binds(ts, sig_binds(ts, case_binds(ts, al), al))), al)
+}
+
+// Issue #2397: the declaration-site checks a module `fn`'s parameter
+// defaults draw (`lower.py::_validate_default_params`, item 187), in
+// declaration order. The reference types a default with NO bindings in scope
+// (`infer_ast(default, {}, ...)`) and refuses one that reaches an effectful
+// callee. Neither rule is mirrored in general, so only a default built from
+// literals (and operators, lists and `if`s over them) is decided here, where
+// the empty scope cannot change its type; any other default is a named
+// refusal rather than an unchecked admit.
+fn dp_refusal_at(ts: List[Token], i: Int, gtys: List[Bind],
+                 al: Map[Str, Str]) -> Verd {
+  if (i >= ts.length() || atk(ts, i, "eof")) { return no_verd() }
+  let t = tkc(ts, i)
+  if (at_boot(ts, i)) { return dp_refusal_at(ts, i + 1, gtys, al) }
+  if (at_event(ts, i)) { return dp_refusal_at(ts, event_decl_end(ts, i), gtys, al) }
+  if (t.kind != "kw") { return dp_refusal_at(ts, skip_line(ts, i), gtys, al) }
+  if (at_pub_prefix(ts, i)) { return dp_refusal_at(ts, i + 1, gtys, al) }
+  if (t.text == "type") { return dp_refusal_at(ts, type_decl_end(ts, i + 1), gtys, al) }
+  if (t.text == "use") { return dp_refusal_at(ts, skip_line(ts, i), gtys, al) }
+  if (t.text == "test") {
+    let e = test_block_end(ts, i)
+    if (e != 0 - 1) { return dp_refusal_at(ts, e, gtys, al) }
+    return dp_refusal_at(ts, skip_line(ts, i), gtys, al)
+  }
+  if (t.text == "extern") {
+    return dp_refusal_at(ts, p_extern(ts, i, empty_prog()).i, gtys, al)
+  }
+  if (t.text == "service") {
+    return dp_refusal_at(ts, p_service(ts, i, empty_prog()).i, gtys, al)
+  }
+  if (t.text == "component") {
+    return dp_refusal_at(ts, p_component(ts, i, empty_prog()).i, gtys, al)
+  }
+  if (t.text == "fn") {
+    let sp = fb_span(ts, i)
+    if (!sp.ok) { return dp_refusal_at(ts, skip_line(ts, i), gtys, al) }
+    let v = dp_params(param_defaults_at(ts, fn_params_i(ts, i)), 0, gtys, al)
+    if (v.v != "") { return v }
+    return dp_refusal_at(ts, sp.next, gtys, al)
+  }
+  return dp_refusal_at(ts, skip_line(ts, i), gtys, al)
+}
+
+fn dp_params(ds: List[ParamDflt], k: Int, gtys: List[Bind],
+             al: Map[Str, Str]) -> Verd {
+  if (k >= ds.length()) { return no_verd() }
+  let p = ds[k]
+  if (p.has) {
+    let where_ = "default for parameter `".concat(p.name).concat("`")
+    if (!dp_literal(p.e)) {
+      return mk_verd(tagged("UNSUPPORTED", where_.concat(" is not built from literals, ")
+        .concat("which the self-host compiler does not check")), p.line)
+    }
+    let r = tk_infer(p.e, gtys)
+    if (r.v != "") { return mk_verd(r.v, p.line) }
+    let want = taint_strip(alias_subst(p.ty, al))
+    if (r.ty != "" && !tk_compat_env(want, r.ty, gtys)) {
+      return mk_verd(tk_mismatch(where_, want, r.ty).v, p.line)
+    }
+  }
+  return dp_params(ds, k + 1, gtys, al)
+}
+
+// A default the empty scope cannot change the type of: literals, `None`, and
+// operators, lists, parentheses and `if`s over them.
+fn dp_literal(e: Expr) -> Bool {
+  return match e {
+    IntLit(x)   => true,
+    FloatLit(x) => true,
+    StrLit(x)   => true,
+    BoolLit(x)  => true,
+    Var(n)      => n == "None",
+    Un(u)       => dp_literal(u.e),
+    Bin(b)      => dp_literal(b.l) && dp_literal(b.r),
+    If(f)       => dp_literal(f.cond) && dp_literal(f.then_) && dp_literal(f.els),
+    Lst(l)      => dp_all_literal(l.items, 0),
+    _           => false,
+  }
+}
+
+fn dp_all_literal(xs: List[Expr], k: Int) -> Bool {
+  if (k >= xs.length()) { return true }
+  return dp_literal(xs[k]) && dp_all_literal(xs, k + 1)
 }
 
 fn fb_refusal_at(ts: List[Token], i: Int, gtys: List[Bind],
@@ -19407,6 +19616,11 @@ fn collect_nonlink(ts: List[Token], pg: Prog, hands: List[MHand],
   if (extv.v != "") { return { done: true, refs: [extv] } }
   let cachev = check_cache_fns(pg.fns)
   if (cachev.v != "") { return { done: true, refs: [cachev] } }
+  // issue #2397: `_validate_default_params` runs after the cache declarations
+  let dpv = dp_refusal_at(ts, 0, nr_binds(ts, gtys), al)
+  if (dpv.v != "") { return { done: true, refs: [dpv] } }
+  let dcv = dp_call_refusal(ts)
+  if (dcv.v != "") { return { done: true, refs: [dcv] } }
   // item 400 (issues #1457, #1688): a `deferred` emission extern reached
   // outside a component's `emit` marker, the reference's
   // `_refuse_effect_position_bound_externs_in_fn_body`, which runs just ahead
@@ -24579,7 +24793,7 @@ fn decl_params_of(ts: List[Token], nm: Str) -> List[ParamN] {
   var j = 0
   while (j < ts.length() && !atk(ts, j, "eof")) {
     if (atw(ts, j, "fn") && tkc(ts, j + 1).text == nm && atk(ts, j + 2, "(")) {
-      return params_at(ts, j + 3).ps
+      return fn_params_at(ts, j + 3).ps
     }
     j += 1
   }
@@ -28501,7 +28715,7 @@ fn decl_ret_of(ts: List[Token], nm: Str, al: Map[Str, Str]) -> Str {
   var j = 0
   while (j < ts.length() && !atk(ts, j, "eof")) {
     if (atw(ts, j, "fn") && tkc(ts, j + 1).text == nm && atk(ts, j + 2, "(")) {
-      let ps = params_at(ts, j + 3)
+      let ps = fn_params_at(ts, j + 3)
       if (atk(ts, ps.i, "arrow")) { return alias_subst(type_at(ts, ps.i + 1).ty, al) }
       return ""
     }
@@ -28876,7 +29090,7 @@ fn case_binds_walk(ts: List[Token], i: Int, a: CaseAcc, al: Map[Str, Str]) -> Ca
   if (t.text == "extern") { return case_binds_walk(ts, p_extern(ts, i, empty_prog()).i, a, al) }
   if (t.text == "fn") {
     let fi = i
-    let ps = params_at(ts, fn_params_i(ts, fi))
+    let ps = fn_params_at(ts, fn_params_i(ts, fi))
     let ret = atk(ts, ps.i, "arrow")
       ? taint_strip(alias_subst(type_at(ts, ps.i + 1).ty, al)) : "Unit"
     let sps = alias_subst_params(ps.ps, al)
@@ -30429,7 +30643,7 @@ fn own_has_fn(fns: List[FnOwn], n: Str, i: Int) -> Bool {
 
 fn own_collect_fn(ts: List[Token], i: Int, acc: List[FnOwn]) -> List[FnOwn] {
   let nm = tkc(ts, i + 1).text
-  let ps = params_at(ts, fn_params_i(ts, i))
+  let ps = fn_params_at(ts, fn_params_i(ts, i))
   var reti = ps.i
   if (atk(ts, ps.i, "arrow")) { reti = type_at(ts, ps.i + 1).i }
   if (ati(ts, reti, "cache") && atw(ts, reti + 1, "pure")) { reti += 2 }
@@ -31149,7 +31363,7 @@ fn lir_function_named(ts: List[Token], i: Int, cases: List[Bind], public_fn: Boo
                       colored: List[Str], sm: Map[Str, Str], al: Map[Str, Str],
                       nmOut: Str, strip: Bool, fnty: List[Bind]) -> LirFn {
   let nm = tkc(ts, i + 1).text
-  let ps0 = params_at(ts, fn_params_i(ts, i))
+  let ps0 = fn_params_at(ts, fn_params_i(ts, i))
   // the declaration is read through the alias table, so the IR spelling, the
   // signature's type parameters and the body's type environment are all built on
   // the ERASED type - which is what the reference's one-pass erasure gives it.

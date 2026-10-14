@@ -2988,3 +2988,124 @@ def test_matching_generic_record_arguments_compile_on_both_sides(compile_rvl, ad
     assert admit(text) == ""
     got = compile_rvl["compile_to_at"](text, "py", "x.rvl")
     assert not got.startswith("REFUSED|"), got[:160]
+
+
+# Issue #2397: a module `fn` parameter may declare a trailing default
+# (`fn f(x: Int = 3)`, item 187). The self-host parse refused every such
+# declaration with `expected { after fn signature`. The reference erases the
+# default from the declaration's IR and expands it at each call site that omits
+# the argument; the self-host does not mirror that expansion, so a use of a
+# defaulted `fn` other than a full call is a named refusal, as is a default not
+# built from literals (the reference types a default with no bindings in scope
+# and refuses an effectful one, neither of which is mirrored).
+_ISSUE_2397_COMPILED = {
+    "after_applied_type": "fn f(r: Result[Int, Str], x: Int = 3) -> Int { return x }\n",
+    "if_default": "fn g(x: Int = if (true) { 1 } else { 2 }) -> Int { return x }\n",
+    "list_default": "fn h(xs: List[Int] = [1, 2]) -> Int { return 0 }\n",
+    "defaulted_parameters": "fn f(a: Int, b: Int = 2) -> Int { return a + b }\n",
+    "full_call": ("fn f(a: Int, b: Int = 2) -> Int { return a + b }\n"
+                  "fn k() -> Int { return f(1, 3) }\n"),
+    "generic": "fn f[T](x: T, n: Int = 1) -> Int { return n }\n",
+    "widening": "fn f(x: Float = 1) -> Float { return x }\n",
+    "none_default": "fn f(x: Opt[Int] = None) -> Int { return 1 }\n",
+    "public": "pub fn f(x: Int = 1) -> Int { return x }\n",
+}
+
+_ISSUE_2397_REFUSED = {
+    "wrong_type": "fn f(x: Int = \"s\") -> Int { return x }\n",
+    "none_for_int": "fn f(x: Int = None) -> Int { return 1 }\n",
+    "wrong_list": "fn f(xs: List[Int] = [\"a\"]) -> Int { return 0 }\n",
+    "wrong_if": "fn f(x: Int = if (true) { \"a\" } else { \"b\" }) -> Int { return x }\n",
+    "required_after_default": "fn f(a: Int = 1, x: Int) -> Int { return x }\n",
+    "arrow_parameter": "fn f() -> Int {\n  let g = (x: Int = 1) => x\n  return 1\n}\n",
+}
+
+_ISSUE_2397_UNSUPPORTED = {
+    "calls_a_fn": "fn g() -> Int { return 1 }\nfn f(x: Int = g()) -> Int { return x }\n",
+    "names_a_parameter": "fn f(a: Int, x: Int = a) -> Int { return x }\n",
+    "call_omits_default": ("fn f(a: Int, b: Int = 2) -> Int { return a + b }\n"
+                           "fn k() -> Int { return f(1) }\n"),
+    "test_omits_default": ("fn f(a: Int, b: Int = 2) -> Int { return a + b }\n"
+                           "test \"t\" {\n  assert f(1) == 3\n}\n"),
+    "fn_value": ("fn f(a: Int, b: Int = 2) -> Int { return a + b }\n"
+                 "fn k() -> Int {\n  let g = f\n  return 1\n}\n"),
+}
+
+
+@pytest.mark.parametrize("tier", ["py", "go", "rust"])
+@pytest.mark.parametrize("name", sorted(_ISSUE_2397_COMPILED))
+def test_a_defaulted_parameter_compiles_as_the_reference_does(compile_to, reference_emit,
+                                                              name, tier):
+    text = _ISSUE_2397_COMPILED[name]
+    assert compile_to(text, tier) == reference_emit[tier](compile_source(text))
+
+
+@pytest.mark.parametrize("tier", ["py", "go", "java", "rust"])
+@pytest.mark.parametrize("name", sorted(_ISSUE_2397_REFUSED))
+def test_a_bad_parameter_default_draws_the_reference_refusal(compile_rvl, name, tier):
+    text = _ISSUE_2397_REFUSED[name]
+    want = _reference_refusal(text)
+    assert want != ""
+    got = compile_rvl["compile_to_at"](text, tier, "x.rvl")
+    assert got.startswith("REFUSED|"), got[:120]
+    assert got.split("|", 2)[2] == want
+
+
+@pytest.mark.parametrize("name", sorted(_ISSUE_2397_UNSUPPORTED))
+def test_an_unmirrored_default_is_a_named_refusal(compile_rvl, name):
+    text = _ISSUE_2397_UNSUPPORTED[name]
+    assert _reference_refusal(text) == ""
+    got = compile_rvl["compile_to_at"](text, "py", "x.rvl")
+    assert got.startswith("REFUSED|UNSUPPORTED|"), got[:160]
+    assert "self-host compiler" in got
+
+
+# Issue #2405, gaps 1 and 2: a `var` reassigned a value of another type, and an
+# `if` whose branches disagree. The self-host admitted both. A reassignment is
+# compared only where neither type carries an unknown or a bottom the
+# reference would widen (`widen_bottom`); an `if` meets its expectation branch
+# by branch where one is given, and the ternary `join` otherwise.
+_ISSUE_2405_REFUSED = {
+    "var_reassigned_str": "fn f() -> Int {\n  var x = 1\n  x = \"s\"\n  return 1\n}\n",
+    "var_reassigned_float": "fn f() -> Int {\n  var x = 1\n  x = 2.5\n  return 1\n}\n",
+    "var_reassigned_list": "fn f() -> Int {\n  var xs = [1]\n  xs = [\"a\"]\n  return 1\n}\n",
+    "var_reassigned_in_branch": (
+        "fn f(c: Bool) -> Int {\n  var x = 1\n  if (c) {\n    x = true\n  }\n  return x\n}\n"),
+    "var_reassigned_in_test": "test \"t\" {\n  var x = 1\n  x = \"s\"\n  assert true\n}\n",
+    "if_untyped_let": "fn f(c: Bool) -> Int {\n  let r = if (c) { 1 } else { \"s\" }\n  return 1\n}\n",
+    "if_typed_let": "fn f(c: Bool) -> Int {\n  let r: Int = if (c) { 1 } else { \"s\" }\n  return r\n}\n",
+    "if_return": "fn f(c: Bool) -> Int {\n  return if (c) { 1 } else { \"s\" }\n}\n",
+    "if_argument": ("fn g(x: Int) -> Int { return x }\n"
+                   "fn f(c: Bool) -> Int {\n  return g(if (c) { 1 } else { \"s\" })\n}\n"),
+    "if_lists": "fn f(c: Bool) -> Int {\n  let r = if (c) { [1] } else { [\"s\"] }\n  return 1\n}\n",
+    "ternary": "fn f(c: Bool) -> Int {\n  let r = c ? 1 : \"s\"\n  return 1\n}\n",
+    "if_in_test": "test \"t\" {\n  let r = if (true) { 1 } else { \"s\" }\n  assert true\n}\n",
+}
+
+_ISSUE_2405_ADMITTED = {
+    "var_same_type": "fn f() -> Int {\n  var x = 1\n  x = 2\n  return x\n}\n",
+    "var_widening": "fn f() -> Float {\n  var x = 1.5\n  x = 2\n  return x\n}\n",
+    "var_accumulator": "fn f() -> Int {\n  var xs = []\n  xs = xs.push(1)\n  return xs.length()\n}\n",
+    "var_optional": "fn f() -> Int {\n  var o: Opt[Int] = None\n  o = Some(1)\n  return 1\n}\n",
+    "if_same_type": "fn f(c: Bool) -> Int {\n  let r = if (c) { 1 } else { 2 }\n  return r\n}\n",
+    "if_widening": "fn f(c: Bool) -> Float {\n  let r = if (c) { 1 } else { 2.5 }\n  return r\n}\n",
+    "if_optional": "fn f(c: Bool) -> Int {\n  let r = if (c) { Some(1) } else { None }\n  return 1\n}\n",
+}
+
+
+@pytest.mark.parametrize("tier", ["py", "go", "java", "rust"])
+@pytest.mark.parametrize("name", sorted(_ISSUE_2405_REFUSED))
+def test_a_mistyped_var_or_if_draws_the_reference_refusal(compile_rvl, name, tier):
+    text = _ISSUE_2405_REFUSED[name]
+    want = _reference_refusal(text)
+    assert want != ""
+    got = compile_rvl["compile_to_at"](text, tier, "x.rvl")
+    assert got.startswith("REFUSED|"), got[:120]
+    assert got.split("|", 2)[2] == want
+
+
+@pytest.mark.parametrize("name", sorted(_ISSUE_2405_ADMITTED))
+def test_a_well_typed_var_or_if_is_admitted_on_both_sides(admit, name):
+    text = _ISSUE_2405_ADMITTED[name]
+    assert _reference_refusal(text) == ""
+    assert admit(text) == ""

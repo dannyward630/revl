@@ -844,6 +844,14 @@ fn p_updates(ts: List[Token], lo: Int, hi: Int, d: Int) -> Inits {
 }
 
 fn p_params(ts: List[Token], i: Int, d: Int) -> Pars {
+  return p_params_dfl(ts, i, d, false)
+}
+
+// `dfl` admits a trailing `= <expr>` default after a parameter's type, the
+// form a module `fn` declaration accepts (`parser.py::fn_decl`, item 187) and
+// an arrow's parameter list does not. The default itself is not kept here:
+// `param_defaults_at` reads it for the checks a default draws.
+fn p_params_dfl(ts: List[Token], i: Int, d: Int, dfl: Bool) -> Pars {
   var j = i
   var xs = []
   var ok = true
@@ -860,6 +868,11 @@ fn p_params(ts: List[Token], i: Int, d: Int) -> Pars {
           ty = t.ty
           j = t.i
         }
+      }
+      if (ok && dfl && ty != "" && at(ts, j, "=")) {
+        let dv = p_expr_d(ts, j + 1, d)
+        if (is_bad(dv.e)) { ok = false }
+        if (!is_bad(dv.e)) { j = dv.i }
       }
       if (ok) {
         let ann = ty
@@ -1273,6 +1286,57 @@ pub fn expr_at(ts: List[Token], i: Int) -> AtExpr {
 pub fn params_at(ts: List[Token], i: Int) -> AtPars {
   let r = p_params(ts, i, 0)
   return { i: r.i, ps: r.xs, ok: r.ok }
+}
+
+// Parse a module `fn`'s parameter list whose opening `(` sits at index `i`,
+// stepping over each `= <expr>` default (issue #2397).
+pub fn fn_params_at(ts: List[Token], i: Int) -> AtPars {
+  let r = p_params_dfl(ts, i, 0, true)
+  return { i: r.i, ps: r.xs, ok: r.ok }
+}
+
+// One parameter of a module `fn` as `param_defaults_at` reads it: `has` says
+// whether it declares a default, `e` is that default and `line` the line the
+// parameter's name sits on.
+pub type ParamDflt = { name: Str, ty: Str, has: Bool, e: Expr, line: Int }
+
+// The parameters of a module `fn` whose `(` sits at `i`, with their defaults.
+// Only meaningful where `fn_params_at` read the list as ok.
+pub fn param_defaults_at(ts: List[Token], i: Int) -> List[ParamDflt] {
+  var j = i
+  var xs = []
+  var ok = true
+  while (ok && at(ts, j, "ident")) {
+    let nm = tk(ts, j).text
+    let ln = tk(ts, j).line
+    var ty = ""
+    var has = false
+    var dv: Expr = Bad("no default")
+    j += 1
+    if (at(ts, j, ":")) {
+      let t = p_type(ts, j + 1, 0)
+      if (!t.ok) { ok = false }
+      if (t.ok) {
+        ty = t.ty
+        j = t.i
+      }
+    }
+    if (ok && ty != "" && at(ts, j, "=")) {
+      let r = p_expr_d(ts, j + 1, 0)
+      if (is_bad(r.e)) { ok = false }
+      if (!is_bad(r.e)) {
+        has = true
+        dv = r.e
+        j = r.i
+      }
+    }
+    if (ok) {
+      let row: ParamDflt = { name: nm, ty: ty, has: has, e: dv, line: ln }
+      xs = xs.push(row)
+      if (at(ts, j, ",")) { j += 1 }
+    }
+  }
+  return xs
 }
 
 // Parse one type spelling starting at index `i`, rendered as the reference
