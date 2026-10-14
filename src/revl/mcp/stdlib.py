@@ -182,6 +182,8 @@ def catalogue() -> dict:
     The symbols come from `revl.symbols.declarations` — the same function
     `revl_source` resolves a name with — so every name listed here is a name
     the reader can be given, and the two cannot drift."""
+    root = _paths.stdlib_root()
+    packaged = root.is_dir()  # not assumed: a missing root lists nothing
     modules = []
     for path in _module_paths():
         name = path.stem
@@ -189,14 +191,14 @@ def catalogue() -> dict:
         modules.append({
             "module": name,
             "path": f"stdlib/{name}.rvl",
-            "packaged": True,
+            "packaged": packaged,
             "symbols": {decl.name: decl.kind
                         for decl in _symbols.declarations(text, str(path))},
         })
     return {
         "kind": "stdlib",
-        "root": str(_paths.stdlib_root()),
-        "packaged": True,
+        "root": str(root),
+        "packaged": packaged,
         "modules": modules,
         "builtin": {"buffer": BASE_BUFFER, "symbols": _builtin_symbols()},
         "hint": ("read one with `symbol`: a bare name when it is unique "
@@ -211,8 +213,12 @@ def unknown_symbol(symbol: str) -> str:
     (`nothing is loaded: ... pass files or source`) would leave the caller
     where it started."""
     root = _paths.stdlib_root()
+    close = [name for name in _builtin_symbols()
+             if name.endswith("." + symbol) and "." in name]
+    maybe = (f" Did you mean {', '.join(f'`{name}`' for name in close[:4])}?"
+             if close else "")
     return (f"no top-level declaration matches `{symbol}` in the packaged "
             f"stdlib ({root}): {len(_module_paths())} modules, and the base "
-            f"type surface as `{BASE_BUFFER}`. Call `revl_source` with no "
-            f"`symbol` to list what they declare, or pass `files`/`source` to "
-            f"read a composition's own.")
+            f"type surface as `{BASE_BUFFER}`.{maybe} Call `revl_source` with "
+            f"no `symbol` to list what they declare, or pass `files`/`source` "
+            f"to read a composition's own.")

@@ -381,7 +381,7 @@ guarantee:
 **With no candidate, it checks the composition the session holds.** Pass no
 `source` and no `files` (or pass `session: true`) and `revl_check` compiles the
 working set the session holds: the running source, or the draft an edit loop is
-filling (the set `revl_swap {}` re-admits and `revl_source {}` reads). The
+filling (the set `revl_swap {}` re-admits and `revl_source` reads by name). The
 answer is the same substance the supplied form returns, plus
 `checked: "session"`: `selfCheck`, `holes` (with their fillSpecs), `boundary`,
 `admissible`, `effectClasses`. Nothing is replaced, and no `canonicalSource` is
@@ -1119,6 +1119,13 @@ names and no comments is about 300.
   block directly above the declaration.
 - Reads the running composition as the session holds it (edits included).
   With nothing loaded, pass `files` or `source` to read from.
+- A `symbol` that is no declaration but names a held buffer reads that whole
+  buffer (issue #2322): a loaded file by its path, basename or trailing path
+  (with or without `.rvl`), an in-memory module by its key, or `source` for
+  inline source. The answer is `{kind: "buffer", buffer, line: 1, lines, text}`.
+  A declaration of the same name wins, so `Store` still reads the declaration.
+  `source` on a composition loaded from files names no buffer: the refusal
+  lists the files, and `<path>:Name` or `<path>:<line>` reads from one.
 
 **The packaged stdlib (issue #2173).** `stdlib/` ships in the wheel - 20
 modules - but it is not a loaded buffer, so the only declaration reader could
@@ -1131,7 +1138,12 @@ readable only by an agent that already knew it.
   where each module carries its `path` (`stdlib/<name>.rvl`), `packaged: true`,
   and its exported `symbols` by kind (`fn`, `type`, `service`, `component`,
   `extern`, ...). That is the whole vocabulary in one call - which modules
-  exist and what each one declares.
+  exist and what each one declares. `packaged` is read from the stdlib root on
+  disk; a root that is missing is refused as "not installed" instead of being
+  listed as an empty stdlib. The call is answered the same way when the session
+  holds a composition or a draft, with one more key, `held`: each held buffer
+  (`buffer`, `origin`, `lines`) and the declarations in it by kind, so the names
+  a read takes (issue #2322) are in the first answer.
 - The `builtin` entry is the base type surface (`Str`, `List`, `Map`, `Int`,
   `Value`, ...) as `typecheck` admits it. Those methods are built into the
   language and declared by no file ([stdlib-2.0.md](stdlib-2.0.md), §The
@@ -1142,12 +1154,15 @@ readable only by an agent that already knew it.
   (`str.rvl:trim`), or a base type's method as `Str.concat` or
   `builtin:Str.concat`. A name the stdlib does not declare is refused by
   naming the stdlib, its root and its module count - never with "nothing is
-  loaded", which would send the caller back to the search this ends.
+  loaded", which would send the caller back to the search this ends. A bare
+  method name that only a base type declares is refused with the qualified
+  spellings (`concat` names `Str.concat`).
 - A call that names a source (`files`, `source`, `modules`), a modifier
   (`with`, `comments`) or `proposal` and no `symbol` keeps the refusal it has
   always had (`symbol` is required), so a caller that meant to read something
-  else is never handed a catalogue instead. The stdlib branch is for a session
-  that holds nothing; a loaded composition is read from its own working set,
+  else is never handed a catalogue instead. An empty `source` is a source (it is
+  read as its own, empty buffer), not an absent one. The stdlib branch for a
+  `symbol` is for a session that holds nothing; a loaded composition is read from its own working set,
   and reaches the stdlib the way it always has, through a `use`.
 
 A declaration's span runs from its first line to the line before the next

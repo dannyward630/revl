@@ -208,6 +208,10 @@ def _resolve_buffer(vs: dict, target: str | None) -> tuple[str, str]:
             return "source", "source"
         if target is None and len(files) == 1:
             return "file", files[0]
+        if files and target == "source":
+            # a buffer spelled `source` (a read's `source:10`, an edit's
+            # `target`) names inline source; this composition holds none
+            raise EditError(_no_inline_source(files))
         if files:
             raise EditError(
                 f"this composition was loaded from {len(files)} files; name the "
@@ -235,6 +239,76 @@ def _resolve_buffer(vs: dict, target: str | None) -> tuple[str, str]:
     raise EditError(
         f"no server-side source buffer named {target!r}; "
         f"editable buffers: {', '.join(_editable(vs)) or 'none'}")
+
+
+def _no_inline_source(files: list) -> str:
+    """The refusal for the buffer name `source` on a composition loaded from
+    files (issue #2322): `source` is the inline buffer, and the caller is told
+    the spelling that does name a held buffer, for a read as for an edit."""
+    return (f"no inline source buffer named 'source': this composition was "
+            f"loaded from {len(files)} file{'s' if len(files) != 1 else ''}. "
+            f"Name one by its path: {', '.join(files)} (a read is "
+            f"`<path>:Name` or `<path>:<line>`)")
+
+
+def _buffers_named(vs: dict, name: str) -> list[tuple[tuple[str, str], str]]:
+    """The held buffers `name` addresses as a whole: a loaded file by path,
+    basename or trailing path, an in-memory module's key, or `source`; with or
+    without the `.rvl` suffix a file carries (issue #2322)."""
+    from .. import symbols as _model  # noqa: PLC0415
+
+    held = _model.buffers(vs)
+    spellings = [name] + ([] if name.endswith(".rvl") else [name + ".rvl"])
+    for spelling in spellings:
+        exact = [b for b in held if b[0][1] == spelling]
+        if exact:
+            return exact
+        files = [key for (kind, key), _ in held if kind in ("file", "dependency")]
+        path = _match_file(files, spelling)
+        paths = [path] if path is not None else _suffix_matches(files, spelling)
+        found = [b for b in held if b[0][0] in ("file", "dependency")
+                 and b[0][1] in paths]
+        if found:
+            return found
+    return []
+
+
+def read_buffer(vs: dict, symbol: str) -> dict | None:
+    """What `revl_source` answers when `symbol` is no declaration but names a
+    held buffer (issue #2322): the whole buffer, as `kind: "buffer"`. None when
+    `symbol` names no buffer, so the caller keeps its own refusal. A name that
+    several buffers share is refused with the candidates; `source` on a
+    composition that holds no inline source is refused with the spelling that
+    does read."""
+    name = symbol.strip()
+    found = _buffers_named(vs, name)
+    if not found and name == "source" and vs.get("files"):
+        raise EditError(_no_inline_source(list(vs["files"])))
+    if len(found) > 1:
+        raise EditError(f"`{name}` names {len(found)} held buffers; give "
+                        f"enough of the path to pick one: "
+                        f"{', '.join(b[0][1] for b in found)}")
+    if not found:
+        return None
+    (kind, key), text = found[0]
+    return {"symbol": key, "kind": "buffer", "buffer": key, "line": 1,
+            "lines": len(text.splitlines()), "text": text}
+
+
+def held_buffers(vs: dict) -> list[dict]:
+    """The held buffers and what each declares, for a bare `revl_source`
+    (issue #2322): the way to learn the names a read takes."""
+    from .. import symbols as _model  # noqa: PLC0415
+
+    out = []
+    for (kind, key), text in _model.buffers(vs):
+        try:
+            names = {d.name: d.kind for d in _model.declarations(text, key)}
+        except _model.SymbolError:
+            names = {}
+        out.append({"buffer": key, "origin": kind,
+                    "lines": len(text.splitlines()), "symbols": names})
+    return out
 
 
 def _readonly_match(vs: dict, target: str) -> str | None:
