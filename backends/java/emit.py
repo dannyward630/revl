@@ -4000,6 +4000,21 @@ def _is_emission_method(services: dict, service, method: str) -> bool:
     return bool(isinstance(spec, dict) and spec.get("emission"))
 
 
+def _journal_service_comp(node, env, call: str) -> str:
+    """A compensation through a service `emission` method, journalled like an
+    `emit` (issue #2345): a block, so it stays a valid lambda body. Any other
+    compensation is `call` as it is. Every compensation site goes through
+    here, a UI scope's included (issue #2373)."""
+    desc = _service_emission(node, (getattr(env, "component", None) or {})
+                             .get("requires") or {})
+    if desc is not None and _is_emission_method(
+            getattr(env, "services", None) or {}, desc[2], desc[1]):
+        journalled = _journal_service_stmt(node, env, call)
+        if journalled != f"{call};":
+            return "{ " + journalled + " }"
+    return call
+
+
 def _has_emission_externs(externs: list) -> bool:
     """Issue #2345: does the document declare an `extern emission fn`, which
     record mode journals before its body runs?"""
@@ -8389,7 +8404,11 @@ def _ui_crossing_statement(stmt: dict, v3_ctx: "_V3Ctx", rename, env, lines: lis
     comp = None
     if stmt.get("compensate") is not None:
         pins = _emit_inverse_pins(lines, "", stmt, "compensate", v3_ctx, env, rename)
-        comp = (_expr(stmt["compensate"], v3_ctx, pins, env), _call_label(stmt["compensate"]))
+        # issue #2373: journalled through a service `emission` method, as at
+        # every other compensation site
+        comp = (_journal_service_comp(stmt["compensate"], env,
+                                      _expr(stmt["compensate"], v3_ctx, pins, env)),
+                _call_label(stmt["compensate"]))
     else:
         declared = v3_ctx.declared.get(expr.get("name"))
         if declared is not None:
@@ -8409,16 +8428,8 @@ def _emit_compensation_track(
     this function never silently drops the compensation if that invariant is
     ever violated (matching the honest-degrade spirit of the contract, not a
     reachable path)."""
-    compensate_expr = _expr(compensate, v3_ctx, rename, env)
-    # issue #2345: a compensation through a service `emission` method is
-    # journalled like an `emit`; the lambda then takes a block body
-    desc = _service_emission(compensate, (getattr(env, "component", None) or {})
-                             .get("requires") or {})
-    if desc is not None and _is_emission_method(
-            getattr(env, "services", None) or {}, desc[2], desc[1]):
-        journalled = _journal_service_stmt(compensate, env, compensate_expr)
-        if journalled != f"{compensate_expr};":
-            compensate_expr = "{ " + journalled + " }"
+    compensate_expr = _journal_service_comp(
+        compensate, env, _expr(compensate, v3_ctx, rename, env))
     if frame_expr is None:  # pragma: no cover — _component_needs_frame forces frame_expr
         out.append(f"{pad}fx.track(Disposables.of(() -> {compensate_expr}));")
         return

@@ -6150,7 +6150,10 @@ def _emit_ui_crossing_step(env: "_Env", method: dict, step: dict, index: int, ac
                 step.get("expr"), compensate_node, body_locals, env.v3_ctx())):
             out.append(f"{pad}let {local}_undo = {_ident(local, 'binding')}.clone();")
             undo_rename[local] = f"{local}_undo"
-        call = _expr(compensate_node, env, rename=undo_rename)
+        # issue #2373: a compensation through a service `emission` method is
+        # journalled, as at every other compensation site
+        call = _journal_service_comp(compensate_node, env,
+                                     _expr(compensate_node, env, rename=undo_rename))
         comp = _ui_comp(f"{env.name}.{method.get('name')}.compensate.{index}",
                         compensate_node, call)
     out.append(f"{pad}let _ = {_ui_cross(env.v3_ctx(), step.get('expr'), acquire, comp)};")

@@ -46,8 +46,11 @@ component, step, origin or arguments), then runs the host body, then writes
 service or an instance provision (the Python `_ServiceProxy` path) is
 journalled the same way at its call site, and so is a `compensate` call
 through a service method the service table marks `emission`, when it runs.
-A crossing inside a computer-use (UI) scope registers its compensation
-through that scope and is not journalled this way yet. A
+That holds at every compensation site: the activation body, a provide
+method, and a crossing inside a computer-use (UI) scope, which registers its
+compensation through that scope. A compensation that runs on the abort path
+is journalled too, so a process killed while it runs leaves its start record
+with no settlement, and the crossing reads as unresolved. A
 body that panics or throws writes `emission-failed`, as Python's
 `_call_within` does. Its `error.type` is the exception's class on java,
 `panic` on go, and `panic` or `early-return` (a `?` that left the body) on

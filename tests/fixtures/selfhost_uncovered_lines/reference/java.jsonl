@@ -466,6 +466,8 @@
 
 ["function", "issue-2345-record-mode-emission-journal", "_has_service_emits", 7, 7]
 
+["function", "issue-2345-record-mode-emission-journal", "_journal_service_comp", 1, 1]
+
 ["function", "issue-2345-record-mode-emission-journal", "_journal_service_stmt", 7, 7]
 
 ["function", "issue-2345-record-mode-emission-journal", "_journalled_emission", 12, 12]
@@ -496,7 +498,7 @@
 
 ["function", "ui-transaction-unit-item-522-issue-1369", "_declared_compensate", 7, 7]
 
-["function", "ui-transaction-unit-item-522-issue-1369", "_emit_compensation_track", 3, 3]
+["function", "ui-transaction-unit-item-522-issue-1369", "_emit_compensation_track", 2, 2]
 
 ["function", "ui-transaction-unit-item-522-issue-1369", "_ui_cross", 8, 8]
 

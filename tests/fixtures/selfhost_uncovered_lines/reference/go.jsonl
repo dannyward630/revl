@@ -384,7 +384,7 @@
 
 ["function", "the-three-guards-that-answer-none-for-a", "_v3_host_constructor", 2, 2]
 
-["reason", "ui-transaction-unit-item-522-issue-1369", "The UI transaction unit (item 522 slice 3, issue #1369): `_ui_transaction_facts` and `_calls_any` derive the per-method units from revl.ui_transaction, `_set_ui_facts` keys them by method, `_open_ui_scope` opens a unit method's scope, and `_ui_cross_call`, `_ui_comp_literal`, `_declared_comp` and `_emit_ui_crossing_step` render each computer-use crossing through `revlUiCross`. The same branches raise `_declared_call`, `_emit`, `_emit_method_body`, `_emit_method_witnessed_step`, `_emit_v3_combined` and `_expr`. It is live stc-go component emission, which emit_go.rvl excludes, so no emit_go_corpus document can carry it; the runtime proof is backends/go/scenarios/emitted/ui_transaction/exec_test.go."]
+["reason", "ui-transaction-unit-item-522-issue-1369", "The UI transaction unit (item 522 slice 3, issue #1369): `_ui_transaction_facts` and `_calls_any` derive the per-method units from revl.ui_transaction, `_set_ui_facts` keys them by method, `_open_ui_scope` opens a unit method's scope, and `_ui_cross_call`, `_ui_comp_literal`, `_declared_comp` and `_emit_ui_crossing_step` render each computer-use crossing through `revlUiCross`. The same branches raise `_declared_call`, `_emit`, `_emit_method_body`, `_emit_method_witnessed_step`, `_emit_v3_combined` and `_expr`. It is live stc-go component emission, which emit_go.rvl excludes, so no emit_go_corpus document can carry it; the runtime proof is backends/go/scenarios/emitted/ui_transaction/exec_test.go. Plus, issue #2373: `_ui_comp_literal` journals a compensation through a service `emission` method, a record-mode statement that runs only under `emit(ir, record=True)`, which the oracle never drives; pinned by tests/test_wal_compensation_sites_2373.py."]
 
 ["function", "ui-transaction-unit-item-522-issue-1369", "_calls_any", 7, 7]
 
@@ -396,7 +396,7 @@
 
 ["function", "ui-transaction-unit-item-522-issue-1369", "_set_ui_facts", 2, 2]
 
-["function", "ui-transaction-unit-item-522-issue-1369", "_ui_comp_literal", 4, 4]
+["function", "ui-transaction-unit-item-522-issue-1369", "_ui_comp_literal", 5, 5]
 
 ["function", "ui-transaction-unit-item-522-issue-1369", "_ui_cross_call", 8, 8]
 

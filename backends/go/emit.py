@@ -3384,12 +3384,15 @@ def _ui_method_scope(method):
 
 
 def _ui_comp_literal(comp_node, env) -> str:
-    """The `*revlCompEntry` a computer-use crossing registers, or `nil`."""
+    """The `*revlCompEntry` a computer-use crossing registers, or `nil`. A
+    compensation through a service `emission` method is journalled, as at
+    every other compensation site (issue #2373)."""
     if comp_node is None:
         return "nil"
     key, method = _call_descriptor(comp_node)
+    call = _journal_service_comp(comp_node, _expr(comp_node, env))
     return "&revlCompEntry{key: %s, method: %s, run: func() error { %s; return nil }}" % (
-        _go_string(key), _go_string(method), _expr(comp_node, env))
+        _go_string(key), _go_string(method), call)
 
 
 def _ui_cross_call(node, call: str, env, comp_node) -> str:
