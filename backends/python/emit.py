@@ -4978,6 +4978,18 @@ def _revl_live():
     return _REVL_LIVE
 
 
+def _revl_load_failed(fiber, name, where):
+    # issue #2378: a `fail` the activation reached fails the `load`, as it does
+    # on the other tiers. cordis lands the fiber FAILED with the error recorded;
+    # without this read the load settles quietly and the error surfaces only
+    # when a provided key is called. Only the error a `fail` raises (a plain
+    # RuntimeError, from a component whose activation holds a `fail`) counts: a
+    # host body that raises on purpose still loads quietly (issue #1895).
+    err = getattr(fiber, "_error", None)
+    if type(err) is RuntimeError and name in _REVL_ACTIVATION_FAILS:
+        raise AssertionError("{}: load {}: {}".format(where, name, err)) from err
+
+
 async def _revl_call(root, key, method, args, where):
     impl = root.get(key)
     if impl is None:
@@ -5019,6 +5031,27 @@ def _render_providers(ir: dict) -> str:
     return "{" + ", ".join(
         f"{key!r}: [{', '.join(map(repr, names))}]"
         for key, names in sorted(providers.items())) + "}"
+
+
+def _has_activation_fail(node) -> bool:
+    """True iff a `fail` step sits anywhere in an activation body (the checker
+    allows `fail` nowhere else, A8)."""
+    if isinstance(node, dict):
+        if node.get("step") == "fail":
+            return True
+        return any(_has_activation_fail(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_activation_fail(v) for v in node)
+    return False
+
+
+def _render_activation_fails(ir: dict) -> str:
+    """`_REVL_ACTIVATION_FAILS`: the components whose activation holds a `fail`
+    step, in declaration order (issue #2378)."""
+    names = [_ident(comp["name"], "component name")
+             for comp in ir.get("components") or []
+             if _has_activation_fail(comp.get("body"))]
+    return "[" + ", ".join(map(repr, names)) + "]"
 
 
 def _emit_lifecycle_harness() -> "_Lines":
@@ -5095,6 +5128,7 @@ def _lifecycle_step(out: "_Lines", indent: int, step: dict, where: str) -> None:
                            for name, value in (step.get("config") or {}).items())
         out.add(indent, f"_revl_fibers[{component!r}] = _revl_plug(root, {component}, {{{config}}})")
         out.add(indent, "await _revl_settle()")
+        out.add(indent, f"_revl_load_failed(_revl_fibers[{component!r}], {component!r}, {where!r})")
     elif kind == "unload":
         component = _ident(step["component"], "component name")
         out.add(indent, f"_revl_fiber = _revl_fibers.pop({component!r})")
@@ -6167,6 +6201,8 @@ def emit(ir: dict) -> str:
         # issue #1895: {key: the components that provide it}, so a call that
         # finds no provider can say the provider's activation raised
         out.add(0, f"_REVL_PROVIDERS = {_render_providers(ir)}")
+        # issue #2378: the components whose activation holds a `fail`
+        out.add(0, f"_REVL_ACTIVATION_FAILS = {_render_activation_fails(ir)}")
         out.add(0)
     # issue #540: one traversal answers every `_uses_*` gate below, in place of
     # the dozen-plus full-IR walks that dominated emit. Byte-identical output.

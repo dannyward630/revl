@@ -128,6 +128,21 @@ guarantee is exactly the failure this document exists to prevent.
    "is this reach declared and on the surface?"; item 45 answers "is this reach
    allowed to actually happen?".
 
+   The refusal of a backend import in a user-origin `@py` body is the same
+   kind of guarantee, and it is narrower than it reads. On the python tier a
+   user `@py` body that says `import runtime` (or any other `backends/python`
+   module) is refused at compile time, because the check reads the body's
+   import statements. The import statement is refused, the module object is
+   reachable: the emitted module has already loaded the runtime, so a body can
+   still write `sys.modules["runtime"]` and read or overwrite runtime
+   registers such as `RESOLVED_CONFIG` (the resolved config values, secrets
+   included) and the host-builtin trace. The refusal keeps ambient
+   `backends/python` imports out of reviewed source and sends the author to the
+   stdlib doors (issue #460); it does not keep host code away from runtime
+   state. A reader who needs that has the quarantine tier above, not this
+   check. Tests and docstrings must not say a host body "cannot import the
+   runtime" as if that bounded its reach (issue #2344).
+
 2. **The gate defends the declaration, not the runtime.** Guarantees are
    compile-time verdicts over the *lowered composition*. Where a *runtime* on a
    particular tier diverges from the contract, that is a fenced runtime

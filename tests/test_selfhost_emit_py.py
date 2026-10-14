@@ -231,6 +231,9 @@ CORPUS = [
     #     `idempotent` provider (the `_REVL_IDEMPOTENT` map), a fault test's
     #     config.
     "../emit_py_test_sections.rvl",
+    # issue #2378: a lifecycle `load` of a component whose activation holds a
+    # `fail` (the `_REVL_ACTIVATION_FAILS` table and the load check).
+    "../emit_py_activation_fail.rvl",
     # item 391: the await-seed (item 92), the async-coloured timer (item 170)
     # and destructuring `let` (item 179), each refused by name before:
     #   async_colour.rvl - coloured `async def` fns awaiting each other, an

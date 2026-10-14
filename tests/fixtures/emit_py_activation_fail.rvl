@@ -1,0 +1,19 @@
+// issue #2378: a lifecycle test that loads a component whose activation holds
+// a `fail`. The py driver names such a component in `_REVL_ACTIVATION_FAILS`
+// and checks each `load` against it. Held to byte agreement by
+// tests/test_selfhost_emit_py.py. Beside emit_py_corpus/ for the reason
+// emit_py_test_sections.rvl gives.
+
+service Probe { fn ok() -> Int }
+
+component Refuses provides probe: Probe {
+  config { n: Int = 1 }
+  if (config.n == 1) {
+    fail "activation refused"
+  }
+  provide probe { fn ok() = 1 }
+}
+
+lifecycle test "a failing activation fails the load" {
+  load Refuses
+}

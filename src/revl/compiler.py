@@ -146,7 +146,12 @@ def _py_host_bodies(program: Program) -> list:
 
 
 def _check_user_py_body_imports(program: Program, install_origin: bool) -> None:
-    """Refuse backend imports in inline `@py` bodies from user modules."""
+    """Refuse backend imports in inline `@py` bodies from user modules.
+
+    The guarantee is exactly this: the import STATEMENT is refused. The runtime
+    module object stays reachable through `sys.modules["runtime"]`, so this is
+    not a seal on runtime state (docs/threat-model.md, non-goal 1; issue
+    #2344)."""
     if install_origin:
         return
     bodies = _py_host_bodies(program)

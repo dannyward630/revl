@@ -4437,6 +4437,18 @@ fn lifecycle_harness() -> List[Str] {
     "    return _REVL_LIVE",
     "",
     "",
+    "def _revl_load_failed(fiber, name, where):",
+    "    # issue #2378: a `fail` the activation reached fails the `load`, as it does",
+    "    # on the other tiers. cordis lands the fiber FAILED with the error recorded;",
+    "    # without this read the load settles quietly and the error surfaces only",
+    "    # when a provided key is called. Only the error a `fail` raises (a plain",
+    "    # RuntimeError, from a component whose activation holds a `fail`) counts: a",
+    "    # host body that raises on purpose still loads quietly (issue #1895).",
+    "    err = getattr(fiber, \"_error\", None)",
+    "    if type(err) is RuntimeError and name in _REVL_ACTIVATION_FAILS:",
+    "        raise AssertionError(\"{}: load {}: {}\".format(where, name, err)) from err",
+    "",
+    "",
     "async def _revl_call(root, key, method, args, where):",
     "    impl = root.get(key)",
     "    if impl is None:",
@@ -4539,6 +4551,27 @@ fn providers_map_line(ir: Any) -> Str {
   return `_REVL_PROVIDERS = {${entries.join(", ")}}`
 }
 
+// `_has_activation_fail` (issue #2378): a `fail` step anywhere in an activation
+// body (the checker allows `fail` nowhere else, A8).
+fn has_activation_fail(n: Any) -> Bool {
+  if (value_str(value_field(n, "step")) == "fail") { return true }
+  for (c of value_children(n)) { if (has_activation_fail(c)) { return true } }
+  return false
+}
+
+// `_REVL_ACTIVATION_FAILS`: the components whose activation holds a `fail`
+// step, in declaration order, as the reference's `_render_activation_fails`
+// writes it.
+fn activation_fails_line(ir: Any) -> Str {
+  var names = []
+  for (c of value_list(value_field(ir, "components"))) {
+    if (has_activation_fail(value_field(c, "body"))) {
+      names = names.push(py_repr(mangle(value_str(value_field(c, "name")))))
+    }
+  }
+  return `_REVL_ACTIVATION_FAILS = [${names.join(", ")}]`
+}
+
 // `_lifecycle_step`: one statement of a lifecycle test's async driver.
 fn lifecycle_step(st: Any, indent: Int, where: Str) -> List[Str] {
   let kind = value_str(value_field(st, "step"))
@@ -4548,7 +4581,8 @@ fn lifecycle_step(st: Any, indent: Int, where: Str) -> List[Str] {
     var parts = []
     for (k of value_keys(cfg)) { parts = parts.push(`${py_repr(k)}: ${expr(value_field(cfg, k))}`) }
     return [line(indent, `_revl_fibers[${py_repr(comp)}] = _revl_plug(root, ${comp}, {${parts.join(", ")}})`),
-            line(indent, "await _revl_settle()")]
+            line(indent, "await _revl_settle()"),
+            line(indent, `_revl_load_failed(_revl_fibers[${py_repr(comp)}], ${py_repr(comp)}, ${py_repr(where)})`)]
   }
   if (kind == "unload") {
     let comp = mangle(value_str(value_field(st, "component")))
@@ -4841,6 +4875,7 @@ pub fn emit_py_src(source_ir: Any) -> Str {
   if (has_lifecycle_test(ir)) {
     out = out.push(idempotent_map_line(ir))
     out = out.push(providers_map_line(ir))
+    out = out.push(activation_fails_line(ir))
     out = out.push("")
   }
   if (uses_bounded_int(ir)) { out = out.concat(i64_block()) }
