@@ -131,9 +131,10 @@ path, which is what the resolution needs:
   (`ul_rename_apart`, issue #2374): every identifier of that name outside
   comments, strings, templates and host bodies, provided the document's IR
   holds the name only as a type (not as a case, a record field or another
-  declaration) and the document does not import it by name. It refuses with
-  `REFUSED|LINK|` where a document's own type of a carried name is public or
-  could not be renamed that way, where two modules carry one name, and where
+  declaration), no service or component of the document names it (the
+  reference's `_rewrite_module` never renames there), and the document does
+  not import it by name. It refuses with `REFUSED|LINK|` where a document's
+  own type of a carried name is public or could not be renamed that way, where two modules carry one name, and where
   any type the service's module declares, public or private, has no native
   `types` entry.
   The last covers a transparent alias (`pub type Al = Cell`, or a private

@@ -1664,13 +1664,18 @@ fn ul_rename_word(s: Str, from: Str, to: Str) -> Str {
 // Issue #2374. Whether the private document type `name` can be renamed apart
 // by text: the native IR `own` of the document names it only as a type, never
 // as a declaration, a case or a record field, so each identifier `name` in the
-// text is a reference to that type.
+// text is a reference to that type. The reference's `_rewrite_module` renames
+// it in functions, externs, types, events and test bodies, never in a service
+// or a component, so a name the document's `services` or `components` spell
+// is not renamed either: the link refuses it loudly instead.
 fn ul_renamable(own: Str, name: Str) -> Bool {
   let q = "\"".concat(name).concat("\"")
   return (tc_count(own, q.concat(":")) == 1)
     && (tc_count(own, "\"name\": ".concat(q)) == 0)
     && (tc_count(own, "\"case\": ".concat(q)) == 0)
     && (tc_count(own, "[".concat(q).concat(",")) == 0)
+    && !ul_has(ul_type_idents(ul_key_value(own, "services")), name)
+    && !ul_has(ul_type_idents(ul_key_value(own, "components")), name)
 }
 
 // Issue #2374. The document `source` (lowered to `own`) with each private type
@@ -2502,16 +2507,6 @@ fn ad_module_key(path: Str) -> Str {
   return key == "" ? path : key
 }
 
-// The path-taking driver — the honest multi-file native compile. Identical to
-// `compile_to` except that `path` names the document on disk, so its `use`
-// declarations resolve and the imported service rows are spliced into the IR
-// before the native emitter runs. `path` may be relative; it is resolved against
-// the process working directory, and a `use` target is resolved against the
-// document's own directory first. A path that resolves nothing changes nothing.
-// Issue #2181: the imported externs are spliced in too, and a document the
-// native link cannot reproduce returns "REFUSED|LINK|<message>" (see
-// `ul_link_externs`) rather than different source. Issue #2308: so are the
-// types an imported service carries (`ul_link_types`).
 // Issue #2374. The admission of a document whose own verdict is `verdict`:
 // the names of the carried types its lowering takes as declaration text
 // (`ul_with_carried_text`), and the refusal ("" for none). A G1 refusal of the
@@ -2535,6 +2530,16 @@ fn tc_carried_admission(source: Str, path: Str, verdict: Str) -> TcCarriedAdmiss
   return { names: none, refusal: tc_import_first(source, path, verdict) }
 }
 
+// The path-taking driver — the honest multi-file native compile. Identical to
+// `compile_to` except that `path` names the document on disk, so its `use`
+// declarations resolve and the imported service rows are spliced into the IR
+// before the native emitter runs. `path` may be relative; it is resolved against
+// the process working directory, and a `use` target is resolved against the
+// document's own directory first. A path that resolves nothing changes nothing.
+// Issue #2181: the imported externs are spliced in too, and a document the
+// native link cannot reproduce returns "REFUSED|LINK|<message>" (see
+// `ul_link_externs`) rather than different source. Issue #2308: so are the
+// types an imported service carries (`ul_link_types`).
 pub fn compile_to_at(source: Str, tier: Str, path: Str) -> Str {
   if (!supported_tier(tier)) { return "UNKNOWN_TIER|".concat(tier) }
   let verdict = admit_src(source)
@@ -2925,6 +2930,8 @@ test "an imported service carries the public types it names (issue #2308)" {
   assert ul_renamable("{\"types\": {\"In\": {}}, \"f\": {\"type\": \"In\"}}", "In")
   assert !ul_renamable("{\"types\": {\"In\": {\"cases\": [{\"name\": \"In\"}]}}}", "In")
   assert !ul_renamable("{\"services\": {\"In\": {}}, \"types\": {\"In\": {}}}", "In")
+  assert !ul_renamable("{\"services\": {\"O\": {\"returns\": \"List[In]\"}}, \"types\": {\"In\": {}}}", "In")
+  assert !ul_renamable("{\"components\": [{\"type\": \"In\"}], \"types\": {\"In\": {}}}", "In")
 }
 
 test "an admitted component program compiles fully-native, both tiers (item 262)" {

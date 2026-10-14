@@ -1856,7 +1856,9 @@ def test_native_driver_decides_the_call_site_rules_through_an_import(
 # where the reference admits. Each case is (the module, the document's own
 # declarations, the provide method after `fn go()`, the outcome): "emit" is the
 # reference's bytes on every tier, "refuse" a native refusal where the
-# reference refuses too (the negative controls: no new silent admit).
+# reference refuses too (the negative controls: no new silent admit), "link" a
+# loud `REFUSED|LINK|` where the reference admits but the native link cannot
+# reproduce its bytes.
 _CARRIED_LIB = (
     "pub type In = { a: Int }\n"
     "pub type Row = { i: In }\n"
@@ -1889,6 +1891,12 @@ _CARRIED_THROUGH_IMPORT = {
         "type In = { z: Str }\n\n", "= store.draw(Box(mk_n()))", "emit"),
     "own_public_type": ("pub type In = { z: Str }\n\n", "= store.put({ i: { a: 1 } })",
                         "refuse"),
+    # The reference renames a private type in functions, types and test bodies,
+    # never in a service or a component, so the document's `Other.get` keeps
+    # `In` there. The native link does not rename such a type: it refuses.
+    "own_type_in_service_signature": (
+        "type In = { z: Str }\n\nservice Other { fn get() -> In }\n\n",
+        "= store.put({ i: { a: 1 } })", "link"),
     "own_type_wrong_literal": ("type In = { z: Str }\n\n",
                                '= store.put({ i: { z: "x" } })', "refuse"),
 }
@@ -1913,7 +1921,7 @@ _CARRIED_TIERS = {"case_in_let": ("py", "ts", "rust")}
 def _carried_cases():
     return [(case, tier) for case, (_o, _b, expect) in sorted(_CARRIED_THROUGH_IMPORT.items())
             for tier in _CARRIED_TIERS.get(
-                case, ("py", "ts", "go", "java", "rust") if expect == "emit" else ("py",))]
+                case, ("py", "ts", "go", "java", "rust") if expect != "refuse" else ("py",))]
 
 
 @pytest.mark.parametrize("case, tier", _carried_cases())
@@ -1927,6 +1935,10 @@ def test_native_driver_admits_types_carried_through_an_import(
     got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
     if _CARRIED_THROUGH_IMPORT[case][2] == "emit":
         assert got == reference_emit[tier](compile_files([str(doc)])), got[:200]
+        return
+    if _CARRIED_THROUGH_IMPORT[case][2] == "link":
+        compile_files([str(doc)])
+        assert got.startswith("REFUSED|LINK|"), got[:200]
         return
     with pytest.raises(RevlError):
         compile_files([str(doc)])
