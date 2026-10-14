@@ -1131,8 +1131,13 @@ def _remember_live_host_bodies() -> None:
                          if ir and AUTHORING.host_code else [])
 
 
-def _tool_load(arguments: dict) -> dict:
+def _tool_load(arguments: dict, compiled=None) -> dict:
     """Boot a composition in memory (nothing is written to disk).
+
+    `compiled` (issue #2407) is a compile the caller already ran on exactly
+    these arguments: `(ir, report, held)`, or the `RevlError` it raised, where
+    `held` is the `files_content` read just before that compile. The load then
+    uses it instead of reading and compiling the carried set a second time.
 
     Issue #1444: a load that does not succeed changes nothing, here or in the
     session. So this compiles without `_compile`'s side effect and records the
@@ -1164,15 +1169,23 @@ def _tool_load(arguments: dict) -> dict:
     arguments = sent
     source, files, modules = _candidate_of(sent)
     compile_report: dict = {}
+    held = None
     try:
-        ir = compile_under_authoring(source, files, modules=modules,
-                                     report=compile_report)
+        if isinstance(compiled, RevlError):
+            raise compiled
+        if compiled is not None:
+            ir, compile_report, held = compiled
+        else:
+            ir = compile_under_authoring(source, files, modules=modules,
+                                         report=compile_report)
     except RevlError as error:
         return report(error)
     # issue #1779: the files this compile reached through `use` ride the origin
     # as READ-ONLY buffers, so a record anchored to one is served and measured
     # against the bytes that compiled
     origin = _origin(arguments, _dependency_buffers(compile_report))
+    if held is not None:
+        origin["files_content"] = held   # the text read before the shared compile
     if not SESSION.loaded and _draft.has_holes(ir):
         # issue #1727: a holed candidate opens a draft rather than failing.
         # Nothing boots, so nothing a lease fences happens yet: the lease is
@@ -1661,7 +1674,8 @@ def _held_edit_next(arguments: dict) -> dict:
                         "`edits` — the patch operations to apply to the held draft")
 
 
-def _tool_edit(arguments: dict, verify=None, caller: str = "revl_edit") -> dict:
+def _tool_edit(arguments: dict, verify=None, caller: str = "revl_edit",
+               compiled=None) -> dict:
     """Patch the server-side source of the running composition and re-admit —
     deltas, not documents (roadmap item 50, docs/mcp-bridge.md).
 
@@ -1683,7 +1697,10 @@ def _tool_edit(arguments: dict, verify=None, caller: str = "revl_edit") -> dict:
     for — and the refusal names the verb the caller actually used and carries
     the mechanical remedy. `caller` is that verb: `revl_change` reaches here
     through its own intent-shaped call, so a message that said `revl_edit`
-    named a tool the caller had not called."""
+    named a tool the caller had not called.
+
+    `compiled` is `_tool_load`'s: a compile of the carried set the caller already
+    ran (issue #2407), so the plan and the load read it once."""
     carried = any(arguments.get(k) is not None for k in ("source", "files"))
     if carried and _held_draft() is not None:
         return _session_error(
@@ -1720,7 +1737,8 @@ def _tool_edit(arguments: dict, verify=None, caller: str = "revl_edit") -> dict:
         if decision.gated and not decision.allowed:
             return {**_refused_by_operator(decision), "loaded": False,
                     "edited": False, "swapped": False}
-        loaded = _tool_load(load_arguments)
+        loaded = (_tool_load(load_arguments) if compiled is None
+                  else _tool_load(load_arguments, compiled))
         if not loaded.get("ok"):
             return {**loaded, "loaded": False, "edited": False, "swapped": False}
         if loaded.get("draft"):
@@ -1760,10 +1778,10 @@ def _tool_change(arguments: dict) -> dict:
             arguments = {**arguments, "add": {
                 "source": _change.component_source(vs, spec),
                 **({"target": spec["target"]} if spec.get("target") else {})}}
-        plan = cold = None
+        plan = cold = compiled = None
         if intent == "withdraw":
             component, _ = _change._withdraw_spec(arguments["withdraw"])
-            ir, cold = _withdraw_ir(arguments)
+            ir, cold, compiled = _withdraw_ir(arguments)
             plan = _change.cascade_of(ir, component)
         edit_arguments = {**_change.edit_arguments(intent, arguments, plan),
                           "commit": commit}
@@ -1779,7 +1797,7 @@ def _tool_change(arguments: dict) -> dict:
                if intent == "withdraw" else None)
     result = _proposal.annotate(
         SESSION, refused or _tool_edit(edit_arguments, verify=verifier,
-                                       caller="revl_change"),
+                                       caller="revl_change", compiled=compiled),
         speculative=not commit)
     return _change.shape(intent, result, plan,
                          _change.withdrawn_names(edit_arguments), verifier)
@@ -1834,27 +1852,37 @@ def _tool_knowledge(arguments: dict) -> dict:
         return _session_error(str(error))
 
 
-def _withdraw_ir(arguments: dict) -> tuple[dict | None, bool]:
-    """The IR a withdrawal is planned against, and whether it is the carried
-    composition of a cold call (issue #2225). What runs, or a held draft, when
+def _withdraw_ir(arguments: dict) -> tuple[dict | None, bool, object]:
+    """The IR a withdrawal is planned against, whether it is the carried
+    composition of a cold call (issue #2225), and that compile for the load to
+    reuse (issue #2407). What runs, or a held draft, when
     there is one; otherwise the `source`/`files`/`modules` the call carries,
     compiled the way its load will compile them. The load itself runs later,
     inside `_tool_edit`, so planning against the session alone planned against
     nothing: `cascade: true` was dropped and nothing stranded was refused.
-    A carried set that does not compile plans nothing; the load reports why."""
+    A carried set that does not compile plans nothing; the compile's error is
+    handed on and the load reports it. The carried set is compiled once: the
+    third value is `(ir, report, held)`, or the `RevlError`, for `_tool_load`
+    (`held` is the files' text read just before the compile, which the load
+    records as its origin), so the plan and the load cannot read two different
+    versions of a changing file."""
     from . import change as _change  # noqa: PLC0415
 
     if SESSION.loaded or _draft.pending(SESSION) is not None:
-        return _change.running_ir(SESSION), False
+        return _change.running_ir(SESSION), False, None
     source, files, _ = _candidate_of(arguments)
     if source is None and not files:
-        return None, False
+        return None, False, None
     sent, _, _ = _canonical.prepare(arguments)
     source, files, modules = _candidate_of(sent)
+    compile_report: dict = {}
+    held = _origin(sent).get("files_content")   # read just before the compile
     try:
-        return compile_under_authoring(source, files, modules=modules), True
-    except RevlError:
-        return None, True
+        ir = compile_under_authoring(source, files, modules=modules,
+                                     report=compile_report)
+    except RevlError as error:
+        return None, True, error
+    return ir, True, (ir, compile_report, held)
 
 
 def _change_working_set() -> dict:

@@ -88,14 +88,46 @@ def clean_session(tmp_path, monkeypatch):
     server_mod.AUTHORING = old
 
 
-def _carried(kind: str, tmp_path: Path) -> dict:
+def _carried(kind: str, tmp_path: Path, edit=lambda text: text) -> dict:
+    """The composition a cold call carries; `edit` rewrites its source text."""
     if kind == "files":
         path = tmp_path / "app.rvl"
-        path.write_text(SOURCE)
+        path.write_text(edit(SOURCE))
         return {"files": [str(path)]}
     if kind == "source":
-        return {"source": SOURCE}
-    return {"source": MODULE_SOURCE, "modules": MODULES}
+        return {"source": edit(SOURCE)}
+    return {"source": edit(MODULE_SOURCE), "modules": MODULES}
+
+
+def _broken(text: str) -> str:
+    """A compile error: a provide block under a key the component never declares."""
+    return text.replace("provide store {", "provide stor {")
+
+
+def _holed(text: str) -> str:
+    """A carried set with one open typed hole (issue #1727: it opens a draft)."""
+    return text.replace("fn read() = store.get()", "fn read() = hole[Str]")
+
+
+def _drafted() -> bool:
+    return server_mod._draft.pending(server_mod.SESSION) is not None
+
+
+@pytest.fixture
+def compiles(monkeypatch):
+    """The compiles of the CARRIED set the server's door runs: the ones that
+    name no manifest. (`revl_edit`'s admission recompiles the patched working
+    set and always passes one; that is a different text.)"""
+    seen: list[tuple] = []
+    real = server_mod.compile_under_authoring
+
+    def counting(source, files, *args, **kwargs):
+        if "manifest" not in kwargs and not args:
+            seen.append((source, tuple(files or ())))
+        return real(source, files, *args, **kwargs)
+
+    monkeypatch.setattr(server_mod, "compile_under_authoring", counting)
+    return seen
 
 
 def _cascade(result: dict) -> list[str]:
@@ -187,3 +219,116 @@ def test_the_warm_stranding_withdrawal_is_still_refused(clean_session):
     assert result["ok"] is False and _cascade(result) == ["ApiImpl"]
     assert "nothing was loaded" not in result["note"]
     assert _components() == ALL
+
+
+# ------------------------------------------------ issue #2407: refusal wording
+
+
+@pytest.mark.parametrize("kind", CARRIERS)
+def test_a_cold_refusal_does_not_claim_a_running_composition(kind, clean_session):
+    """Nothing is loaded after a cold refusal, so there is no running
+    composition for the note to call unchanged."""
+    cold = _call("revl_change", {"withdraw": "MemStore", **_carried(kind, clean_session)})
+    assert cold["ok"] is False and cold["loaded"] is False
+    assert server_mod.SESSION.loaded is False
+    assert "running composition" not in cold["note"], cold["note"]
+    assert "still cold" in cold["note"]
+
+
+@pytest.mark.parametrize("kind", CARRIERS)
+def test_a_cold_compile_error_is_named_and_leaves_the_session_cold(kind, clean_session):
+    carried = _carried(kind, clean_session, _broken)
+    result = _call("revl_change", {"withdraw": "FixedClock", **carried})
+    assert result["ok"] is False and result["committed"] is False, result
+    assert result["loaded"] is False and server_mod.SESSION.loaded is False
+    assert not _drafted()
+    assert "`stor` is not declared" in result["diagnostics"][0]["message"], result
+    assert "running composition" not in result["note"], result["note"]
+
+
+def test_the_warm_refusal_still_says_the_running_composition_is_unchanged(clean_session):
+    """The suffix is true when something runs: it stays there."""
+    assert _call("revl_load", {"source": SOURCE})["ok"] is True
+    result = _call("revl_change", {"withdraw": "MemStore"})
+    assert result["ok"] is False
+    assert result["note"].endswith("the running composition is unchanged"), result["note"]
+
+
+# ------------------------------------------------ issue #2407: holes, drafts
+
+
+@pytest.mark.parametrize("kind", CARRIERS)
+def test_a_holed_carried_set_with_a_stranding_withdrawal_is_refused(kind, clean_session):
+    """The plan is made from the carried set even when it has holes: the
+    stranding withdrawal is refused up front and no draft is opened."""
+    carried = _carried(kind, clean_session, _holed)
+    result = _call("revl_change", {"withdraw": "MemStore", **carried})
+    assert result["ok"] is False and result["committed"] is False, result
+    assert _cascade(result) == ["ApiImpl"]
+    assert "cascade: true" in result["hint"]
+    assert result["loaded"] is False and server_mod.SESSION.loaded is False
+    assert not _drafted()
+
+
+@pytest.mark.parametrize("kind", CARRIERS)
+def test_a_holed_carried_set_with_a_leaf_withdrawal_opens_the_draft(kind, clean_session):
+    carried = _carried(kind, clean_session, _holed)
+    result = _call("revl_change", {"withdraw": "FixedClock", **carried})
+    assert result["ok"] is True and result["committed"] is False, result
+    assert result["draft"] is True and _drafted()
+    assert server_mod.SESSION.loaded is False
+
+
+def test_a_held_draft_plans_the_withdrawal_against_the_draft(clean_session):
+    """With a draft held, a call carrying nothing plans against the draft:
+    unchanged by the cold fix."""
+    assert _call("revl_load", {"source": _holed(SOURCE)})["draft"] is True
+    refused = _call("revl_change", {"withdraw": "MemStore"})
+    assert refused["ok"] is False and _cascade(refused) == ["ApiImpl"], refused
+    assert "cascade: true" in refused["hint"]
+    assert _drafted() and server_mod.SESSION.loaded is False
+    leaf = _call("revl_change", {"withdraw": "FixedClock"})
+    assert leaf["ok"] is True and leaf["draft"] is True, leaf
+    assert _drafted()
+
+
+# ------------------------------------------------ issue #2407: one compile
+
+
+@pytest.mark.parametrize("kind", CARRIERS)
+def test_a_cold_withdrawal_compiles_the_carried_set_once(kind, clean_session, compiles):
+    """The plan and the load share one compile: a file that changed between two
+    reads could otherwise plan one composition and boot another."""
+    result = _call("revl_change", {"withdraw": {"component": "MemStore", "cascade": True},
+                                   "commit": True, **_carried(kind, clean_session)})
+    assert result["ok"] is True and result["committed"] is True, result
+    assert len(compiles) == 1, compiles
+    assert _components() == {"FixedClock"}
+
+
+@pytest.mark.parametrize("kind", CARRIERS)
+def test_a_cold_withdrawal_that_does_not_compile_compiles_once(kind, clean_session, compiles):
+    result = _call("revl_change", {"withdraw": "FixedClock",
+                                   **_carried(kind, clean_session, _broken)})
+    assert result["ok"] is False and "`stor` is not declared" in \
+        result["diagnostics"][0]["message"]
+    assert len(compiles) == 1, compiles
+
+
+def test_a_file_changed_after_the_plan_is_not_read_again(clean_session, monkeypatch):
+    """The booted composition is the one that was planned, even if the file is
+    rewritten between the plan and the load."""
+    path = clean_session / "app.rvl"
+    path.write_text(SOURCE)
+    real = server_mod.compile_under_authoring
+
+    def then_rewrite(source, files, *args, **kwargs):
+        ir = real(source, files, *args, **kwargs)
+        path.write_text(SERVICES + COMPONENTS.replace("FixedClock", "OtherClock"))
+        return ir
+
+    monkeypatch.setattr(server_mod, "compile_under_authoring", then_rewrite)
+    result = _call("revl_change", {"withdraw": {"component": "MemStore", "cascade": True},
+                                   "commit": True, "files": [str(path)]})
+    assert result["ok"] is True and result["committed"] is True, result
+    assert _components() == {"FixedClock"}

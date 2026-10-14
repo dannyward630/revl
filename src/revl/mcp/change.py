@@ -220,9 +220,17 @@ def shape(intent: str, result: dict, plan: dict | None, withdrawn: list[str],
             else result.get("note")
     elif not committed:
         out["note"] = (result.get("note") or "the change was not committed") \
-            + "; the running composition is unchanged" \
-            + _held_unchanged(result)
+            + _unchanged_suffix(result)
     return out
+
+
+def _unchanged_suffix(result: dict) -> str:
+    """Issue #2407: "the running composition is unchanged" is true only when
+    something runs. A cold call that was refused or failed to load answers
+    `loaded: false`, and nothing was running to leave unchanged."""
+    if result.get("loaded") is False:
+        return ""
+    return "; the running composition is unchanged" + _held_unchanged(result)
 
 
 def _held_unchanged(result: dict) -> str:
