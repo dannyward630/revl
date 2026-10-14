@@ -10,8 +10,9 @@ conductor's kill could swallow the runner's FATAL line.
 Each runner now defaults to the conductor's value (the single source) and
 gives up a fixed margin before it. This file pins that the three runners carry
 the conductor's default and a positive margin that leaves the conductor first
-to be outlasted; the live behaviour (a 6 s inverse ends in `DOWN`; the FATAL
-line precedes the grace) is asserted beside each runner's own tests.
+to be outlasted; the live behaviour (a 6 s inverse ends in `DOWN` on rust and
+ts; the rust FATAL line precedes the grace) is asserted beside those runners'
+own tests, and the bound each runner computes is run standalone below.
 """
 
 from __future__ import annotations

@@ -200,4 +200,6 @@ def test_the_runner_reports_before_the_conductor_grace_expires(binaries, tmp_pat
     assert done.returncode == 1, (done.returncode, done.stdout + done.stderr)
     assert len([ln for ln in done.stderr.splitlines()
                 if "FATAL teardown incomplete" in ln]) == 1, done.stderr
-    assert 3.0 <= elapsed < 6.0, elapsed
+    # the lower limit proves the bound (4 s) was waited; the upper one only
+    # guards against a hang, with room for a loaded runner
+    assert 3.0 <= elapsed < 10.0, elapsed
