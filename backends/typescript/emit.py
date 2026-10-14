@@ -4670,11 +4670,22 @@ _REVL_EQ_HELPER = """function revlEq(a: unknown, b: unknown): boolean {
 # loop body can read up to eight long strings round-robin and every read after
 # the first hits; a loop that cycles through more than eight distinct long
 # strings misses on every read, which is the pre-memo cost and no worse.
-# `===` on strings checks the pointer first, so the hot case, the same string
-# handed back every iteration, is one compare at slot 0. Two distinct strings
-# with equal contents still compare by content on a lookup; that is the one
-# cost left here. The key is sound because strings are values: equal contents
-# mean equal code points. The cache retains at most eight strings and their
+# A slot is keyed by the string's contents, because strings are values: equal
+# contents mean equal code points. `===` on strings checks the pointer first,
+# so the hot case, the same string handed back every iteration, is cheap. But
+# `===` on two DISTINCT strings of the same length compares them from the
+# start until they differ, so a lookup of one of two near-equal long strings
+# (a long common prefix, then a difference: the `common_prefix` shape) against
+# a slot holding the other cost O(prefix), and a scan reading both was
+# quadratic again (#2321). A JS string has no identity to key on and V8 hashes
+# only a bounded prefix of a long one, so the lookup first compares a cheap
+# fingerprint of the string (its length and three code units, first, middle
+# and last) held beside each slot, and runs the content `===` only for a slot
+# whose fingerprint matches. The fingerprint can only reject: a hit still needs
+# `===`, so the semantics are exactly those of the content key. What is left is
+# the rare pair that agrees on length and on all three sampled units yet
+# differs elsewhere, and equal-content strings that are distinct objects: both
+# still compare by content on a lookup, the cost this helper had before. The cache retains at most eight strings and their
 # arrays for the module's lifetime, and an array is never handed to a mutating
 # caller (`slice` copies). `revlIndexOf` deliberately stays on its own
 # `Array.from`: its argument is a fresh substring per call.
@@ -4687,6 +4698,7 @@ _REVL_EQ_HELPER = """function revlEq(a: unknown, b: unknown): boolean {
 _REVL_STR_HELPER = """const revlCpsN = 8
 const revlCpsK: (string | undefined)[] = new Array<string | undefined>(revlCpsN).fill(undefined)
 const revlCpsV: (string | string[])[] = new Array<string | string[]>(revlCpsN).fill("")
+const revlCpsF: number[] = new Array<number>(revlCpsN).fill(0)
 function revlCpsDecode(s: string): string | string[] {
   for (let i = 0; i < s.length; i++) {
     const u = s.charCodeAt(i)
@@ -4694,14 +4706,19 @@ function revlCpsDecode(s: string): string | string[] {
   }
   return s
 }
+function revlCpsFp(s: string): number {
+  const m = s.length - 1
+  return (((Math.imul(s.length, 31) + s.charCodeAt(0)) * 31 + s.charCodeAt(m >> 1)) * 31 + s.charCodeAt(m)) | 0
+}
 function revlCps(s: string): string | string[] {
   if (s.length < 64) return revlCpsDecode(s)
+  const f = revlCpsFp(s)
   let k = 0
-  while (k < revlCpsN && revlCpsK[k] !== s) k++
+  while (k < revlCpsN && (revlCpsF[k] !== f || revlCpsK[k] !== s)) k++
   const v = k < revlCpsN ? revlCpsV[k] : revlCpsDecode(s)
   if (k === revlCpsN) k--
-  for (; k > 0; k--) { revlCpsK[k] = revlCpsK[k - 1]; revlCpsV[k] = revlCpsV[k - 1] }
-  revlCpsK[0] = s; revlCpsV[0] = v
+  for (; k > 0; k--) { revlCpsK[k] = revlCpsK[k - 1]; revlCpsV[k] = revlCpsV[k - 1]; revlCpsF[k] = revlCpsF[k - 1] }
+  revlCpsK[0] = s; revlCpsV[0] = v; revlCpsF[0] = f
   return v
 }
 function revlLen(x: string | ArrayLike<unknown>): bigint {

@@ -132,6 +132,85 @@ describe('435(c): the Str helpers share one memoised code-point decode', () => {
   })
 })
 
+describe('#2321: the lookup does not compare near-equal long strings by content', () => {
+  /** Index of the first code point at which `a` and `b` differ. */
+  function firstDifference(a: string, b: string): number {
+    const x = Array.from(a)
+    const y = Array.from(b)
+    let i = 0
+    while (i < x.length && x[i] === y[i]) i++
+    return i
+  }
+
+  it('checks a per-slot fingerprint before the content compare', () => {
+    // Structural: `===` on two distinct same-length strings runs from the start
+    // until they differ, so reaching it for a slot that holds the OTHER
+    // near-equal string costs O(common prefix) per lookup. The slot test must
+    // reject on the fingerprint first and compare contents only on a match.
+    const emitted = readFileSync(join(backend, 'tests', 'generated', 'str_scan.ts'), 'utf-8')
+    const start = emitted.indexOf('function revlCps(')
+    const end = emitted.indexOf('function revlLen')
+    expect(start, 'revlCps is missing from the emitted Str helper').toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    const lookup = emitted.slice(start, end)
+    const fingerprint = lookup.indexOf('revlCpsF[k] !== f')
+    const content = lookup.indexOf('revlCpsK[k] !== s')
+    expect(fingerprint, 'slot test has no fingerprint check').toBeGreaterThan(-1)
+    expect(content, 'slot test has no content check').toBeGreaterThan(fingerprint)
+    // and the fingerprint must be a bounded read, not a walk of the string
+    const fp = emitted.slice(emitted.indexOf('function revlCpsFp('), start)
+    expect(fp).not.toMatch(/\b(for|while)\b/)
+  })
+
+  it('never aliases two strings that share length and every sampled unit', () => {
+    // The fingerprint samples the first, middle and last code unit and the
+    // length. These pairs agree on all four and differ one code point in: a
+    // fingerprint that decided hits would hand `b` the view of `a`.
+    const base = astral(400, 'alias')
+    const units = base.length
+    const mid = (units - 1) >> 1
+    for (const at of [3, 40, 101]) {
+      expect(at).not.toBe(0)
+      expect(at).not.toBe(mid)
+      expect(at).not.toBe(units - 1)
+      const a = base.slice(0, at) + 'x' + base.slice(at + 1)
+      const b = base.slice(0, at) + 'y' + base.slice(at + 1)
+      expect(a.length).toBe(b.length)
+      expect(a.length).toBe(units)
+      const k = firstDifference(a, b)
+      // alternate reads, as the pairwise scan does: each answer is its own
+      for (let round = 0; round < 3; round++) {
+        expect(char_at(a, BigInt(k))).toBe('x')
+        expect(char_at(b, BigInt(k))).toBe('y')
+        expect(len_of(a)).toBe(BigInt(Array.from(a).length))
+      }
+      expect(common_prefix(a, b)).toBe(BigInt(k))
+      expect(common_prefix(b, a)).toBe(BigInt(k))
+    }
+  })
+
+  it('decodes a colliding pair once each', () => {
+    const base = astral(400, 'collide')
+    const a = base.slice(0, 7) + 'x' + base.slice(8)
+    const b = base.slice(0, 7) + 'y' + base.slice(8)
+    const expected = Array.from(a).length + Array.from(b).length
+    expect(codePointsMaterialised(() => { common_prefix(a, b) })).toBe(expected)
+  })
+
+  it('evicts the least recently used string, as before', () => {
+    const ss = Array.from({ length: 9 }, (_, i) => astral(300, `lru${i}`))
+    const decoded = (s: string) => codePointsMaterialised(() => { len_of(s) })
+    const n = Array.from(ss[0]).length
+    for (let i = 0; i < 8; i++) expect(decoded(ss[i]), `fill ${i}`).toBe(n)
+    // all eight resident: nothing decodes
+    for (let i = 0; i < 8; i++) expect(decoded(ss[i]), `hit ${i}`).toBe(0)
+    // the ninth evicts the oldest touched, ss[0]
+    expect(decoded(ss[8])).toBe(n)
+    for (let i = 1; i < 9; i++) expect(decoded(ss[i]), `still resident ${i}`).toBe(0)
+    expect(decoded(ss[0]), 'evicted').toBe(n)
+  })
+})
+
 describe('#2313: a scan stays linear whatever else the loop body reads', () => {
   it('a BMP-only string is its own view and materialises no array', () => {
     const s = ascii(1600, 'flat')

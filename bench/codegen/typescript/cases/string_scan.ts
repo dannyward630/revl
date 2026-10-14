@@ -13,9 +13,12 @@
 // which is exactly the point: the helper fix alone makes that call O(1).
 //
 // Two hand variants so the two costs stay separated:
-//   handMemo   - helper-level only: a memoised code-point array, loop shape
-//                untouched. This is the shape the emitter now produces, kept
-//                as an independent implementation to compare against.
+//   handMemo   - helper-level only: a one-slot memoised code-point array
+//                (always `Array.from`), loop shape untouched. The emitter's
+//                helper is richer: an 8-slot cache, and a string with no
+//                surrogate unit is its own view, so it materialises nothing.
+//                Kept as an independent, simpler implementation to compare
+//                against.
 //   hand       - what a competent developer actually writes: decode once,
 //                index an array, hoist the length.
 
@@ -95,8 +98,10 @@ export function handChecksum(s: string): bigint {
 export const name = 'string-scan-helpers'
 export const summary =
   'revlLen/revlCharAt/revlCharCodeAt/revlSlice share one memoised code-point ' +
-  'decode (item 435(c)), so an index scan materialises n code points, not ' +
-  '2n^2 + n, even though the while lowering still calls revlLen per iteration'
+  'decode (item 435(c)), so an index scan decodes its string once (and a ' +
+  'string with no surrogate unit, like the ASCII input here, materialises no ' +
+  'array at all) instead of 2n + 1 times, even though the while lowering ' +
+  'still calls revlLen per iteration'
 
 export const provenance = [
   // the single decode site: every helper goes through it

@@ -39,6 +39,7 @@ function revlI64(v: bigint): bigint {
 const revlCpsN = 8
 const revlCpsK: (string | undefined)[] = new Array<string | undefined>(revlCpsN).fill(undefined)
 const revlCpsV: (string | string[])[] = new Array<string | string[]>(revlCpsN).fill("")
+const revlCpsF: number[] = new Array<number>(revlCpsN).fill(0)
 function revlCpsDecode(s: string): string | string[] {
   for (let i = 0; i < s.length; i++) {
     const u = s.charCodeAt(i)
@@ -46,14 +47,19 @@ function revlCpsDecode(s: string): string | string[] {
   }
   return s
 }
+function revlCpsFp(s: string): number {
+  const m = s.length - 1
+  return (((Math.imul(s.length, 31) + s.charCodeAt(0)) * 31 + s.charCodeAt(m >> 1)) * 31 + s.charCodeAt(m)) | 0
+}
 function revlCps(s: string): string | string[] {
   if (s.length < 64) return revlCpsDecode(s)
+  const f = revlCpsFp(s)
   let k = 0
-  while (k < revlCpsN && revlCpsK[k] !== s) k++
+  while (k < revlCpsN && (revlCpsF[k] !== f || revlCpsK[k] !== s)) k++
   const v = k < revlCpsN ? revlCpsV[k] : revlCpsDecode(s)
   if (k === revlCpsN) k--
-  for (; k > 0; k--) { revlCpsK[k] = revlCpsK[k - 1]; revlCpsV[k] = revlCpsV[k - 1] }
-  revlCpsK[0] = s; revlCpsV[0] = v
+  for (; k > 0; k--) { revlCpsK[k] = revlCpsK[k - 1]; revlCpsV[k] = revlCpsV[k - 1]; revlCpsF[k] = revlCpsF[k - 1] }
+  revlCpsK[0] = s; revlCpsV[0] = v; revlCpsF[0] = f
   return v
 }
 function revlLen(x: string | ArrayLike<unknown>): bigint {
