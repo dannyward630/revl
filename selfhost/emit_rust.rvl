@@ -615,7 +615,7 @@ fn build_type_tables(types: Any) -> TypeTables {
 fn record_type_for_fields(ctx: Ctx, names: List[Str]) -> Str {
   let name = map_get(ctx.rbf, sorted_key(names))
   if (!resolved(name)) { return `<<UNSUPPORTED-record>>` }
-  return mangle(name)
+  return type_ident(name)
 }
 
 // -------------------------------------------------------------------- types
@@ -684,7 +684,7 @@ fn rust_type_t(tv: Any, tnames: Map[Str, Str]) -> Str {
   if (is_fn_type(name)) { return "<<UNSUPPORTED-fn-type>>" }
   let tm = type_map(name)
   if (tm != "") { return tm }
-  if (tnames.has(name)) { return mangle(name) }
+  if (tnames.has(name)) { return type_ident(name) }
   if (name.endsWith("]")) {
     let lb = name.indexOf("[")
     if (lb > 0) {
@@ -1527,8 +1527,8 @@ fn call_arg(callee: Str, index: Int, node: Any, rendered: Str, ctx: Ctx) -> Str 
 fn constructor(ctx: Ctx, name: Str, args: List[Str]) -> Str {
   let adt = map_get(ctx.ca, name)
   if (resolved(adt)) {
-    if (map_get(ctx.cp, name) == "n") { return `${adt}::${name}` }
-    return `${adt}::${name}(${args[0]})`
+    if (map_get(ctx.cp, name) == "n") { return `${type_ident(adt)}::${name}` }
+    return `${type_ident(adt)}::${name}(${args[0]})`
   }
   if (name == "None") { return "None" }
   if (name == "Some" || name == "Ok" || name == "Err") {
@@ -1546,7 +1546,7 @@ fn match_pattern(ctx: Ctx, arm: Any) -> Str {
   let bind = value_str(value_field(arm, "bind"))
   let adt = map_get(ctx.ca, pattern)
   var prefix = ""
-  if (resolved(adt)) { prefix = `${adt}::${pattern}` }
+  if (resolved(adt)) { prefix = `${type_ident(adt)}::${pattern}` }
   else {
     if (is_builtin_ctor(pattern)) { prefix = pattern }
     else { return `<<UNSUPPORTED-match:${pattern}>>` }
@@ -1559,7 +1559,7 @@ fn render_var(node: Any, ctx: Ctx) -> Str {
   let name = value_str(value_field(node, "name"))
   let mangled = mangle(name)
   let adt = map_get(ctx.ca, name)
-  if (resolved(adt)) { return `${adt}::${mangled}` }
+  if (resolved(adt)) { return `${type_ident(adt)}::${mangled}` }
   if (is_builtin_ctor(name)) { return name }
   return mangled
 }
@@ -2404,7 +2404,7 @@ fn emit_v3_types(types: Any, tnames: Map[Str, Str]) -> List[Str] {
   for (name of value_keys(types)) {
     let spec = value_field(types, name)
     let kind = value_str(value_field(spec, "kind"))
-    let nm = mangle(name)
+    let nm = type_ident(name)
     if (kind == "record") {
       out = out.push("#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]")
       out = out.push(`pub struct ${nm} {`)
@@ -4870,7 +4870,14 @@ fn type_reserved() -> List[Str] {
 // injective `_` ladder as `mangle`, over the type-reserved names too: a
 // service named `Box` becomes `Box_`, so `Box<dyn Box_>` still names
 // `std::boxed::Box`. The surface name stays in every string.
-fn svc_ident(name: Str) -> Str {
+fn svc_ident(name: Str) -> Str { return type_ident(name) }
+
+// `_ident(name, "type name")`: a user record/variant name in every position
+// the emitted module spells it as a Rust type (the declaration, a type
+// reference, a record literal, an `Enum::Case` prefix, a stream event type),
+// so a user type named `Box` emits as `Box_` exactly as on the reference
+// (issue #2328). The type tables keep the RAW name, as the reference's do.
+fn type_ident(name: Str) -> Str {
   let reserved = type_reserved()
   var root = name
   while (root != "") {
@@ -5729,9 +5736,9 @@ fn emit_comp_step(comp: Any, step: Any, ir: Any, ctx: Ctx,
       // name/key stay RAW: `key` indexes the delivered item's raw JSON field and
       // the derived schema's `properties` are keyed the same way, so mangling
       // either would break the lookup. The event NAME is the emitted record type
-      // the item decodes into, so it goes through `mangle` in the type-name
+      // the item decodes into, so it goes through `type_ident` in the type-name
       // position, exactly as the types section spells the struct.
-      ename = mangle(evname)
+      ename = type_ident(evname)
       let key = value_str(value_field(contract, "key"))
       let window = value_int(value_field(contract, "window"))
       if (window < 1) { return [`${pad}<<UNSUPPORTED-stream-event-window:${evname}>>`] }
@@ -6693,12 +6700,15 @@ pub fn emit_rust_src(ir: Any) -> Str {
     out = out.concat(emit_component_auto(comp, services, ir))
   }
   out = out.concat(emit_bridge(ir))
-  // The deferred in-file test section: one named marker per test instead of
-  // silence (issue #1123).
-  let test_markers = deferred_test_markers(ir)
-  if (test_markers.length() > 0) { out = out.concat(test_markers) }
+  // The reference refusals, in the reference's order (issue #2408): `emit`
+  // refuses a deferred call, a `validated` crossing and a host-key collision
+  // before a fault test, so those markers come before the deferred in-file
+  // test section (one named marker per test instead of silence, issue #1123),
+  // and a required stream, refused only while the components are emitted,
+  // comes after it.
   out = out.concat(deferred_emission_markers(ir)).concat(validated_markers(ir))
-  out = out.concat(host_key_collision_markers(ir)).concat(required_stream_markers(ir))
+  out = out.concat(host_key_collision_markers(ir)).concat(deferred_test_markers(ir))
+  out = out.concat(required_stream_markers(ir))
   out = out.concat(namespaced_key_markers(ir))
   return rstrip(out.join(newline())).concat(newline())
 }

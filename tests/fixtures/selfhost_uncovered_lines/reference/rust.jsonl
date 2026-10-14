@@ -238,8 +238,6 @@
 
 ["function", "record-variant-context-invariants-the-remaining-branches-dia", "_V3Ctx.match_pattern", 3, 3]
 
-["function", "record-variant-context-invariants-the-remaining-branches-dia", "_V3Ctx.record_field_types", 1, 1]
-
 ["function", "record-variant-context-invariants-the-remaining-branches-dia", "_V3Ctx.record_type_for_names", 9, 9]
 
 ["function", "record-variant-context-invariants-the-remaining-branches-dia", "_emit_v3_types", 6, 6]

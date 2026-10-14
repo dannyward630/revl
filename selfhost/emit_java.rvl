@@ -3835,14 +3835,16 @@ pub fn emit_java_src(ir: Any) -> Str {
   }
   out = head.concat(helpers).concat(tail)
   out = out.push("}")
-  // The deferred in-file test section: one named marker per test instead of
-  // silence (issue #1123).
-  let test_markers = deferred_test_markers(ir)
-  if (test_markers.length() > 0) { out = out.concat(test_markers) }
   // The reference refusals the class body above cannot carry, one named marker
   // each (issue #2383): a deferred emission called from a component, a
-  // `validated` crossing and a required `Stream[T]` coeffect.
+  // `validated` crossing and a required `Stream[T]` coeffect. They follow the
+  // reference's refusal order (issue #2408): `emit` refuses a deferred call and
+  // a `validated` crossing before a fault test, so those two markers come
+  // before the deferred in-file test section (one named marker per test
+  // instead of silence, issue #1123), and a required stream, refused only while
+  // the components are emitted, comes after it.
   out = out.concat(deferred_emission_markers(ir)).concat(validated_markers(ir))
+  out = out.concat(deferred_test_markers(ir))
   out = out.concat(required_stream_markers(ir))
   out = out.concat(namespaced_key_markers(ir))
   return rstrip(out.join(newline())).concat(newline())

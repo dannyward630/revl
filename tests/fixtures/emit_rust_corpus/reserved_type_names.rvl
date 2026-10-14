@@ -1,0 +1,21 @@
+// issue #2328: a user type whose name the emitted module spells as a bare Rust
+// type token takes the type-name reservation, as on the reference: a record
+// named `Box` emits as `Box_` and a variant named `Vec` as `Vec_`, so neither
+// shadows `std::boxed::Box` or `Vec`. The rename reaches every position the
+// type is spelled in: the declaration, a parameter, a return, a `List[..]`
+// element, a record literal, a constructor and a match pattern. Case and field
+// names keep their surface spelling.
+pub type Box = { v: Int }
+pub type Vec = Empty | Full(Int)
+
+pub fn read_box(b: Box) -> Int { return b.v }
+pub fn make_box(n: Int) -> Box { return { v: n } }
+pub fn boxes(n: Int) -> List[Box] { return [make_box(n)] }
+pub fn full(n: Int) -> Vec { return Full(n) }
+pub fn empty() -> Vec { return Empty }
+pub fn count(x: Vec) -> Int {
+  return match x {
+    Full(n) => n,
+    Empty => 0,
+  }
+}

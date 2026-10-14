@@ -2124,7 +2124,7 @@ fn record_type_for_fields(ctx_: Ctx__m1, names: Vec<String>) -> String {
     if (!resolved(&name)) {
         return format!("<<UNSUPPORTED-record>>");
     }
-    return mangle(name.clone());
+    return type_ident(name.clone());
 }
 
 fn is_fn_type(name: &str) -> bool {
@@ -2205,7 +2205,7 @@ fn rust_type_t(tv: Value, tnames: std::collections::HashMap<String, String>) -> 
         return tm;
     }
     if tnames.contains_key(&name) {
-        return mangle(name.clone());
+        return type_ident(name.clone());
     }
     if name.revl_ends_with("]") {
         let lb = name.revl_index_of("[");
@@ -3189,9 +3189,9 @@ fn constructor(ctx_: Ctx__m1, name: String, args: &[String]) -> String {
     let adt = map_get(ctx_.ca.clone(), name.clone());
     if resolved(&adt) {
         if (map_get(ctx_.cp.clone(), name.clone()) == "n") {
-            return format!("{}::{}", adt, name);
+            return format!("{}::{}", type_ident(adt.clone()), name);
         }
-        return format!("{}::{}({})", adt, name, (args)[(0i64) as usize]);
+        return format!("{}::{}({})", type_ident(adt.clone()), name, (args)[(0i64) as usize]);
     }
     if (name == "None") {
         return String::from("None");
@@ -3211,7 +3211,7 @@ fn match_pattern(ctx_: Ctx__m1, arm: Value) -> String {
     let adt = map_get(ctx_.ca, pattern.clone());
     let mut prefix = String::from("");
     if resolved(&adt) {
-        prefix = format!("{}::{}", adt, pattern);
+        prefix = format!("{}::{}", type_ident(adt.clone()), pattern);
     } else {
         if is_builtin_ctor(&pattern) {
             prefix = pattern.clone();
@@ -3230,7 +3230,7 @@ fn render_var(node: Value, ctx_: Ctx__m1) -> String {
     let mangled = mangle(name.clone());
     let adt = map_get(ctx_.ca, name.clone());
     if resolved(&adt) {
-        return format!("{}::{}", adt, mangled);
+        return format!("{}::{}", type_ident(adt.clone()), mangled);
     }
     if is_builtin_ctor(&name) {
         return name;
@@ -4104,7 +4104,7 @@ fn emit_v3_types(types: Value, tnames: std::collections::HashMap<String, String>
     for name in value_keys(types.clone()) {
         let spec = value_field(types.clone(), name.clone());
         let kind = value_str(value_field(spec.clone(), String::from("kind")));
-        let nm = mangle(name.clone());
+        let nm = type_ident(name.clone());
         if (kind == "record") {
             out.push(String::from("#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]"));
             out.push(format!("pub struct {} {{", nm));
@@ -6533,6 +6533,10 @@ fn type_reserved() -> Vec<String> {
 }
 
 fn svc_ident(name: String) -> String {
+    return type_ident(name.clone());
+}
+
+fn type_ident(name: String) -> String {
     let reserved = type_reserved();
     let mut root_ = name.clone();
     while (root_ != "") {
@@ -7311,7 +7315,7 @@ fn emit_comp_step(comp: Value, step: Value, ir: Value, ctx_: Ctx__m1, map_values
         let mut evname = String::from("");
         if (!value_is_null(contract.clone())) {
             evname = value_str(value_field(contract.clone(), String::from("name")));
-            ename = mangle(evname.clone());
+            ename = type_ident(evname.clone());
             let key = value_str(value_field(contract.clone(), String::from("key")));
             let window = value_int(value_field(contract.clone(), String::from("window")));
             if (window < 1i64) {
@@ -8222,12 +8226,9 @@ pub fn emit_rust_src(ir: Value) -> String {
         out.extend((emit_component_auto(comp.clone(), services.clone(), ir.clone())).iter().cloned());
     }
     out.extend((emit_bridge(ir.clone())).iter().cloned());
-    let test_markers = deferred_test_markers(ir.clone());
-    if (test_markers.revl_length() > 0i64) {
-        out.extend((test_markers).iter().cloned());
-    }
     out = (out.revl_concat(&deferred_emission_markers(ir.clone()))).revl_concat(&validated_markers(ir.clone()));
-    out = (out.revl_concat(&host_key_collision_markers(ir.clone()))).revl_concat(&required_stream_markers(ir.clone()));
+    out = (out.revl_concat(&host_key_collision_markers(ir.clone()))).revl_concat(&deferred_test_markers(ir.clone()));
+    out.extend((required_stream_markers(ir.clone())).iter().cloned());
     out.extend((namespaced_key_markers(ir.clone())).iter().cloned());
     return rstrip__m1(&(out.revl_join(&newline()))).revl_concat(&newline());
 }

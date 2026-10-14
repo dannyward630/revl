@@ -109,6 +109,7 @@ reproduce).
 
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -325,6 +326,9 @@ CORPUS = [
     "prelude_names.rvl",     # issue #1920: a service named `Box` takes the
                              #   type-name reservation (`Box_`), and a captured
                              #   `extern acquire` handle is held by value
+    "reserved_type_names.rvl",  # issue #2328: a user record `Box` and variant
+                             #   `Vec` take the type-name reservation (`Box_`,
+                             #   `Vec_`) at every position they are spelled
     "keyword_keys.rvl",      # issue #1927: a requirement key that is a Rust
                              #   keyword (`box`) takes the mangled spelling as
                              #   an identifier, the surface key as a string
@@ -1488,3 +1492,31 @@ def test_an_unvalidated_operation_is_not_named(emitted, reference, tmp_path):
     got = emitted["emit_rust_src"](ir)
     assert "<<UNSUPPORTED" not in got
     assert got == reference.emit(ir)
+
+
+# issue #2408: the reference refuses a deferred call, a `validated` crossing
+# and a host-key collision before it looks at the fault tests, so a document
+# that trips one of them and a fault test must surface that refusal's marker
+# first on the port, not the fault-test or in-file test marker.
+RUST_REFUSED_BEFORE_A_FAULT_TEST = [
+    ("deferred_emission_call.rvl", "deferred", "<<UNSUPPORTED-DEFERRED-EMISSION:"),
+    ("validated_emission_operation.rvl", "needs the response-validation",
+     "<<UNSUPPORTED-VALIDATED:"),
+    ("host_identifier_collision.rvl", "both spell the",
+     "<<UNSUPPORTED-HOST-KEY-COLLISION:"),
+]
+
+
+@pytest.mark.parametrize("name, refusal, first", RUST_REFUSED_BEFORE_A_FAULT_TEST,
+                         ids=[n for n, _, _ in RUST_REFUSED_BEFORE_A_FAULT_TEST])
+def test_a_refusal_before_a_fault_test_keeps_the_reference_order(
+        emitted, reference, tmp_path, name, refusal, first):
+    src = (REFUSAL_FIXTURES / "emit_rust_refusals" / name).read_text()
+    doc = tmp_path / "with_fault_test.rvl"
+    doc.write_text(src + "\n" + FAULT_TEST_SRC)
+    ir = compile_files([str(doc)])
+    with pytest.raises(reference.EmitError, match=refusal):
+        reference.emit(ir)
+    markers = re.findall(r"<<UNSUPPORTED-[A-Z-]+:", emitted["emit_rust_src"](ir))
+    assert "<<UNSUPPORTED-FAULT-TEST:" in markers, markers
+    assert markers[0] == first, markers

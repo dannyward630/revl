@@ -640,3 +640,30 @@ def test_a_deferred_call_is_named_before_a_namespaced_key(
     markers = re.findall(r"<<UNSUPPORTED-[A-Z-]+:", got)
     assert "<<UNSUPPORTED-NAMESPACED-KEY:" in markers, markers
     assert markers[0] == "<<UNSUPPORTED-DEFERRED-EMISSION:", markers
+
+
+# issue #2408: the reference refuses a deferred call and a `validated` crossing
+# before it looks at the fault tests, so a document that trips both must
+# surface that refusal's marker first on the port, not the fault-test marker.
+JAVA_REFUSED_BEFORE_A_FAULT_TEST = [
+    ("emit_java_refusals/deferred_emission_call.rvl", "deferred",
+     "<<UNSUPPORTED-DEFERRED-EMISSION:"),
+    ("emit_java_refusals/validated_emission_operation.rvl",
+     "needs the response-validation", "<<UNSUPPORTED-VALIDATED:"),
+]
+
+
+@pytest.mark.parametrize("rel, refusal, first",
+                         JAVA_REFUSED_BEFORE_A_FAULT_TEST,
+                         ids=[r.split("/")[1] for r, _, _ in JAVA_REFUSED_BEFORE_A_FAULT_TEST])
+def test_a_refusal_before_a_fault_test_keeps_the_reference_order(
+        emitted, reference, tmp_path, rel, refusal, first):
+    src = (ROOT / "tests" / "fixtures" / rel).read_text()
+    path = tmp_path / "with_fault_test.rvl"
+    path.write_text(src + "\n" + FAULT_TEST_SRC)
+    ir = compile_files([str(path)])
+    with pytest.raises(reference.EmitError, match=refusal):
+        reference.emit(ir)
+    markers = re.findall(r"<<UNSUPPORTED-[A-Z-]+:", emitted["emit_java_src"](ir))
+    assert "<<UNSUPPORTED-FAULT-TEST:" in markers, markers
+    assert markers[0] == first, markers
