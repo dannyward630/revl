@@ -153,8 +153,43 @@ def test_an_unreadable_live_state_says_so_and_the_rollback_still_runs(
     assert "frame registry unavailable" in dropped["note"]
 
 
+BROKEN_ACTIVATION = (
+    SERVICE + "component MeterBook provides meter: Meter {\n"
+    "  let store = effect Map.new() undo store.drop()\n"
+    "  provide meter { fn log(label) { effect store.insert(label, label) "
+    "undo store.remove(label) }\n"
+    "                  fn get(label) = store.get(label)\n"
+    "                  fn version() = 0 }\n"
+    "  fail \"activation cannot complete\"\n"
+    "}\n")
+
+
+@needs_runtime
+def test_a_rollback_refused_after_the_teardown_reports_the_state_it_dropped():
+    """The activation gate refuses a rollback to a generation that does not
+    activate, but only after the teardown: the running generation is rebooted
+    cold, its live state is gone, and the refusal says which components."""
+    assert _call("revl_load", {"source": BROKEN_ACTIVATION})["ok"] is True
+    assert _call("revl_swap", {"source": _meter(2)})["ok"] is True
+    assert _meter_call("log", "l1")["ok"] is True
+    assert _meter_call("get", "l1")["result"] == "l1"
+
+    refused = _call("revl_rollback", {})
+    assert refused["ok"] is False
+    assert "swap rejected" in refused["diagnostics"][0]["message"]
+    # the running generation keeps serving, but cold ...
+    assert _meter_call("version")["result"] == 2
+    assert _meter_call("get", "l1")["result"] is None
+    # ... and the refusal names what that restart discarded
+    dropped = refused["stateDropped"]
+    assert dropped["components"] == ["MeterBook"], dropped
+    assert "MeterBook" in dropped["note"] and "refused" in dropped["note"]
+
+
 @needs_runtime
 def test_a_rollback_with_nothing_to_restore_carries_no_report():
+    """A refusal that ran nothing dropped nothing, so it names nothing. This is
+    a regression guard, not a fix check: it passes on origin/main too."""
     assert _call("revl_load", {"source": _meter(1)})["ok"] is True
     refused = _call("revl_rollback", {})
     assert refused["ok"] is False

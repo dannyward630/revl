@@ -2197,7 +2197,11 @@ def _tool_rollback(_arguments: dict) -> dict:
     try:
         return {"ok": True, **SESSION.rollback()}
     except SessionError as error:
-        return _session_error(error)
+        # a rollback refused after its teardown restarted the running
+        # generation cold, and says which state that dropped (issue #2424)
+        dropped = getattr(error, "state_dropped", None)
+        return _session_error(error, **({"stateDropped": dropped}
+                                        if dropped else {}))
 
 
 def _tool_undo(arguments: dict) -> dict:
@@ -4569,8 +4573,10 @@ TOOLS = [
                        "that writes the reverted source out. The restored "
                        "generation starts cold, so the answer also carries "
                        "`stateDropped` (issue #2424): `components` names each "
-                       "component whose live state was discarded, with a "
-                       "`note`.",
+                       "component whose live state was discarded and each "
+                       "component the restored generation withdraws, with a "
+                       "`note` when state was lost. A rollback refused after "
+                       "its teardown carries it too.",
         "inputSchema": {"type": "object", "properties": {}},
         "annotations": {"readOnlyHint": False, "destructiveHint": True},
         "handler": _tool_rollback,

@@ -87,13 +87,15 @@ _LEASE_NO_INVERSE = ("only a fresh lease claim has an exact inverse (its "
 
 
 def undo_cold_start_note(components: list[str], to: int | None, *,
-                         done: bool = False) -> str:
+                         done: bool = False, tool: str = "revl_undo") -> str:
     """Issue #2346: what an undo does to live state, said where a caller reads
     it (the forward call's `undoNote`, the undo dossier's `stateDropped`).
-    `done` is True only for an undo that ran; advice says "would be"."""
+    `done` is True only for an undo that ran; advice says "would be".
+    `tool` names the verb that re-admits (`revl_rollback` says the same of a
+    rollback, issue #2424)."""
     target = f"generation {to}" if to is not None else "the earlier generation"
     verb = "is dropped" if done else "would be dropped"
-    return (f"revl_undo re-admits {target}'s sources and starts it cold: a "
+    return (f"{tool} re-admits {target}'s sources and starts it cold: a "
             f"`handoff` is not run in reverse (a rollback never carries the "
             f"generation it leaves into the one it returns to), so the live "
             f"state held by {', '.join(components)} {verb}. A forward "
