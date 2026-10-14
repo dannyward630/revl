@@ -489,7 +489,7 @@ def test_components_2_emits_fail_as_runtime_l_raise():
         """
     )
     generated = emit.emit(ir)
-    assert "raise RuntimeError('at least one replica required')" in generated
+    assert "raise _revl_RevlFail('at least one replica required')" in generated
     assert "scratch = Map.new()" in generated
     assert "yield lambda: scratch.drop()" in generated
 

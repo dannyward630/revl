@@ -3393,7 +3393,7 @@ fn body_step(step: Any, indent: Int, comp_name: Str, counter: Int, services: Any
     return { lines: out, counter: counter }
   }
   if (kind == "fail") {
-    var out = [line(indent, `raise RuntimeError(${cexpr(value_field(step, "message"))})`)]
+    var out = [line(indent, `raise _revl_RevlFail(${cexpr(value_field(step, "message"))})`)]
     out = out.push("")
     return { lines: out, counter: counter }
   }
@@ -4441,11 +4441,11 @@ fn lifecycle_harness() -> List[Str] {
     "    # issue #2378: a `fail` the activation reached fails the `load`, as it does",
     "    # on the other tiers. cordis lands the fiber FAILED with the error recorded;",
     "    # without this read the load settles quietly and the error surfaces only",
-    "    # when a provided key is called. Only the error a `fail` raises (a plain",
-    "    # RuntimeError, from a component whose activation holds a `fail`) counts: a",
-    "    # host body that raises on purpose still loads quietly (issue #1895).",
+    "    # when a provided key is called. Only the error a `fail` raises counts (it",
+    "    # carries the marker): a host body or a runtime guard that raises on",
+    "    # purpose still loads quietly (issues #1895, #1859).",
     "    err = getattr(fiber, \"_error\", None)",
-    "    if type(err) is RuntimeError and name in _REVL_ACTIVATION_FAILS:",
+    "    if getattr(err, \"_revl_activation_fail\", False):",
     "        raise AssertionError(\"{}: load {}: {}\".format(where, name, err)) from err",
     "",
     "",
@@ -4549,27 +4549,6 @@ fn providers_map_line(ir: Any) -> Str {
     entries = entries.push(`${py_repr(key)}: [${names.join(", ")}]`)
   }
   return `_REVL_PROVIDERS = {${entries.join(", ")}}`
-}
-
-// `_has_activation_fail` (issue #2378): a `fail` step anywhere in an activation
-// body (the checker allows `fail` nowhere else, A8).
-fn has_activation_fail(n: Any) -> Bool {
-  if (value_str(value_field(n, "step")) == "fail") { return true }
-  for (c of value_children(n)) { if (has_activation_fail(c)) { return true } }
-  return false
-}
-
-// `_REVL_ACTIVATION_FAILS`: the components whose activation holds a `fail`
-// step, in declaration order, as the reference's `_render_activation_fails`
-// writes it.
-fn activation_fails_line(ir: Any) -> Str {
-  var names = []
-  for (c of value_list(value_field(ir, "components"))) {
-    if (has_activation_fail(value_field(c, "body"))) {
-      names = names.push(py_repr(mangle(value_str(value_field(c, "name")))))
-    }
-  }
-  return `_REVL_ACTIVATION_FAILS = [${names.join(", ")}]`
 }
 
 // `_lifecycle_step`: one statement of a lifecycle test's async driver.
@@ -4803,6 +4782,8 @@ pub fn emit_py_src(source_ir: Any) -> Str {
   if (ir_uses_host_root(ir, "Stream") || uses_kind(value_field(ir, "components"), "subscribe")
       || uses_kind(value_field(ir, "components"), "stream-iter")) { imports = imports.push("Stream") }
   if (need_mark_secret) { imports = imports.push("mark_secret as _revl_mark_secret") }
+  // issue #2378: a `fail` step raises the runtime's marked RuntimeError.
+  if (uses_kind(value_field(ir, "components"), "fail")) { imports = imports.push("RevlFail as _revl_RevlFail") }
   // §7.1: the lifecycle driver loads components through the realm-aware `plug`,
   // reads the host-builtin trace, may auto-retry an idempotent emission (item
   // 44), and collects inverse residue off the frame. `advance` adds the clock
@@ -4875,7 +4856,6 @@ pub fn emit_py_src(source_ir: Any) -> Str {
   if (has_lifecycle_test(ir)) {
     out = out.push(idempotent_map_line(ir))
     out = out.push(providers_map_line(ir))
-    out = out.push(activation_fails_line(ir))
     out = out.push("")
   }
   if (uses_bounded_int(ir)) { out = out.concat(i64_block()) }

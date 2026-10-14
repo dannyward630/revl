@@ -114,10 +114,11 @@ def _emit(source: str) -> str:
     return emit.emit(compile_source(source, "t.rvl"))
 
 
-def test_the_emitted_driver_names_the_components_whose_activation_fails():
+def test_a_fail_step_raises_the_marked_error_and_each_load_is_checked():
     text = _emit(_FAILING)
-    assert "_REVL_ACTIVATION_FAILS = ['E']" in text
+    assert "raise _revl_RevlFail('activation refused on purpose')" in text
     assert "_revl_load_failed(_revl_fibers['E'], 'E'," in text
+    assert "RevlFail as _revl_RevlFail" in text
 
 
 @needs_cordis
@@ -146,6 +147,35 @@ def test_a_host_body_that_raises_at_activation_still_loads_quietly(tmp_path):
     assert "1 test(s) passed" in out, out
 
 
+#: the runtime's own refusal is a plain RuntimeError too ("refused to open
+#: boom://..."), and this component also holds a `fail` that is never reached.
+#: The load must stay quiet: the error is not a `fail`.
+_REFUSED_OPEN_WITH_UNREACHED_FAIL = """
+service S { fn ping() -> Int }
+component Db provides s: S {
+  config { url: Str, strict: Bool = false }
+  let p = effect Pool.open(config.url, 2) undo p.close()
+  if (config.strict) {
+    fail "strict mode refuses"
+  }
+  provide s { fn ping() = 1 }
+}
+
+lifecycle test "a refused open is not a fail" {
+  load Db with { url: "boom://nope" }
+  unload Db
+  assert no_residue
+}
+"""
+
+
+@needs_cordis
+def test_a_runtime_refusal_in_a_component_that_also_holds_a_fail_still_loads(tmp_path):
+    out = _run_py(_REFUSED_OPEN_WITH_UNREACHED_FAIL, tmp_path)
+    assert "1 test(s) passed" in out, out
+    assert "load Db" not in out, out
+
+
 _IMPORTS_RUNTIME = """
 extern pure fn peek() -> Int = @py { import runtime; return 1 }
 fn main() -> Int { return peek() }
@@ -170,8 +200,12 @@ def test_import_runtime_is_refused_in_a_user_host_body():
 
 @needs_cordis
 def test_the_runtime_module_object_stays_reachable_through_sys_modules(tmp_path):
-    """The documented limit (docs/threat-model.md, non-goal 1): the refusal is
-    of the import statement; the module object is reachable."""
+    """Pins the DOCUMENTED #2344 limit (docs/threat-model.md, non-goal 1): the
+    refusal is of the import statement; the module object is reachable.
+
+    If that limit is ever closed (host bodies isolated from the runtime module),
+    this test is meant to be INVERTED, and the threat-model paragraph rewritten
+    with it."""
     out = _run_py(_REACHES_RUNTIME, tmp_path)
     assert "1 test(s) passed" in out, out
 

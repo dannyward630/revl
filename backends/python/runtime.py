@@ -77,7 +77,7 @@ _ENTRY_STAMP = itertools.count()
 __all__ = [
     "Clock", "ConfigError", "ConfigSchema", "FaultProbe", "Frame", "Job", "JobCancelled",
     "JobHandle", "LeaseHandle", "LeaseRefused", "Map", "Pool", "PoolError",
-    "EstopHalted", "EstopRefused",
+    "EstopHalted", "EstopRefused", "RevlFail",
     "SessionCommitError", "SessionOwner",
     "SpawnHandle", "StateIncompatible",
     "EventContract",
@@ -2992,6 +2992,22 @@ def _live_frames() -> list:
     """A snapshot of the live frames, taken under the halt lock."""
     with _ESTOP_LOCK:
         return list(_LIVE_FRAMES)
+
+
+class RevlFail(RuntimeError):
+    """What a `fail` step raises (issue #2378).
+
+    It IS a RuntimeError, reported under that name (`type(err).__name__`, the
+    `type` of a failed component's row and of a residue record), so nothing that
+    reads a failure's type changes. The marker is what lets the lifecycle driver
+    tell a `fail` the author wrote from any other plain RuntimeError an
+    activation can raise (a host stub's refusal, a runtime guard, a host body's
+    own `raise`)."""
+
+    _revl_activation_fail = True
+
+
+RevlFail.__name__ = RevlFail.__qualname__ = "RuntimeError"
 
 
 class EstopRefused(RuntimeError):
