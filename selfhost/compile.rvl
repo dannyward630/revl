@@ -1550,16 +1550,14 @@ fn ul_bump_v3(ir: Str) -> Str {
   return ir.slice(0, at).concat("3").concat(ir.slice(end, ir.length()))
 }
 
-// The document's IR with the types every directly imported service carries
-// appended (issue #2308), in `use` order, each type once, or a `LINK|<message>`
-// refusal where the result would differ from the reference's. The reference's
-// privacy pass renames a document's private type apart from a carried one of
-// the same name, and refuses two carried types of one name from two modules;
-// this driver renames nothing, so either is refused. A module that is also a
-// pure dependency carries its types with the rest of it in the reference, but
-// `ul_dep_refusal` already refuses any pure dependency that declares a type, so
-// no such module reaches here with one.
-fn ul_link_types(ir: Str, source: Str, path: Str) -> UlLinked {
+// The types every directly imported service of a document carries, in `use`
+// order, each once, with the module it comes from and its native `types`
+// entry, or the `LINK|<message>` refusal where the reference's set cannot be
+// read off the native IR. Two carried types of one name from two modules are
+// refused: the reference refuses them too.
+type UlCarriedSet = { names: List[Str], owners: List[Str], decls: List[Str], refusal: Str }
+
+fn ul_carried_set(source: Str, path: Str) -> UlCarriedSet {
   let pairs = ul_use_pairs(source)
   var names: List[Str] = []
   var owners: List[Str] = []
@@ -1574,7 +1572,9 @@ fn ul_link_types(ir: Str, source: Str, path: Str) -> UlLinked {
       let entry = ul_service_entry(module_ir, svc)
       if (entry != "") {
         let carry = ul_carried_types(dep, module_ir, read_module_text(dep), entry)
-        if (carry.refusal != "") { return { ir: ir, refusal: carry.refusal } }
+        if (carry.refusal != "") {
+          return { names: names, owners: owners, decls: decls, refusal: carry.refusal }
+        }
         let table = ul_key_value(module_ir, "types")
         var c = 0
         while (c < carry.names.length()) {
@@ -1587,8 +1587,9 @@ fn ul_link_types(ir: Str, source: Str, path: Str) -> UlLinked {
           }
           else {
             if (owners[k] != dep) {
-              return { ir: ir, refusal: "LINK|type `".concat(name).concat("` is carried from both `")
-                .concat(owners[k]).concat("` and `").concat(dep).concat("`") }
+              return { names: names, owners: owners, decls: decls,
+                refusal: "LINK|type `".concat(name).concat("` is carried from both `")
+                  .concat(owners[k]).concat("` and `").concat(dep).concat("`") }
             }
           }
           c += 1
@@ -1596,21 +1597,134 @@ fn ul_link_types(ir: Str, source: Str, path: Str) -> UlLinked {
       }
     }
   }
-  if (names.length() == 0) { return { ir: ir, refusal: "" } }
+  return { names: names, owners: owners, decls: decls, refusal: "" }
+}
+
+// The document's IR with the types every directly imported service carries
+// appended (issue #2308), in `use` order, each type once, or a `LINK|<message>`
+// refusal where the result would differ from the reference's. The names in
+// `pre` are already in the document's table, lowered from their declaration
+// text in the carried order (`ul_with_carried_text`), and are not appended
+// again. A document's private type of a carried name is renamed apart before
+// lowering (`ul_rename_apart`); one still here is public, or could not be
+// renamed, and is refused. A module that is also a pure dependency carries its
+// types with the rest of it in the reference, but `ul_dep_refusal` already
+// refuses any pure dependency that declares a type, so no such module reaches
+// here with one.
+fn ul_link_types(ir: Str, source: Str, path: Str, pre: List[Str]) -> UlLinked {
+  let set = ul_carried_set(source, path)
+  if (set.refusal != "") { return { ir: ir, refusal: set.refusal } }
+  if (set.names.length() == 0) { return { ir: ir, refusal: "" } }
   let own = ul_top_keys(ul_key_value(ir, "types"))
   var items = ""
   var d = 0
-  while (d < names.length()) {
-    if (ul_has(own, names[d])) {
-      return { ir: ir, refusal: "LINK|type `".concat(names[d]).concat("` carried from `")
-        .concat(owners[d])
-        .concat("` collides with the document's own type of the same name, and the native link does not rename module-private declarations apart") }
+  while (d < set.names.length()) {
+    let name = set.names[d]
+    if (!ul_has(pre, name)) {
+      if (ul_has(own, name)) {
+        return { ir: ir, refusal: "LINK|type `".concat(name).concat("` carried from `")
+          .concat(set.owners[d])
+          .concat("` collides with the document's own type of the same name, and the native link renames only a private one apart") }
+      }
+      if (items != "") { items = items.concat(", ") }
+      items = items.concat("\"").concat(name).concat("\": ").concat(set.decls[d])
     }
-    if (d > 0) { items = items.concat(", ") }
-    items = items.concat("\"").concat(names[d]).concat("\": ").concat(decls[d])
     d += 1
   }
   return { ir: ul_bump_v3(ul_append_types(ir, items)), refusal: "" }
+}
+
+// Issue #2374. `s` with every identifier `from` outside comments, strings,
+// templates and host bodies replaced by `to`. A longer identifier that holds
+// `from` is left alone.
+fn ul_rename_word(s: Str, from: Str, to: Str) -> Str {
+  var out = ""
+  var i = 0
+  let n = s.length()
+  while (i < n) {
+    let past = rl_opaque_end(s, i)
+    if (past < 0) { return s }
+    if (past > i) {
+      out = out.concat(s.slice(i, past))
+      i = past
+    }
+    else {
+      var j = i + 1
+      if (ul_is_word_char(s.slice(i, i + 1))) {
+        while ((j < n) && ul_is_word_char(s.slice(j, j + 1))) { j += 1 }
+      }
+      let w = s.slice(i, j)
+      out = out.concat(w == from ? to : w)
+      i = j
+    }
+  }
+  return out
+}
+
+// Issue #2374. Whether the private document type `name` can be renamed apart
+// by text: the native IR `own` of the document names it only as a type, never
+// as a declaration, a case or a record field, so each identifier `name` in the
+// text is a reference to that type.
+fn ul_renamable(own: Str, name: Str) -> Bool {
+  let q = "\"".concat(name).concat("\"")
+  return (tc_count(own, q.concat(":")) == 1)
+    && (tc_count(own, "\"name\": ".concat(q)) == 0)
+    && (tc_count(own, "\"case\": ".concat(q)) == 0)
+    && (tc_count(own, "[".concat(q).concat(",")) == 0)
+}
+
+// Issue #2374. The document `source` (lowered to `own`) with each private type
+// that shares its name with a type an imported service carries renamed to
+// `<name>__m0`, as the reference's privacy pass renames it (the root document
+// is module 0 of the merged program). A public one, one the document imports
+// by name, and one `ul_renamable` does not clear stay as they are; the type
+// link then refuses them.
+fn ul_rename_apart(source: Str, path: Str, own: Str) -> Str {
+  let set = ul_carried_set(source, path)
+  if ((set.refusal != "") || (set.names.length() == 0)) { return source }
+  let scan = ul_type_scan(source)
+  if (!scan.ok) { return source }
+  let imported = ul_use_pairs(source)
+  var out = source
+  var i = 0
+  while (i < set.names.length()) {
+    let name = set.names[i]
+    let to = name.concat("__m0")
+    if (ul_has(scan.all, name) && !ul_has(scan.pubs, name) && !ul_has(imported, name)
+        && (source.indexOf(to) == 0 - 1) && ul_renamable(own, name)) {
+      out = ul_rename_word(out, name, to)
+    }
+    i += 1
+  }
+  return out
+}
+
+// Issue #2374. `source` with the declaration text of every carried type (in
+// the carried order) appended, so the native gate resolves a carried variant's
+// cases (`store.put(Dot)`, `Box(1)`) and the producer lowers them as the
+// reference does, and the names appended. Nothing is appended (`names` empty)
+// unless every carried type has a declaration text (`tc_type_text`) and the
+// document neither declares nor imports by name any of them.
+type UlCarriedText = { text: Str, names: List[Str] }
+
+fn ul_with_carried_text(source: Str, path: Str) -> UlCarriedText {
+  var none: List[Str] = []
+  let set = ul_carried_set(source, path)
+  if ((set.refusal != "") || (set.names.length() == 0)) { return { text: source, names: none } }
+  let scan = ul_type_scan(source)
+  if (!scan.ok) { return { text: source, names: none } }
+  let imported = ul_use_pairs(source)
+  var text = source.concat(str_newline())
+  var i = 0
+  while (i < set.names.length()) {
+    let decl = tc_type_text(set.names[i], set.decls[i])
+    if ((decl == "") || ul_has(scan.all, set.names[i]) || ul_has(imported, set.names[i])) {
+      return { text: source, names: none }
+    }
+    text = text.concat(str_newline()).concat(decl).concat(str_newline())
+    i += 1
+  }
+  return { text: text, names: set.names }
 }
 
 // Issue #2329. The native gate reads only the document, so a call to an
@@ -2398,10 +2512,39 @@ fn ad_module_key(path: Str) -> Str {
 // native link cannot reproduce returns "REFUSED|LINK|<message>" (see
 // `ul_link_externs`) rather than different source. Issue #2308: so are the
 // types an imported service carries (`ul_link_types`).
+// Issue #2374. The admission of a document whose own verdict is `verdict`:
+// the names of the carried types its lowering takes as declaration text
+// (`ul_with_carried_text`), and the refusal ("" for none). A G1 refusal of the
+// document read alone yields when the document, with the carried
+// declarations appended, is admitted; any other verdict stands, through
+// `tc_import_first`.
+type TcCarriedAdmission = { names: List[Str], refusal: Str }
+
+fn tc_carried_admission(source: Str, path: Str, verdict: Str) -> TcCarriedAdmission {
+  var none: List[Str] = []
+  if (verdict == "") { return { names: none, refusal: "" } }
+  if ((path != "") && (verdict.slice(0, 3) == "G1|")) {
+    let named = ul_rename_apart(source, path, lower_to_ir_refs(source, rf_ref_rows(source, path)))
+    let full = ul_with_carried_text(named, path)
+    if (full.names.length() > 0) {
+      let again = admit_src(full.text)
+      if (again == "") { return { names: full.names, refusal: "" } }
+      return { names: none, refusal: tc_import_first(source, path, again) }
+    }
+  }
+  return { names: none, refusal: tc_import_first(source, path, verdict) }
+}
+
 pub fn compile_to_at(source: Str, tier: Str, path: Str) -> Str {
   if (!supported_tier(tier)) { return "UNKNOWN_TIER|".concat(tier) }
   let verdict = admit_src(source)
-  if (verdict != "") { return "REFUSED|".concat(tc_import_first(source, path, verdict)) }
+  // Issue #2374: a variant case carried from an imported service's module
+  // (`store.put(Dot)`) is unknown to the document read alone, which refuses it
+  // as a requirement (G1). The reference resolves it through the carried
+  // type, so the document is admitted, and lowered, with the carried
+  // declarations in scope.
+  let carried = tc_carried_admission(source, path, verdict)
+  if (carried.refusal != "") { return "REFUSED|".concat(carried.refusal) }
   let unlexed = rl_lex_refusal(source)
   if (unlexed != "") { return "REFUSED|BAD|".concat(unlexed) }
   // Issue #2332: every used module reads whole, or nothing is linked.
@@ -2414,16 +2557,21 @@ pub fn compile_to_at(source: Str, tier: Str, path: Str) -> Str {
   // Issue #2089: the producer also takes the document's host-ref WIRE, so an
   // extern's `refs` survive the native chain and the emitters can see them.
   // Issue #2181: then every pure dependency's extern section.
-  let own = lower_to_ir_refs(source, rf_ref_rows(source, path))
+  // Issue #2374: a private type of the document named like a carried one is
+  // renamed apart first, as the reference's privacy pass does.
+  let alone = lower_to_ir_refs(source, rf_ref_rows(source, path))
+  let named = ul_rename_apart(source, path, alone)
+  let lowered = carried.names.length() > 0 ? ul_with_carried_text(named, path).text : named
+  let own = lowered == source ? alone : lower_to_ir_refs(lowered, rf_ref_rows(lowered, path))
   let linked = ul_link_externs(ul_link_uses(own, source, path), source, path)
   if (linked.refusal != "") { return "REFUSED|".concat(linked.refusal) }
   // Issue #2308: then the types every imported service carries.
-  let typed = ul_link_types(linked.ir, source, path)
+  let typed = ul_link_types(linked.ir, source, path, carried.names)
   if (typed.refusal != "") { return "REFUSED|".concat(typed.refusal) }
   // Issue #2329: last, the document's calls to an imported service's
   // operations are typed against its declaration. A link refusal above wins,
   // so a type the native link cannot carry is reported as that.
-  let calls = tc_admit_imports(source, path, own)
+  let calls = tc_admit_imports(named, path, own)
   if (calls != "") { return "REFUSED|".concat(calls) }
   return emit_ir(json_parse(typed.ir), tier)
 }
@@ -2767,9 +2915,16 @@ test "an imported service carries the public types it names (issue #2308)" {
   assert ul_append_types("{\"components\": [], \"types\": {\"O\": {}}}", "\"C\": {}") == "{\"components\": [], \"types\": {\"O\": {}, \"C\": {}}}"
   assert ul_bump_v3("{\"ir_version\": 1, \"services\": {}}") == "{\"ir_version\": 3, \"services\": {}}"
   // With no document path nothing resolves, so nothing is carried.
-  let unlinked = ul_link_types("{\"components\": []}", "use \"lib.rvl\" { Store }", "")
+  var no_pre: List[Str] = []
+  let unlinked = ul_link_types("{\"components\": []}", "use \"lib.rvl\" { Store }", "", no_pre)
   assert unlinked.ir == "{\"components\": []}"
   assert unlinked.refusal == ""
+  // Issue #2374: a rename apart touches whole identifiers outside strings and
+  // comments only, and only a name the IR holds as a type alone qualifies.
+  assert ul_rename_word("type In = { a: In } // In".concat(nl).concat("let s = \"In\" + Ink"), "In", "In__m0") == "type In__m0 = { a: In__m0 } // In".concat(nl).concat("let s = \"In\" + Ink")
+  assert ul_renamable("{\"types\": {\"In\": {}}, \"f\": {\"type\": \"In\"}}", "In")
+  assert !ul_renamable("{\"types\": {\"In\": {\"cases\": [{\"name\": \"In\"}]}}}", "In")
+  assert !ul_renamable("{\"services\": {\"In\": {}}, \"types\": {\"In\": {}}}", "In")
 }
 
 test "an admitted component program compiles fully-native, both tiers (item 262)" {

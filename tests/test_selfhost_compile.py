@@ -1116,22 +1116,6 @@ _UNLINKABLE = {
             "type Id = Int\n"
             "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
     }),
-    # Issue #2308: the reference renames the document's private `Item` apart
-    # (`Item__m0`) from the `Item` the imported service carries.
-    "carried_type_collision": ("collides", {
-        "doc.rvl": (
-            'use "lib.rvl" { Store }\n\n'
-            "type Item = { name: Str }\n\n"
-            "service Front { fn go() -> Str }\n\n"
-            "component App requires store: Store provides front: Front {\n"
-            "  provide front {\n"
-            '    fn go() = store.put({ ref: "a", qty: 1 })\n'
-            "  }\n"
-            "}\n"),
-        "lib.rvl": (
-            "pub type Item = { ref: Str, qty: Int }\n"
-            "pub service Store { fn put(row: Item) -> Str }\n"),
-    }),
 }
 
 
@@ -1572,6 +1556,23 @@ _LINKED_AS_REFERENCE = {
             "pub type Row = { id: Int }\n"
             "pub service Store { fn put(xs: List[Row]) -> Str }\n"),
     }),
+    # Issue #2374: the reference renames the document's private `Item` apart
+    # (`Item__m0`) from the `Item` the imported service carries, and so does
+    # the native link (issue #2308 refused it).
+    "carried_type_collision": (("py", "ts", "go", "java", "rust"), {
+        "doc.rvl": (
+            'use "lib.rvl" { Store }\n\n'
+            "type Item = { name: Str }\n\n"
+            "service Front { fn go() -> Str }\n\n"
+            "component App requires store: Store provides front: Front {\n"
+            "  provide front {\n"
+            '    fn go() = store.put({ ref: "a", qty: 1 })\n'
+            "  }\n"
+            "}\n"),
+        "lib.rvl": (
+            "pub type Item = { ref: Str, qty: Int }\n"
+            "pub service Store { fn put(row: Item) -> Str }\n"),
+    }),
     # A pure dependency whose extern bodies hold column-0 host lines: they are
     # inside the declaration, not top-level declarations of their own.
     "column0_extern_body": (("py", "ts"), {
@@ -1849,6 +1850,87 @@ def test_native_driver_decides_the_call_site_rules_through_an_import(
         want = _reference_message(lambda: compile_files([str(doc)]))
         assert want != ""
         assert got == "REFUSED|T1|" + want, got[:200]
+
+
+# Issue #2374: types carried through an import that the native chain refused
+# where the reference admits. Each case is (the module, the document's own
+# declarations, the provide method after `fn go()`, the outcome): "emit" is the
+# reference's bytes on every tier, "refuse" a native refusal where the
+# reference refuses too (the negative controls: no new silent admit).
+_CARRIED_LIB = (
+    "pub type In = { a: Int }\n"
+    "pub type Row = { i: In }\n"
+    "pub type Shape = Dot | Box(Int)\n"
+    "type Priv = P1 | P2\n"
+    "pub type Lone = L1 | L2\n"
+    "pub service Store {\n"
+    "  fn put(r: Row) -> Str\n"
+    "  fn draw(s: Shape) -> Str\n"
+    "}\n")
+
+_CARRIED_THROUGH_IMPORT = {
+    # 1. a variant case carried from the service's module was refused as G1
+    "case_without_payload": ("", "= store.draw(Dot)", "emit"),
+    "case_with_payload": ("", "= store.draw(Box(1))", "emit"),
+    "case_in_let": ("", "{\n      let s = Box(2)\n      return store.draw(s)\n    }",
+                    "emit"),
+    "case_unknown": ("", "= store.draw(Circle)", "refuse"),
+    "case_of_private_type": ("", "= store.draw(P1)", "refuse"),
+    "case_of_uncarried_type": ("", "= store.draw(L1)", "refuse"),
+    # 2. a private document type named like a carried one was refused as LINK;
+    # the reference renames it apart (`In__m0`)
+    "own_type_carried_transitively": (
+        "type In = { z: Str }\n\nfn mk() -> In { return { z: \"q\" } }\n\n",
+        "= store.put({ i: { a: 1 } })", "emit"),
+    "own_type_carried_directly": (
+        "type Row = { z: Str }\n\nfn mk() -> List[Row] { return [{ z: \"q\" }] }\n\n",
+        "= store.put({ i: { a: 1 } })", "emit"),
+    "own_type_and_carried_case": (
+        "type In = { z: Str }\n\n", "= store.draw(Box(mk_n()))", "emit"),
+    "own_public_type": ("pub type In = { z: Str }\n\n", "= store.put({ i: { a: 1 } })",
+                        "refuse"),
+    "own_type_wrong_literal": ("type In = { z: Str }\n\n",
+                               '= store.put({ i: { z: "x" } })', "refuse"),
+}
+
+
+def _write_carried_case(tmp_path, case):
+    own, body, _expect = _CARRIED_THROUGH_IMPORT[case]
+    if "mk_n()" in body:
+        own += "fn mk_n() -> Int { return 1 }\n\n"
+    (tmp_path / "lib.rvl").write_text(_CARRIED_LIB, encoding="utf-8")
+    doc = tmp_path / "doc.rvl"
+    doc.write_text('use "./lib.rvl" { Store }\n\n' + own + _CALL_SITE_COMPONENT % body,
+                   encoding="utf-8")
+    return doc
+
+
+# The go and java emitters do not cover a `let` in a provide body, in one
+# document either, so that case is compared on the other tiers.
+_CARRIED_TIERS = {"case_in_let": ("py", "ts", "rust")}
+
+
+def _carried_cases():
+    return [(case, tier) for case, (_o, _b, expect) in sorted(_CARRIED_THROUGH_IMPORT.items())
+            for tier in _CARRIED_TIERS.get(
+                case, ("py", "ts", "go", "java", "rust") if expect == "emit" else ("py",))]
+
+
+@pytest.mark.parametrize("case, tier", _carried_cases())
+def test_native_driver_admits_types_carried_through_an_import(
+        compile_rvl, reference_emit, tmp_path, case, tier):
+    """Issue #2374: a variant case carried from an imported service's module,
+    and a private document type named like a carried one, are admitted as the
+    reference admits them, byte for byte. Where the reference refuses, the
+    native chain refuses too."""
+    doc = _write_carried_case(tmp_path, case)
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
+    if _CARRIED_THROUGH_IMPORT[case][2] == "emit":
+        assert got == reference_emit[tier](compile_files([str(doc)])), got[:200]
+        return
+    with pytest.raises(RevlError):
+        compile_files([str(doc)])
+    assert got.startswith("REFUSED|"), got[:200]
 
 
 def test_six_way_composition_co_compiles(compile_rvl):

@@ -125,10 +125,17 @@ path, which is what the resolution needs:
   fields and case payloads name (its `carried` list, issue #1899), and appends
   them to the merged `types` table after the document's own. `ul_link_types`
   does the same, in the module's declaration order, each type once, and sets
-  `ir_version` to 3 as a type table does in the reference. It refuses with
-  `REFUSED|LINK|` where the reference would rename apart (a document's own type
-  of the same name), where two modules carry one name, and where any type the
-  service's module declares, public or private, has no native `types` entry.
+  `ir_version` to 3 as a type table does in the reference. A private type of
+  the document with a carried type's name is renamed apart to `<name>__m0`
+  before the document is lowered, as the reference's privacy pass renames it
+  (`ul_rename_apart`, issue #2374): every identifier of that name outside
+  comments, strings, templates and host bodies, provided the document's IR
+  holds the name only as a type (not as a case, a record field or another
+  declaration) and the document does not import it by name. It refuses with
+  `REFUSED|LINK|` where a document's own type of a carried name is public or
+  could not be renamed that way, where two modules carry one name, and where
+  any type the service's module declares, public or private, has no native
+  `types` entry.
   The last covers a transparent alias (`pub type Al = Cell`, or a private
   `type Id = Int`): the producer expands it in the service row and in record
   fields and writes no entry for it, so the link would carry `Cell` where the
@@ -168,6 +175,18 @@ path, which is what the resolution needs:
   appended too, rendered from the module's native `types` table, so the gate
   can hold a record literal to a carried record parameter field-wise. A
   generic carried type is left out.
+- A carried variant's case named in a component body (`store.draw(Dot)`,
+  `Box(1)`) is unknown to the document read alone, which refuses it with G1
+  as an undeclared requirement. The reference resolves it through the carried
+  type (issue #2374). So a G1 of the document read alone is decided again on
+  the document with the declaration text of every carried type appended
+  (`tc_carried_admission`), and when that admits, the document is lowered with
+  the same text, so its IR has the reference's `adt` nodes and the carried
+  types in the reference's order; the type link then appends none of them
+  twice. When a carried type has no declaration text (a generic one), or the
+  document declares or imports one by name, the G1 stands. A case of a type
+  no operation carries (a private one, or a public one the service does not
+  name) stays a G1, as in the reference.
 - The gate's own call-site rules, in a single document and through an import
   (issue #2362):
   - A requirement call with the wrong number of arguments is refused with the
