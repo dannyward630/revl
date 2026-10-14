@@ -60,6 +60,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from revl import compile_files, compile_source  # noqa: E402
 from revl.errors import RevlError  # noqa: E402
+from _load_by_path import load_by_path  # noqa: E402
 
 
 # ---------------------------------------------------------------- harness
@@ -1999,6 +2000,75 @@ def test_native_gate_admits_the_whole_emit_surface(admit):
                     f"refusal merely changed shape, read it before rewriting it.")
             else:
                 assert verdict == "", f"{key}: {verdict!r}"
+
+
+# Issue #2402: the reference checker now builds and matches values of a user
+# generic variant (`type Mb[T] = Jj(T) | Nn`); `selfhost/lower.rvl` does not
+# yet. The documents are the reference's own test table,
+# tests/test_generic_variant_construction.py, and each entry records what the
+# native chain gives for it on py, so the difference is NAMED rather than
+# passing for agreement. Same ratchet as NATIVE_GATE_GAPS: the day the
+# self-host follows the reference, these tests fail on the stale entry, and
+# the entry is DELETED rather than reworded.
+#
+# The reference ADMITS these and the native gate refuses them loudly, with the
+# message the reference gave before the fix (the bare head `Mb`).
+GENERIC_VARIANT_LOUD_REFUSALS: dict[str, str] = {
+    "argument": "REFUSED|T1|argument 1 of `un(...)` expects `Mb[Int]`, got `Mb`",
+    "generic_fn": "REFUSED|T1|this function's return expects `Mb[T]`, got `Mb`",
+    "inferred_let": "REFUSED|T1|this function's return expects `Mb[Int]`, got `Mb`",
+    "issue_let": "REFUSED|T1|`let v: Mb[Int]` expects `Mb[Int]`, got `Mb`",
+    "issue_nullary": "REFUSED|T1|`let v: Mb[Int]` expects `Mb[Int]`, got `Mb`",
+    "issue_return": "REFUSED|T1|this function's return expects `Mb[Int]`, got `Mb`",
+    "list_payload": "REFUSED|T1|this function's return expects `Bag[Int]`, got `Bag`",
+    "nested": "REFUSED|T1|this function's return expects `Mb[Mb[Int]]`, got `Mb`",
+    "nullary_without_expectation":
+        "REFUSED|T1|this function's return expects `Mb[Int]`, got `Mb`",
+    "two_parameters":
+        "REFUSED|T1|this function's return expects `Ei[Int, Str]`, got `Ei`",
+}
+
+# The reference REFUSES these (an arm over `Mb[Int]` binds `Int`, so returning
+# it as `Str` is a mismatch) and the native chain still ADMITS and emits them:
+# a silent verdict difference, recorded so it cannot read as agreement. Both
+# were admitted by the reference too before the fix.
+GENERIC_VARIANT_SILENT_ADMITS = ("arm_binds_second_parameter",
+                                 "arm_binds_substituted_payload")
+
+
+def _generic_variant_docs():
+    return load_by_path(
+        "test_generic_variant_construction",
+        ROOT / "tests" / "test_generic_variant_construction.py")
+
+
+@pytest.mark.parametrize("name", sorted(GENERIC_VARIANT_LOUD_REFUSALS))
+def test_generic_variant_program_is_refused_loudly_by_the_native_chain(
+        compile_to, name):
+    """Issue #2402: the reference admits it, the native chain refuses it with
+    the recorded REFUSED verdict. A change in either answer fails here."""
+    source = _generic_variant_docs().ADMITTED[name]
+    compile_source(source)  # the reference admits it
+    got = compile_to(source, "py")
+    assert got == GENERIC_VARIANT_LOUD_REFUSALS[name], (
+        f"{name}: recorded as {GENERIC_VARIANT_LOUD_REFUSALS[name]!r}, now "
+        f"{got[:160]!r}. If the self-host now matches the reference, DELETE "
+        f"the entry and compare bytes instead.")
+
+
+@pytest.mark.parametrize("name", GENERIC_VARIANT_SILENT_ADMITS)
+def test_generic_variant_arm_binding_is_a_known_silent_admit(compile_to, name):
+    """Issue #2402: the reference refuses it, the native chain still emits.
+    Fails the day the native chain refuses too, so the entry is removed."""
+    source, message = _generic_variant_docs().REFUSED[name]
+    with pytest.raises(RevlError) as refused:
+        compile_source(source)
+    assert message in str(refused.value)
+    got = compile_to(source, "py")
+    assert not got.startswith(("REFUSED|", "UNKNOWN_TIER|")), (
+        f"{name}: the native chain now refuses ({got[:160]!r}); if that is "
+        f"the reference's message, DELETE the entry from "
+        f"GENERIC_VARIANT_SILENT_ADMITS.")
 
 
 # The four checking positions a transparent type alias has to be erased at, plus
