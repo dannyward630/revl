@@ -27675,6 +27675,8 @@ fn parse_head(t: Str) -> Str {
 }
 
 // Top-level (bracket-depth-0) comma split of a type argument list.
+// A structural record type nests its own commas (`List[{k: Str, v: Int}]`),
+// so a brace opens a level as a bracket does (issue #2317).
 fn split_top_commas(s: Str) -> List[Str] {
   var out: List[Str] = []
   var depth = 0
@@ -27682,8 +27684,8 @@ fn split_top_commas(s: Str) -> List[Str] {
   var i = 0
   while (i < s.length()) {
     let c = s.charAt(i)
-    if (c == "[") { depth += 1  cur = cur.concat(c) }
-    else { if (c == "]") { depth -= 1  cur = cur.concat(c) }
+    if (c == "[" || c == "{") { depth += 1  cur = cur.concat(c) }
+    else { if (c == "]" || c == "}") { depth -= 1  cur = cur.concat(c) }
     else { if (c == "," && depth == 0) { out = out.push(ty_trim(cur))  cur = "" }
     else { cur = cur.concat(c) } } }
     i += 1
@@ -30699,6 +30701,15 @@ fn lir_try_return(ts: List[Token], at: Int, env: List[Bind], muts: List[Str],
 fn lir_one_stmt(ts: List[Token], i: Int, hi: Int, env: List[Bind],
                 muts: List[Str], ret: Str, marks: Map[Str, Int],
                 births: Map[Str, Str], al: Map[Str, Str]) -> StmtOne {
+  // issue #2317: a statement holding a match block arm lifts the arm into a
+  // helper fn (see `lir_lift_stmt`); a block head's body is read on its own.
+  if (lift_on(marks) && !ba_block_head(ts, i)) {
+    let se = ba_extent(ts, i, hi)
+    if (se > i && ba_has(ts, i, se)) {
+      let ls = lir_lift_stmt(ts, i, se, env, muts, ret, marks, births, al)
+      if (ls.i == se) { return ls }
+    }
+  }
   let t = tkc(ts, i)
   if (t.kind == "kw" && (t.text == "let" || t.text == "var")) {
     let mutable = t.text == "var"
@@ -31028,6 +31039,360 @@ fn lir_stmts(ts: List[Token], lo: Int, hi: Int, env0: List[Bind],
   return out
 }
 
+// ------------------------------- match block arms in a module fn (issue #2317)
+//
+// In a module `fn` the reference lowers a statement-block match arm,
+// `Pat => { stmt* tail }`, by lambda-LIFTING it (`_lift_block_arm`,
+// src/revl/lower.py): the block becomes a private helper `fn match_arm_N`
+// whose parameters are the enclosing names the block reads (sorted, each typed
+// from the enclosing scope), whose body is the block's statements followed by
+// `return tail`, and the arm's value is a call to it. The helpers are appended
+// after every module fn, numbered in the order their lowering COMPLETES: an
+// arm nested inside another arm's block is numbered first. `N` skips a name a
+// module fn or extern already holds.
+//
+// This producer reads a fn body as tokens, and the expression reader has no
+// form for a block holding a loop or a reassignment, so the rewrite happens
+// on tokens, the way the component path's `ba_rw` does it:
+//   * a statement holding a block arm is read to its real end (`ba_extent`);
+//   * each outermost arm block in it is lowered here, from the ORIGINAL
+//     tokens, as a helper body: its statements by `lir_one_stmt`, so nested
+//     arms in them lift recursively, and its tail by `lir_rhs`;
+//   * the block is replaced in the statement by one placeholder name
+//     (`@arm<k>`, `k` the arm's `=>` index), the statement is lowered as
+//     usual, and the placeholder's `var` node is replaced by a marked blob
+//     carrying the call's arguments and the helper's IR;
+//   * `lift_expand` runs once over the whole `functions` text, numbers the
+//     blobs in completion order, writes each call and collects the helpers.
+// Anything this does not read (a capture with no known type, a tail the
+// expression reader declines) leaves the statement to the ordinary path,
+// which keeps the `bad` node it always produced.
+//
+// The blob markers open with two quotes, which no compact JSON text holds: a
+// `"` there is a string delimiter, and a closing one is never followed by a
+// second.
+
+fn lift_open() -> Str { return "\"\"@<" }
+fn lift_sep() -> Str { return "\"\"@|" }
+fn lift_close() -> Str { return "\"\"@>" }
+
+fn lift_on(marks: Map[Str, Int]) -> Bool { return mget_int(marks, "@lift") == 1 }
+
+fn lift_ph(i: Int) -> Str { return "@arm".concat(i.to_str()) }
+
+fn lift_ph_json(i: Int) -> Str {
+  return "{\"kind\":\"var\",\"name\":".concat(jstr(lift_ph(i))).concat("}")
+}
+
+// Whether the identifier at j is a name READ (`_collect_arm_names`' `ExprVar`
+// or assignment target): not a field after `.`, not a record key, not the
+// binder of a nested arm's `Case(x) =>`.
+fn lift_is_read(ts: List[Token], j: Int) -> Bool {
+  if (atk(ts, j - 1, ".")) { return false }
+  if (atk(ts, j + 1, ":") && (atk(ts, j - 1, "{") || atk(ts, j - 1, ",") || atk(ts, j - 1, "|"))) {
+    return false
+  }
+  if (atk(ts, j - 1, "(") && atk(ts, j + 1, ")") && atk(ts, j + 2, "=>") && atk(ts, j - 2, "ident")) {
+    return false
+  }
+  return true
+}
+
+// The names a `let`/`var` pattern at j binds: one name, or every identifier
+// of a `{a, b}` / `[x, ...rest]` pattern.
+fn lift_pat_binds(ts: List[Token], j: Int, acc: List[Str]) -> List[Str] {
+  if (atk(ts, j, "ident")) { return acc.push(tkc(ts, j).text) }
+  if (!atk(ts, j, "{") && !atk(ts, j, "[")) { return acc }
+  let close = atk(ts, j, "{") ? "}" : "]"
+  var out = acc
+  var k = j + 1
+  while (k < ts.length() && !atk(ts, k, close)) {
+    if (atk(ts, k, "ident")) { out = out.push(tkc(ts, k).text) }
+    k += 1
+  }
+  return out
+}
+
+// The enclosing names the block `[lo, hi)` reads and does not bind, sorted.
+fn lift_captures(ts: List[Token], lo: Int, hi: Int, env: List[Bind]) -> List[Str] {
+  var reads: List[Str] = []
+  var bound: List[Str] = []
+  var j = lo
+  while (j < hi) {
+    if (atw(ts, j, "let") || atw(ts, j, "var")) {
+      bound = lift_pat_binds(ts, j + 1, bound)
+    }
+    if (atw(ts, j, "for") && atk(ts, j + 1, "(") && atk(ts, j + 2, "ident")) {
+      bound = bound.push(tkc(ts, j + 2).text)
+    }
+    if (atk(ts, j, "ident") && lift_is_read(ts, j)) { reads = reads.push(tkc(ts, j).text) }
+    j += 1
+  }
+  var caps: List[Str] = []
+  var i = 0
+  while (i < reads.length()) {
+    let n = reads[i]
+    if (tenv_get(env, local_key(n)) == "1" && !contains(bound, n) && !contains(caps, n)) {
+      caps = caps.push(n)
+    }
+    i += 1
+  }
+  return sort_strs(caps)
+}
+
+type LiftArm = { ok: Bool, blob: Str }
+
+fn lift_fail() -> LiftArm { return { ok: false, blob: "" } }
+
+// One arm block: `=>` at p, its block closing just before e, the arm's
+// `match` keyword at m (or -1). The blob that stands in for the arm's value.
+fn lift_arm(ts: List[Token], p: Int, e: Int, m: Int, env: List[Bind],
+            marks: Map[Str, Int], births: Map[Str, Str], al: Map[Str, Str]) -> LiftArm {
+  let bound = atk(ts, p - 1, ")")
+  let bind = bound ? tkc(ts, p - 2).text : ""
+  let pat = bound ? tkc(ts, p - 4).text : tkc(ts, p - 1).text
+  var aenv = env
+  if (bind != "") {
+    if (m < 0) { return lift_fail() }
+    let sc = expr_at(ts, m + 1)
+    if (is_bad(sc.e)) { return lift_fail() }
+    let pay = arm_payload(infer(sc.e, env), pat, env)
+    aenv = env_mut_put(env, bind, false)
+    if (pay != "") { aenv = tenv_put(aenv, bind, pay) }
+  }
+  let caps = lift_captures(ts, p + 2, e - 1, aenv)
+  var params = ""
+  var args = ""
+  var henv = aenv
+  var i = 0
+  while (i < caps.length()) {
+    let ty = tenv_get(aenv, caps[i])
+    if (ty == "") { return lift_fail() }
+    let pj = "{\"name\":".concat(jstr(caps[i])).concat(",\"type\":").concat(jstr(ty)).concat("}")
+    let aj = "{\"kind\":\"var\",\"name\":".concat(jstr(caps[i])).concat("}")
+    params = i == 0 ? pj : params.concat(",").concat(pj)
+    args = i == 0 ? aj : args.concat(",").concat(aj)
+    // a captured `var` enters the helper as an immutable parameter
+    henv = env_mut_put(henv, caps[i], false)
+    i += 1
+  }
+  let t0 = ba_tail_start(ts, p + 2, e - 1)
+  var tend = e - 1
+  while (tend > t0 && atk(ts, tend - 1, ";")) { tend -= 1 }
+  var benv = henv
+  var muts: List[Str] = []
+  var body = ""
+  var j = p + 2
+  while (j < t0) {
+    if (atk(ts, j, ";")) { j += 1 }
+    else {
+      let st = lir_one_stmt(ts, j, t0, benv, muts, "", marks, births, al)
+      if (st.i <= j) { return lift_fail() }
+      if (st.js != "") { body = body == "" ? st.js : body.concat(",").concat(st.js) }
+      benv = st.env
+      muts = st.muts
+      j = st.i
+    }
+  }
+  let r = lir_rhs(ts, t0, benv, al)
+  if (!r.ok || r.i != tend) { return lift_fail() }
+  let retj = "{\"step\":\"return\",\"expr\":".concat(r.js).concat("}")
+  let rest = ",\"params\":[".concat(params).concat("],\"returns\":")
+    .concat(r.ty == "" ? "null" : jstr(r.ty)).concat(",\"public\":false,\"body\":[")
+    .concat(body == "" ? retj : body.concat(",").concat(retj)).concat("]}")
+  return { ok: true, blob: lift_open().concat(p.to_str()).concat(lift_sep()).concat(args)
+                            .concat(lift_sep()).concat(rest).concat(lift_close()) }
+}
+
+// A statement `[lo, hi)` with every outermost arm block replaced by its
+// placeholder. `orig` maps each rewritten token back to its source index (-1
+// for a placeholder), so the ownership marks keyed by index follow it.
+type LiftRw = { toks: List[Token], orig: List[Int], blobs: List[Bind], ok: Bool }
+
+fn lift_rw(ts: List[Token], lo: Int, hi: Int, env: List[Bind], marks: Map[Str, Int],
+           births: Map[Str, Str], al: Map[Str, Str]) -> LiftRw {
+  var out: List[Token] = []
+  var orig: List[Int] = []
+  var blobs: List[Bind] = []
+  var stack: List[Str] = []
+  var opens: List[Int] = []
+  // the `{` that opens a match's arms, keyed by index, to its `match` + 1
+  var scrut: Map[Str, Int] = Map.empty()
+  var i = lo
+  while (i < hi) {
+    let t = tkc(ts, i)
+    if (atw(ts, i, "match")) {
+      let sr = expr_at(ts, i + 1)
+      if (atk(ts, sr.i, "{")) { scrut = scrut.set(sr.i.to_str(), i + 1) }
+    }
+    let e = ba_arm_at(ts, i, ba_top(stack)) ? close_brace(ts, i + 1) : 0 - 1
+    if (e != 0 - 1 && e <= hi) {
+      let b = opens.length() > 0 ? opens[opens.length() - 1] : 0 - 1
+      let a = lift_arm(ts, i, e, mget_int(scrut, b.to_str()) - 1, env, marks, births, al)
+      if (!a.ok) { return { toks: [], orig: [], blobs: [], ok: false } }
+      out = out.push(t).push({ kind: "ident", text: lift_ph(i), line: t.line })
+      orig = orig.push(i).push(0 - 1)
+      blobs = blobs.push({ name: lift_ph_json(i), ty: a.blob })
+      i = e
+    } else {
+      if (ba_opener(t.kind)) {
+        stack = stack.push(t.kind)
+        opens = opens.push(i)
+      }
+      if (ba_closer(t.kind)) {
+        stack = ba_pop(stack)
+        opens = opens.length() > 0 ? opens.slice(0, opens.length() - 1) : opens
+      }
+      out = out.push(t)
+      orig = orig.push(i)
+      i += 1
+    }
+  }
+  return { toks: out, orig: orig, blobs: blobs, ok: true }
+}
+
+fn lift_mark_at(marks: Map[Str, Int], k: Str) -> Int {
+  return match marks.lookup(k) { Some(v) => v, None => 0 - 999 }
+}
+
+fn lift_marks(marks: Map[Str, Int], orig: List[Int]) -> Map[Str, Int] {
+  var out: Map[Str, Int] = Map.empty()
+  let reserved = ["@try_fn", "@try_end", "@lift"]
+  var r = 0
+  while (r < reserved.length()) {
+    let v = lift_mark_at(marks, reserved[r])
+    if (v != 0 - 999) { out = out.set(reserved[r], v) }
+    r += 1
+  }
+  var k = 0
+  while (k < orig.length()) {
+    let v = orig[k] >= 0 ? lift_mark_at(marks, orig[k].to_str()) : 0 - 999
+    if (v != 0 - 999) { out = out.set(k.to_str(), v) }
+    k += 1
+  }
+  return out
+}
+
+fn lift_births(births: Map[Str, Str], orig: List[Int]) -> Map[Str, Str] {
+  var out: Map[Str, Str] = Map.empty()
+  var k = 0
+  while (k < orig.length()) {
+    if (orig[k] >= 0) {
+      let v = mget_str(births, orig[k].to_str())
+      if (v != "") { out = out.set(k.to_str(), v) }
+    }
+    k += 1
+  }
+  return out
+}
+
+// The statement `[i, se)`, which holds a block arm, lowered with each arm
+// lifted. `i` of the result is -1 when the rewrite does not read it.
+fn lir_lift_stmt(ts: List[Token], i: Int, se: Int, env: List[Bind], muts: List[Str],
+                 ret: Str, marks: Map[Str, Int], births: Map[Str, Str],
+                 al: Map[Str, Str]) -> StmtOne {
+  let rw = lift_rw(ts, i, se, env, marks, births, al)
+  if (!rw.ok) { return mk_one("", env, muts, 0 - 1) }
+  let rt = ba_one_line(rw.toks, tkc(ts, i).line)
+  let st = lir_one_stmt(rt, 0, rt.length(), env, muts, ret, lift_marks(marks, rw.orig),
+                        lift_births(births, rw.orig), al)
+  if (st.i != rt.length()) { return mk_one("", env, muts, 0 - 1) }
+  var js = st.js
+  var k = 0
+  while (k < rw.blobs.length()) {
+    let ph = rw.blobs[k].name
+    if (js.indexOf(ph) == 0 - 1) { return mk_one("", env, muts, 0 - 1) }
+    js = js.split(ph).join(rw.blobs[k].ty)
+    k += 1
+  }
+  return mk_one(js, st.env, st.muts, se)
+}
+
+// The names a helper may not take: every module fn's and extern's.
+fn lift_taken(ts: List[Token]) -> List[Str] {
+  var out: List[Str] = []
+  var i = 0
+  while (i < ts.length()) {
+    if (atw(ts, i, "fn") && atk(ts, i + 1, "ident")) { out = out.push(tkc(ts, i + 1).text) }
+    i += 1
+  }
+  return out
+}
+
+// The index in s of the close marker matching an already-opened blob.
+fn lift_close_at(s: Str) -> Int {
+  var depth = 0
+  var off = 0
+  var rest = s
+  var found = 0 - 1
+  var go = true
+  while (go) {
+    let o = rest.indexOf(lift_open())
+    let c = rest.indexOf(lift_close())
+    if (c == 0 - 1) { go = false }
+    else {
+      if (o != 0 - 1 && o < c) {
+        depth += 1
+        off = off + o + 4
+        rest = rest.slice(o + 4, rest.length())
+      } else {
+        if (depth == 0) {
+          found = off + c
+          go = false
+        } else {
+          depth -= 1
+          off = off + c + 4
+          rest = rest.slice(c + 4, rest.length())
+        }
+      }
+    }
+  }
+  return found
+}
+
+// `js`: the text with every blob replaced by its call; `helpers`: the lifted
+// fns, in numbering order; `names`: each blob key's helper name.
+type LiftOut = { js: Str, helpers: Str, n: Int, names: Map[Str, Str], ok: Bool }
+
+fn lift_next(n: Int, taken: List[Str]) -> Int {
+  var k = n
+  while (contains(taken, "match_arm_".concat(k.to_str()))) { k += 1 }
+  return k
+}
+
+// Expand every blob in s, innermost first. A key already in `fixed` takes
+// that name and numbers nothing (a `_revl_sync` clone re-renders its
+// origin's span, and calls the origin's helpers).
+fn lift_expand(s: Str, n: Int, helpers: Str, names: Map[Str, Str], taken: List[Str],
+               fixed: Map[Str, Str]) -> LiftOut {
+  let k = s.indexOf(lift_open())
+  if (k == 0 - 1) { return { js: s, helpers: helpers, n: n, names: names, ok: true } }
+  let body = s.slice(k + 4, s.length())
+  let s1 = body.indexOf(lift_sep())
+  let key = body.slice(0, s1)
+  let r1 = body.slice(s1 + 4, body.length())
+  let s2 = r1.indexOf(lift_sep())
+  let args = r1.slice(0, s2)
+  let r2 = r1.slice(s2 + 4, r1.length())
+  let ce = lift_close_at(r2)
+  if (s1 == 0 - 1 || s2 == 0 - 1 || ce == 0 - 1) {
+    return { js: s, helpers: helpers, n: n, names: names, ok: false }
+  }
+  let inner = lift_expand(r2.slice(0, ce), n, helpers, names, taken, fixed)
+  let pinned = mget_str(fixed, key)
+  let at = lift_next(inner.n, taken)
+  let nm = pinned != "" ? pinned : "match_arm_".concat(at.to_str())
+  let hjs = "{\"name\":".concat(jstr(nm)).concat(inner.js)
+  let hs = pinned != "" ? inner.helpers
+    : (inner.helpers == "" ? hjs : inner.helpers.concat(",").concat(hjs))
+  let call = "{\"kind\":\"call\",\"callee\":{\"kind\":\"var\",\"name\":".concat(jstr(nm))
+    .concat("},\"args\":[").concat(args).concat("]}")
+  let tl = lift_expand(r2.slice(ce + 4, r2.length()), pinned != "" ? inner.n : at + 1, hs,
+                       names.set(key, nm), taken, fixed)
+  return { js: s.slice(0, k).concat(call).concat(tl.js), helpers: tl.helpers, n: tl.n,
+           names: tl.names, ok: inner.ok && tl.ok }
+}
+
 // ------------------------------------------------- type parameters (item 391)
 //
 // A fn's body sees its own type parameters MARKED (`T` -> `?T`, typecheck.py's
@@ -31181,7 +31546,7 @@ fn lir_function_named(ts: List[Token], i: Int, cases: List[Bind], public_fn: Boo
   // issue #1900: the fn's token span rides `marks` under two reserved keys (the
   // ownership marks are keyed by token index, so no key can collide): a `try`
   // names its fresh locals off the identifiers spelled inside it
-  let tmarks = om.marks.set("@try_fn", i).set("@try_end", bend)
+  let tmarks = om.marks.set("@try_fn", i).set("@try_end", bend).set("@lift", 1)
   // the caller's own redirect row rides the body environment under a reserved
   // key no identifier can spell, the way `mut_key` and `local_key` already do.
   let benv = append_binds(params_env(ps.ps, cases, tps), fnty)
@@ -32676,10 +33041,16 @@ pub fn lower_to_ir_refs_at(src: Str, fname: Str, rows: List[Str]) -> Str {
   let ver = a.v3 ? "3" : (a.v2 ? "2" : "1")
   let fo = fns_walk(ts, 0, "", case_binds(ts, plan.al), plan.colored, own_program_summary(ts),
                     plan.al, plan.monos, plan.origins, fnty, Map.empty())
-  var fnsjs = fo.js
+  // issue #2317: the lifted block-arm helpers join after every module fn and
+  // before the `_revl_sync` clones; a clone calls its origin's helpers.
+  let taken = lift_taken(ts)
+  let lx = lift_expand(fo.js, 0, "", Map.empty(), taken, Map.empty())
+  var fnsjs = lx.js
+  if (lx.helpers != "") { fnsjs = fnsjs == "" ? lx.helpers : fnsjs.concat(",").concat(lx.helpers) }
   var ci = 0
   while (ci < plan.origins.length()) {
-    let cjs = mget_str(fo.clones, mget_str(plan.monos, plan.origins[ci]))
+    let cjs0 = mget_str(fo.clones, mget_str(plan.monos, plan.origins[ci]))
+    let cjs = lift_expand(cjs0, 0, "", Map.empty(), taken, lx.names).js
     if (cjs != "") { fnsjs = fnsjs == "" ? cjs : fnsjs.concat(", ").concat(cjs) }
     ci += 1
   }

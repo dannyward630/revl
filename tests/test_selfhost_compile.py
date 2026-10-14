@@ -650,15 +650,10 @@ LOWER_GAP_DOCS: dict[str, tuple[str, ...]] = {
         # order, and the document is byte-exact on py and ts.)
     ),
     "ts": (
-        # issue #2297: `block_arm_records.rvl`. The emitter half is byte-exact
-        # on the REFERENCE IR (asserted above for every document). The native
-        # chain is not, because `selfhost/lower.rvl` has no block match arm in a
-        # MODULE `fn` (issue #1699 covers component bodies only): the smallest
-        # `return match r { Ok(v) => { var t = v\n t }, Err(e) => 0 }` already
-        # lowers to `<<UNSUPPORTED-EXPR:bad>>` with no `match_arm_N` helper.
-        # That is a producer gap that predates the document, not a change in
-        # the emitter, so it is recorded here and not fixed in this slice.
-        "block_arm_records.rvl",
+        # (issue #2317: `block_arm_records.rvl` left this list. A block match
+        # arm in a module `fn` is now lambda-lifted into its `match_arm_N`
+        # helper by `selfhost/lower.rvl` (`lir_lift_stmt`), and a structural
+        # record type nested in a type argument splits at its own top level.)
         # (`services_composite.rvl` left this list when lower.rvl grew the
         # component dialect's list literal, and `component_exprs.rvl` with its
         # `format` template, bare-name `fn` call and tagged `adt` construction,
@@ -953,6 +948,74 @@ def test_native_driver_links_the_pure_closure_externs(
     reference_ir = compile_files([str(doc)])
     assert [e["name"] for e in reference_ir["externs"]] == [
         "d_own", "a_one", "a_priv", "z_one", "t_one"]
+    want = reference_emit[tier](reference_ir)
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
+    assert got == want
+
+
+# Issue #2317: block match arms in module fns. The issue's reproducer; two
+# block arms in one match; an arm nested in another arm's block, which the
+# reference numbers FIRST (its lowering completes first); and a user fn that
+# already holds `match_arm_0`, which the helper names step over.
+_BLOCK_ARM_FNS = {
+    "reproducer.rvl": (
+        "fn f(r: Result[Int, Str]) -> Int {\n"
+        "  return match r { Ok(v) => { var t = v\n"
+        "    t }, Err(e) => 0 }\n"
+        "}\n"),
+    "numbering.rvl": (
+        'fn match_arm_0(x: Int) -> Int { return x }\n'
+        '\n'
+        'fn two(r: Result[Int, Str], k: Int) -> Int {\n'
+        '  return match r {\n'
+        '    Ok(v) => {\n'
+        '      let a = v + k\n'
+        '      a\n'
+        '    },\n'
+        '    Err(e) => {\n'
+        '      let n = e.length()\n'
+        '      n + k\n'
+        '    },\n'
+        '  }\n'
+        '}\n'
+        '\n'
+        'fn nest(r: Result[Int, Str], o: Result[Int, Str]) -> Int {\n'
+        '  let w = 3\n'
+        '  let out = match r {\n'
+        '    Ok(v) => {\n'
+        '      let inner = match o {\n'
+        '        Ok(u) => {\n'
+        '          let s = u + v\n'
+        '          s * w\n'
+        '        },\n'
+        '        Err(e) => 0,\n'
+        '      }\n'
+        '      inner + 1\n'
+        '    },\n'
+        '    Err(e) => match_arm_0(2),\n'
+        '  }\n'
+        '  return out\n'
+        '}\n'
+        '\n'
+        'test "two" {\n'
+        '  assert two(Ok(1), 2) == 3\n'
+        '  assert nest(Ok(1), Ok(2)) == 10\n'
+        '}\n'
+        ),
+}
+
+
+@pytest.mark.parametrize("tier", ("py", "ts"))
+@pytest.mark.parametrize("name", sorted(_BLOCK_ARM_FNS))
+def test_block_arm_in_a_module_fn_lifts_like_the_reference(
+        compile_rvl, reference_emit, tmp_path, tier, name):
+    """Issue #2317: the native chain lifts each block arm of a module `fn` into
+    the reference's `match_arm_N` helper, with the same captures, numbering and
+    placement, rather than lowering the whole `match` to `bad`."""
+    doc = tmp_path / name
+    doc.write_text(_BLOCK_ARM_FNS[name], encoding="utf-8")
+    reference_ir = compile_files([str(doc)])
+    assert any(f["name"].startswith("match_arm_") for f in reference_ir["functions"])
     want = reference_emit[tier](reference_ir)
     got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
     assert got == want
