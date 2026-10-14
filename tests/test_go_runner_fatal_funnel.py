@@ -725,7 +725,8 @@ def test_an_unconfirmed_dispose_is_not_reported_as_a_clean_teardown(tmp_path, on
     spec = tmp_path / "stuck.json"
     spec.write_text(json.dumps({**_SPEC, "probe": [], "once": once}))
     done = subprocess.run([binary, str(spec)], capture_output=True, text=True,
-                          timeout=300, stdin=subprocess.DEVNULL)
+                          timeout=300, stdin=subprocess.DEVNULL,
+                          env={**os.environ, "REVL_TEARDOWN_GRACE": "1"})
     both = done.stdout + done.stderr
     assert "MARK STUCK" in both, both
     assert "dispose NOT confirmed" in both, both
@@ -739,8 +740,8 @@ def test_an_unconfirmed_dispose_is_not_reported_as_a_clean_teardown(tmp_path, on
 def test_the_teardown_bound_follows_revl_teardown_grace(tmp_path):
     """The conductor's stranded-teardown report tells a user to raise
     REVL_TEARDOWN_GRACE, so the runner's own dispose bound reads it (seconds)
-    and keeps 5s only as the default. With a never-settling inverse and a
-    1 second grace the runner gives up well before the 5 second default."""
+    and keeps the conductor's 30s only as the default. With a never-settling inverse
+    and a 1 second grace the runner gives up well before that default."""
     binary = _build(tmp_path, doc=_STUCK_UNDO_DOC)
     spec = tmp_path / "grace.json"
     spec.write_text(json.dumps({**_SPEC, "probe": [], "once": False}))
@@ -752,3 +753,47 @@ def test_the_teardown_bound_follows_revl_teardown_grace(tmp_path):
     assert done.returncode == 1, done.stdout + done.stderr
     assert "dispose NOT confirmed" in done.stdout + done.stderr
     assert elapsed < 4.0, elapsed
+
+
+# A correct inverse that outlasts the old 5 s default (issue #2356): a busy loop
+# (about a nanosecond a turn; the emitted module imports no `time`).
+_LONG_UNDO_DOC = '''
+service Vault { fn show(user: Str) -> Str }
+
+extern pure fn mark(what: Str) -> Str = @go {
+	if what == "INVERSE-RAN" {
+		sum := 0
+		for i := 0; i < 8000000000; i++ {
+			sum += i & 3
+		}
+		println("SPIN", sum)
+	}
+	println("MARK " + what)
+	return what
+}
+
+component Impl provides vault: Vault {
+  let slot = effect mark("applied") undo mark("INVERSE-RAN")
+
+  provide vault {
+    fn show(user) { return "shown " + user }
+  }
+}
+'''
+
+
+@pytest.mark.parametrize("once", [False, True], ids=["held", "once"])
+def test_a_slow_correct_inverse_ends_in_down_with_the_default_bound(tmp_path, once):
+    """With REVL_TEARDOWN_GRACE unset the runner waits as long as the conductor
+    does (30 s less a margin), so a 6 s inverse is a clean teardown (#2356)."""
+    binary = _build(tmp_path, doc=_LONG_UNDO_DOC)
+    spec = tmp_path / "long.json"
+    spec.write_text(json.dumps({**_SPEC, "probe": [], "once": once}))
+    env = {k: v for k, v in os.environ.items() if k != "REVL_TEARDOWN_GRACE"}
+    done = subprocess.run([binary, str(spec)], stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, text=True, timeout=300,
+                          stdin=subprocess.DEVNULL, env=env)
+    out = done.stdout
+    assert done.returncode == 0, out
+    assert "MARK INVERSE-RAN" in out and "] DOWN" in out, out
+    assert "FATAL" not in out, out

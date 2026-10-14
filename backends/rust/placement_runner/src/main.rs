@@ -294,16 +294,81 @@ fn spawn_monitor(socket: String, key: String, tx: std::sync::mpsc::Sender<String
     });
 }
 
-/// How long the teardown gives its disposes to settle: the conductor's
-/// `REVL_TEARDOWN_GRACE` (seconds, the variable its stranded-teardown report
-/// tells a user to raise) when it is a positive finite number, else 5 seconds.
+/// The conductor's own default for `REVL_TEARDOWN_GRACE`, in seconds:
+/// `_TEARDOWN_GRACE` in `src/revl/placement.py`, the single source. The conductor
+/// kills a child that has not said `DOWN` this long after it was asked to stop,
+/// so a runner that defaulted lower called a correct 5 to 30 second inverse a
+/// failed teardown (issue #2356).
+const DEFAULT_TEARDOWN_GRACE_SECS: f64 = 30.0;
+/// How long before the conductor's grace the runner gives up, so its FATAL line
+/// is always written before the conductor's kill can swallow it.
+const TEARDOWN_MARGIN_SECS: f64 = 2.0;
+
+/// How long the teardown gives its disposes to settle: the conductor's grace
+/// (`REVL_TEARDOWN_GRACE` seconds when it is a positive finite number, else the
+/// conductor's default) less a margin, so the runner reports first. The margin
+/// never exceeds half the grace, which keeps a short grace usable.
 fn teardown_bound() -> std::time::Duration {
-    let default = std::time::Duration::from_secs(5);
-    match std::env::var("REVL_TEARDOWN_GRACE").ok().and_then(|raw| raw.parse::<f64>().ok()) {
-        Some(secs) if secs.is_finite() && secs > 0.0 && secs <= 86400.0 => {
-            std::time::Duration::from_secs_f64(secs)
+    let grace = match std::env::var("REVL_TEARDOWN_GRACE").ok().and_then(|raw| raw.parse::<f64>().ok()) {
+        Some(secs) if secs.is_finite() && secs > 0.0 && secs <= 86400.0 => secs,
+        _ => DEFAULT_TEARDOWN_GRACE_SECS,
+    };
+    std::time::Duration::from_secs_f64(grace - TEARDOWN_MARGIN_SECS.min(grace / 2.0))
+}
+
+/// The bound on a teardown, enforced from a watchdog thread. `dispose` runs on
+/// the calling thread (emitted state is thread-local), so a dispose that never
+/// returns can only be cut short from outside. One claim decides the race
+/// between the watchdog and the end of the loop: 0 = open, 1 = the teardown
+/// finished, 2 = the bound expired. Whoever moves it off 0 first wins, so the
+/// process never prints FATAL and then `DOWN` (or the reverse).
+struct TeardownWatch {
+    claim: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    disposing: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+impl TeardownWatch {
+    fn start(name: String) -> TeardownWatch {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        let claim = std::sync::Arc::new(AtomicU8::new(0));
+        let disposing = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let (watch_claim, watch_disposing) = (claim.clone(), disposing.clone());
+        let deadline = std::time::Instant::now() + teardown_bound();
+        std::thread::spawn(move || {
+            while std::time::Instant::now() < deadline {
+                if watch_claim.load(Ordering::SeqCst) != 0 {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            if watch_claim.compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+                return;
+            }
+            let label = watch_disposing.lock().map(|l| l.clone()).unwrap_or_default();
+            eprintln!("{}", confidential::revl_redact_text(format!(
+                "[{name}] FATAL teardown incomplete: dispose not confirmed before the \
+                 bound expired for {label}")));
+            std::process::exit(1)
+        });
+        TeardownWatch { claim, disposing }
+    }
+
+    /// Name the fiber whose dispose is about to run, for the FATAL line.
+    fn disposing(&self, label: &str) {
+        if let Ok(mut current) = self.disposing.lock() {
+            *current = label.to_string();
         }
-        _ => default,
+    }
+
+    /// The loop is over. When the watchdog expired the bound first it is
+    /// exiting the process, so wait for that instead of carrying on.
+    fn finish(&self) {
+        use std::sync::atomic::Ordering;
+        if self.claim.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            loop {
+                std::thread::park();
+            }
+        }
     }
 }
 
@@ -328,13 +393,26 @@ fn main() {
     // and report residue that is ours to clear.
     let fatal_boot = |message: String, fibers: &[(String, cordis::Fiber)]| -> ! {
         eprintln!("{}", confidential::revl_redact_text(format!("[{name}] {message}")));
+        // Bounded like the normal teardown (issue #2356): a stuck inverse must
+        // not hang a failed boot.
+        let watch = TeardownWatch::start(name.clone());
         for (label, fiber) in fibers.iter().rev() {
+            watch.disposing(label);
             match fiber.dispose() {
                 Ok(()) => log("swap", label, "dispose"),
                 Err(error) => log("swap", label, &format!("dispose NOT confirmed: {error}")),
             }
         }
+        watch.finish();
         std::process::exit(1)
+    };
+    // An activation that does not reach Active is a boot failure. `try_wait`
+    // errs for a FAILED fiber and for a PENDING one (a dependency nobody
+    // provides), and neither may panic (issue #2341).
+    let activated = |fiber: &cordis::Fiber, what: String, fibers: &[(String, cordis::Fiber)]| {
+        if let Err(error) = fiber.try_wait() {
+            fatal_boot(format!("boot failed loading {what}: {error}"), fibers);
+        }
     };
     // The uncaught channel: a panic unwinding out of a host body prints from the
     // runtime itself, before `log` runs and outside every funnel the emitted
@@ -399,7 +477,7 @@ fn main() {
             match components::_revl_proxy_plugin(key, service, socket.clone()) {
                 Some(handle) => {
                     let fiber = root.plugin(handle, ());
-                    fiber.try_wait().unwrap();
+                    activated(&fiber, format!("proxy for key {key}"), &fibers);
                     fibers.push((format!("{key}-proxy"), fiber));
                     log("proxy", key, &format!("-> {socket} [{service}]"));
                     if !once {
@@ -487,7 +565,7 @@ fn main() {
             match resolve_key(&root, &spec["placements"], key) {
                 Resolved::In(ctx) => {
                     let fiber = ctx.plugin(serve_plugin(key.clone(), served.clone()), ());
-                    fiber.try_wait().unwrap();
+                    activated(&fiber, format!("served key {key}"), &fibers);
                     fibers.push(("serve".to_string(), fiber));
                 }
                 Resolved::Refused(why) => {
@@ -513,11 +591,12 @@ fn main() {
                     continue;
                 }
             };
+            let what = format!("probe {key}.{method}");
             let fiber = ctx.plugin(
                 probe_plugin(name.clone(), key, method, args_of(probe)),
                 (),
             );
-            fiber.try_wait().unwrap();
+            activated(&fiber, what, &fibers);
             fibers.push(("probe".to_string(), fiber));
         }
     }
@@ -565,7 +644,10 @@ fn main() {
             if let Some(key) = reason.strip_prefix("peer:") {
                 log("peer", key, "provider died: withdrawing the proxy");
                 if let Some((_, pf)) = fibers.iter().find(|(l, _)| *l == format!("{key}-proxy")) {
-                    let _ = pf.dispose();
+                    if let Err(error) = pf.dispose() {
+                        log("swap", &format!("{key}-proxy"),
+                            &format!("dispose NOT confirmed: {error}"));
+                    }
                 }
                 for (label, fiber) in fibers.iter() {
                     if !label.ends_with("-proxy") {
@@ -588,38 +670,10 @@ fn main() {
             "[{name}] FATAL teardown incomplete: {detail}")));
         std::process::exit(1)
     };
-    // One claim decides the race between the watchdog and the end of the
-    // loop: 0 = open, 1 = the teardown finished, 2 = the bound expired. Whoever
-    // moves it off 0 first wins, so the process never prints FATAL and then
-    // `DOWN` (or the reverse).
-    use std::sync::atomic::{AtomicU8, Ordering};
-    let claim = std::sync::Arc::new(AtomicU8::new(0));
-    let disposing = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    {
-        let (claim, disposing, name) = (claim.clone(), disposing.clone(), name.clone());
-        let deadline = std::time::Instant::now() + teardown_bound();
-        std::thread::spawn(move || {
-            while std::time::Instant::now() < deadline {
-                if claim.load(Ordering::SeqCst) != 0 {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            if claim.compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-                return;
-            }
-            let label = disposing.lock().map(|l| l.clone()).unwrap_or_default();
-            eprintln!("{}", confidential::revl_redact_text(format!(
-                "[{name}] FATAL teardown incomplete: dispose not confirmed before the \
-                 bound expired for {label}")));
-            std::process::exit(1)
-        });
-    }
+    let watch = TeardownWatch::start(name.clone());
     let mut unconfirmed: Vec<String> = Vec::new();
     for (label, fiber) in fibers.iter().rev() {
-        if let Ok(mut current) = disposing.lock() {
-            *current = label.clone();
-        }
+        watch.disposing(label);
         match fiber.dispose() {
             Ok(()) => log("swap", label, "dispose"),
             Err(error) => {
@@ -628,12 +682,7 @@ fn main() {
             }
         }
     }
-    if claim.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-        // the watchdog expired the bound first and is exiting the process
-        loop {
-            std::thread::park();
-        }
-    }
+    watch.finish();
     if !unconfirmed.is_empty() {
         incomplete(&format!("dispose not confirmed for {}", unconfirmed.join(", ")));
     }

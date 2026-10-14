@@ -200,23 +200,36 @@ func fatalBoot(name, message string, fibers []labeledFiber,
 	os.Exit(1)
 }
 
-// defaultTeardownBound is how long the teardown waits for the disposes to
-// settle when REVL_TEARDOWN_GRACE is not set.
-const defaultTeardownBound = 5 * time.Second
+// defaultTeardownGrace is the conductor's default for REVL_TEARDOWN_GRACE:
+// _TEARDOWN_GRACE in src/revl/placement.py, the single source. The conductor
+// kills a child that has not said DOWN this long after it was asked to stop,
+// so a runner that defaulted lower called a correct 5 to 30 second inverse a
+// failed teardown (issue #2356).
+const defaultTeardownGrace = 30 * time.Second
+
+// teardownMargin is how long before the conductor's grace the runner gives up,
+// so its FATAL line is always written before the conductor's kill can swallow
+// it.
+const teardownMargin = 2 * time.Second
 
 // teardownBound is the wait the teardown gives its disposes: the conductor's
-// REVL_TEARDOWN_GRACE (seconds, the variable the stranded-teardown report tells
-// a user to raise) when it is a positive finite number, else the default.
+// grace (REVL_TEARDOWN_GRACE seconds, the variable the stranded-teardown report
+// tells a user to raise, when it is a positive finite number, else the
+// conductor's default) less a margin, so the runner reports first. The margin
+// never exceeds half the grace, which keeps a short grace usable.
 func teardownBound() time.Duration {
-	raw := os.Getenv("REVL_TEARDOWN_GRACE")
-	if raw == "" {
-		return defaultTeardownBound
+	grace := defaultTeardownGrace
+	if raw := os.Getenv("REVL_TEARDOWN_GRACE"); raw != "" {
+		secs, err := strconv.ParseFloat(raw, 64)
+		if err == nil && secs > 0 && secs <= 86400 {
+			grace = time.Duration(secs * float64(time.Second))
+		}
 	}
-	secs, err := strconv.ParseFloat(raw, 64)
-	if err != nil || !(secs > 0) || secs > 86400 {
-		return defaultTeardownBound
+	margin := teardownMargin
+	if grace/2 < margin {
+		margin = grace / 2
 	}
-	return time.Duration(secs * float64(time.Second))
+	return grace - margin
 }
 
 // disposeAwaited disposes one fiber and waits (bounded by ctx) for the

@@ -173,13 +173,13 @@ def _spec(tmp_path: Path, module: Path) -> Path:
 
 
 def _run(spec: Path, runner: Path = _RUNNER, preload: Path | None = None,
-         timeout: int = 300) -> "tuple[int, str, str]":
+         timeout: int = 300, env: dict | None = None) -> "tuple[int, str, str]":
     argv = ["node"]
     if preload is not None:
         argv += ["--import", str(preload)]
     argv += [str(runner), str(spec)]
     done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
-                          stdin=subprocess.DEVNULL, cwd=_HERE)
+                          stdin=subprocess.DEVNULL, cwd=_HERE, env=env)
     return done.returncode, done.stdout, done.stderr
 
 
@@ -545,8 +545,8 @@ component Impl provides vault: Vault {
 @needs_node
 def test_a_dispose_that_never_settles_still_reports_and_exits_1(tmp_path):
     """A dispose that holds no handle must not let the event loop drain: node
-    would exit 13 with its own unredacted warning. The 5 s budget keeps the
-    process alive, then the line says the dispose was not confirmed."""
+    would exit 13 with its own unredacted warning. `REVL_TEARDOWN_GRACE=1` keeps the
+    process alive for the teardown bound, then the line says the dispose was not confirmed."""
     module = _emitted(tmp_path, _HANG_DOC)
     spec = tmp_path / "hang.json"
     spec.write_text(json.dumps({
@@ -554,7 +554,7 @@ def test_a_dispose_that_never_settles_still_reports_and_exits_1(tmp_path):
         "config": {}, "provides": ["vault"], "proxies": {}, "probe": [],
         "once": True,
     }), encoding="utf-8")
-    code, out, err = _run(spec)
+    code, out, err = _run(spec, env={**os.environ, "REVL_TEARDOWN_GRACE": "1"})
     assert code == 1, (code, out, err)
     assert len([ln for ln in err.splitlines()
                 if "FATAL unknown component Ghost" in ln]) == 1, err
@@ -608,3 +608,57 @@ def test_an_unconfirmed_dispose_is_fatal_and_claims_no_down(tmp_path, once):
     assert len(fatal) == 1, err
     assert "teardown incomplete" in fatal[0] and "Impl" in fatal[0], err
     assert "unsettled" not in err and "Warning" not in err, err
+
+
+# A correct inverse that outlasts the old 5 s default (issue #2356).
+_LONG_DOC = """
+service Vault { fn show(user: Str) -> Str }
+
+extern pure fn nap(what: Str) -> Str = @ts {
+  return new Promise((resolve) => setTimeout(() => resolve(what), what === 'late' ? 6000 : 0))
+}
+
+component Impl provides vault: Vault {
+  let slot = effect nap("applied") undo nap("late")
+
+  provide vault {
+    fn show(user) { return "shown " + user }
+  }
+}
+"""
+
+
+@needs_node
+@pytest.mark.parametrize("once", [True, False], ids=["once", "held"])
+def test_a_slow_correct_inverse_ends_in_down_with_the_default_bound(tmp_path, once):
+    """With REVL_TEARDOWN_GRACE unset the runner waits as long as the conductor
+    does (30 s less a margin), so a 6 s inverse is a clean teardown (#2356)."""
+    module = _emitted(tmp_path, _LONG_DOC)
+    spec = tmp_path / "long.json"
+    spec.write_text(json.dumps({
+        "name": "vault", "module": str(module), "components": ["Impl"],
+        "config": {}, "provides": ["vault"], "proxies": {}, "probe": [],
+        "once": once,
+    }), encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k != "REVL_TEARDOWN_GRACE"}
+    proc = subprocess.Popen(
+        ["node", str(_RUNNER), str(spec)], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=_HERE,
+        env=env)
+    head = ""
+    try:
+        if not once:
+            for line in proc.stdout:
+                head += line
+                if "[vault] UP" in line:
+                    break
+            proc.send_signal(signal.SIGTERM)
+        rest, err = proc.communicate(timeout=120)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    out = head + rest
+    assert proc.returncode == 0, (proc.returncode, out, err)
+    assert "] DOWN" in out, (out, err)
+    assert "FATAL" not in err, err

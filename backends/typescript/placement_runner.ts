@@ -295,7 +295,7 @@ for (const cname of spec.components as string[]) {
   // booted undisposed. The FATAL line goes FIRST, so a dispose that never
   // settles, or one that raises an unhandled rejection, cannot hide which
   // component is missing. Then dispose what did boot, last first, bounded to
-  // 5 s in all; a dispose not seen to settle says so rather than claiming it
+  // the teardown bound in all; a dispose not seen to settle says so rather than claiming it
   // ran. `process.exit`, not `teardown`, so no `DOWN` is claimed. The lines are
   // written synchronously: a piped stdout is async and `exit` would drop them.
   if (mod[cname] === undefined) {
@@ -407,14 +407,24 @@ for (const expr of (spec.probe || []) as string[]) {
 let stopping = false
 
 // The bound on the whole teardown, in ms, shared by every fiber's dispose as
-// the go runner shares one 5 s context. `REVL_TEARDOWN_GRACE` is a positive
-// finite number of seconds; unset, empty, zero, negative or unparseable is the
-// 5 s default, as does anything over a day (the go and rust runners' rule).
+// the go runner shares one context. It is the conductor's grace
+// (`REVL_TEARDOWN_GRACE`, a positive finite number of seconds, at most a day;
+// anything else is the conductor's default) less a margin, so the runner's
+// FATAL line is written before the conductor's kill can swallow it. The
+// default is `_TEARDOWN_GRACE` in `src/revl/placement.py`, the single source:
+// a runner that defaulted lower called a correct 5 to 30 second inverse a
+// failed teardown (issue #2356). The margin never exceeds half the grace,
+// which keeps a short grace usable.
+// The constants live inside the function: it is called from the boot-failure
+// path above, before a module-level `const` here would have been initialised.
 function teardownGraceMs(raw: string | undefined = process.env.REVL_TEARDOWN_GRACE): number {
-  const seconds = raw === undefined ? NaN : Number(raw)
-  if (!Number.isFinite(seconds) || seconds <= 0) return 5000
-  if (seconds > 86400) return 5000
-  return seconds * 1000
+  const DEFAULT_TEARDOWN_GRACE_S = 30
+  const TEARDOWN_MARGIN_S = 2
+  const parsed = raw === undefined ? NaN : Number(raw)
+  const grace = Number.isFinite(parsed) && parsed > 0 && parsed <= 86400
+    ? parsed
+    : DEFAULT_TEARDOWN_GRACE_S
+  return (grace - Math.min(TEARDOWN_MARGIN_S, grace / 2)) * 1000
 }
 
 // `log`, written synchronously and through the same scrub: the unconfirmed
