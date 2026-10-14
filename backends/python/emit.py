@@ -94,7 +94,7 @@ _IMPORT_ALIAS = {
     "declare_secret_types": "_revl_declare_secret_types",
     "declared_crossing": "_revl_declared_crossing",
     "site_compensation": "_revl_site_compensation",
-    "RevlFail": "_revl_RevlFail",
+    "fail_error": "_revl_fail_error",
 }
 _RESERVED = _HOST_ROOTS | {"self"}
 
@@ -2223,8 +2223,8 @@ class _ComponentEmitter:
         elif kind == "fail":
             # issue #2378: the lifecycle driver tells this raise from any other
             # RuntimeError by its type, so a `fail` fails a bare `load`
-            self.uses.add("RevlFail")
-            out.add(indent, f"raise _revl_RevlFail({self._expr(step.get('message'), where)})")
+            self.uses.add("fail_error")
+            out.add(indent, f"raise _revl_fail_error({self._expr(step.get('message'), where)})")
         elif kind == "if":
             def arm(nested: dict) -> None:
                 self._body_step(out, indent + 1, nested, where)

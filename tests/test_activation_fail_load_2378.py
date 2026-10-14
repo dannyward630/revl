@@ -116,9 +116,9 @@ def _emit(source: str) -> str:
 
 def test_a_fail_step_raises_the_marked_error_and_each_load_is_checked():
     text = _emit(_FAILING)
-    assert "raise _revl_RevlFail('activation refused on purpose')" in text
+    assert "raise _revl_fail_error('activation refused on purpose')" in text
     assert "_revl_load_failed(_revl_fibers['E'], 'E'," in text
-    assert "RevlFail as _revl_RevlFail" in text
+    assert "fail_error as _revl_fail_error" in text
 
 
 @needs_cordis
@@ -174,6 +174,34 @@ def test_a_runtime_refusal_in_a_component_that_also_holds_a_fail_still_loads(tmp
     out = _run_py(_REFUSED_OPEN_WITH_UNREACHED_FAIL, tmp_path)
     assert "1 test(s) passed" in out, out
     assert "load Db" not in out, out
+
+
+#: a dependent of a dependency whose activation fails: cordis leaves the
+#: dependent PENDING with no error recorded, so only the failing component's
+#: `load` fails and the message names it, never the dependent.
+_DEPENDENT = """
+service Base { fn one() -> Int }
+service Top { fn two() -> Int }
+component A provides base: Base {
+  fail "dependency refused"
+  provide base { fn one() = 1 }
+}
+component B requires base: Base provides top: Top {
+  provide top { fn two() = base.one() }
+}
+
+lifecycle test "dependent first" {
+  load B
+  load A
+}
+"""
+
+
+@needs_cordis
+def test_a_dependent_never_inherits_its_dependencys_failure(tmp_path):
+    out = _run_py(_DEPENDENT, tmp_path)
+    assert "load A: dependency refused" in out, out
+    assert "load B" not in out, out
 
 
 _IMPORTS_RUNTIME = """

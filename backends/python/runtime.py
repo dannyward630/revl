@@ -77,7 +77,7 @@ _ENTRY_STAMP = itertools.count()
 __all__ = [
     "Clock", "ConfigError", "ConfigSchema", "FaultProbe", "Frame", "Job", "JobCancelled",
     "JobHandle", "LeaseHandle", "LeaseRefused", "Map", "Pool", "PoolError",
-    "EstopHalted", "EstopRefused", "RevlFail",
+    "EstopHalted", "EstopRefused", "fail_error",
     "SessionCommitError", "SessionOwner",
     "SpawnHandle", "StateIncompatible",
     "EventContract",
@@ -2994,20 +2994,17 @@ def _live_frames() -> list:
         return list(_LIVE_FRAMES)
 
 
-class RevlFail(RuntimeError):
-    """What a `fail` step raises (issue #2378).
+def fail_error(message) -> RuntimeError:
+    """What a `fail` step raises (issue #2378): a plain RuntimeError, marked.
 
-    It IS a RuntimeError, reported under that name (`type(err).__name__`, the
-    `type` of a failed component's row and of a residue record), so nothing that
-    reads a failure's type changes. The marker is what lets the lifecycle driver
-    tell a `fail` the author wrote from any other plain RuntimeError an
-    activation can raise (a host stub's refusal, a runtime guard, a host body's
-    own `raise`)."""
-
-    _revl_activation_fail = True
-
-
-RevlFail.__name__ = RevlFail.__qualname__ = "RuntimeError"
+    The marker is what lets the lifecycle driver tell a `fail` the author wrote
+    from any other RuntimeError an activation can raise (a host stub's refusal,
+    a runtime guard, a host body's own `raise`). The error is an ordinary
+    RuntimeError in every other respect: its type, its traceback line and its
+    pickling are unchanged."""
+    err = RuntimeError(message)
+    err._revl_activation_fail = True
+    return err
 
 
 class EstopRefused(RuntimeError):

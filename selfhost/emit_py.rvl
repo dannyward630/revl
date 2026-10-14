@@ -3393,7 +3393,7 @@ fn body_step(step: Any, indent: Int, comp_name: Str, counter: Int, services: Any
     return { lines: out, counter: counter }
   }
   if (kind == "fail") {
-    var out = [line(indent, `raise _revl_RevlFail(${cexpr(value_field(step, "message"))})`)]
+    var out = [line(indent, `raise _revl_fail_error(${cexpr(value_field(step, "message"))})`)]
     out = out.push("")
     return { lines: out, counter: counter }
   }
@@ -4783,7 +4783,7 @@ pub fn emit_py_src(source_ir: Any) -> Str {
       || uses_kind(value_field(ir, "components"), "stream-iter")) { imports = imports.push("Stream") }
   if (need_mark_secret) { imports = imports.push("mark_secret as _revl_mark_secret") }
   // issue #2378: a `fail` step raises the runtime's marked RuntimeError.
-  if (uses_kind(value_field(ir, "components"), "fail")) { imports = imports.push("RevlFail as _revl_RevlFail") }
+  if (uses_kind(value_field(ir, "components"), "fail")) { imports = imports.push("fail_error as _revl_fail_error") }
   // §7.1: the lifecycle driver loads components through the realm-aware `plug`,
   // reads the host-builtin trace, may auto-retry an idempotent emission (item
   // 44), and collects inverse residue off the frame. `advance` adds the clock
