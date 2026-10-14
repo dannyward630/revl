@@ -2129,6 +2129,7 @@ def _rewrite_component_stmt(stmt, val_renames, type_renames,
     elif isinstance(stmt, _ast.EmitStmt):
         walk(stmt.expr)
         walk(stmt.compensate)
+        walk(stmt.approval)
     elif isinstance(stmt, _ast.LetApprovalStmt):
         for _, value in stmt.request.fields or ():
             walk(value)

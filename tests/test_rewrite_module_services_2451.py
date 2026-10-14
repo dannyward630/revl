@@ -10,8 +10,8 @@ is the imported `{ a: Int }`. Nothing was reported. The imported module's own
 services were skipped the same way, and a component calling the document's own
 colliding helper was refused with a misleading "not a declared requirement".
 
-The rule (docs/records.md section 3.1): the nominal record is the one the
-boundary's own declaration names, in the module that declares it. Each module's
+The rule is the one the module-merge pass already applies to fns and types:
+inside a module, a name refers to that module's own declaration. Each module's
 services and components now bind to that module's declarations. The binding is
 read through the IR, and through the emitted py and ts.
 """
@@ -105,6 +105,26 @@ component App provides front: Front {
 '''
 
 
+LIB_BOOL = '''fn helper() -> Bool { return false }
+pub fn mk() -> Int { return helper() ? 1 : 0 }
+'''
+
+# the colliding helper is called inside an emit's conditional `with` clause
+DOC_APPROVAL = '''use "./lib.rvl" { mk }
+
+fn helper() -> Bool { return true }
+
+extern emission[pay] fn charge(amount: Int) -> Int requires approval = @py { return 1 }
+
+service Pay { emission[pay] fn run(n: Int) -> Int }
+
+component Worker provides task: Pay {
+  let a = await approval[pay] { reason: "one" }
+  let b = await approval[pay] { reason: "two" }
+  provide task { fn run(n) { emit charge(n + mk()) with helper() ? a : b return 1 } }
+}
+'''
+
 def _compile(tmp_path: Path, lib: str, doc: str) -> dict:
     (tmp_path / "lib.rvl").write_text(lib, encoding="utf-8")
     main = tmp_path / "doc.rvl"
@@ -197,6 +217,15 @@ def test_a_component_calls_the_document_s_own_colliding_helper(tmp_path):
     assert "helper__m0() + mk()" in _emit("py", ir)
     assert "helper__m0() + mk()" in _emit("ts", ir)
 
+
+def test_an_emit_s_with_clause_calls_the_document_s_own_colliding_helper(tmp_path):
+    """The `with <expr>` approval clause is walked too. Left bare, the
+    document's `helper` in `helper() ? a : b` was not rewritten to `__m0`, and
+    the component was refused as missing a requirement. Typed approvals run on
+    the py tier only (ts refuses them by name), so py is the emitted check."""
+    ir = _compile(tmp_path, LIB_BOOL, DOC_APPROVAL)
+    assert '"name": "helper__m0"' in json.dumps(ir["components"])
+    assert "helper__m0()" in _emit("py", ir)
 
 def test_a_provider_returning_the_carried_shape_is_refused(tmp_path):
     """The carried `{ a: Int }` no longer stands in for the document's `In`:
