@@ -9,6 +9,7 @@
   <img src="https://img.shields.io/badge/self--hosting-native-2dd4bf" alt="self-hosting">
   <img src="https://img.shields.io/badge/agent--native-MCP-a78bfa" alt="MCP native">
   <img src="https://img.shields.io/badge/license-AGPL--3.0%20%2B%20MIT-blue" alt="AGPL-3.0-only compiler, MIT runtime and examples">
+  <img src="https://zenodo.org/badge/DOI/10.5281/zenodo.23355060.svg" alt="DOI">
 </p>
 
 <p>
