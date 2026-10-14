@@ -106,7 +106,7 @@
 
 ["reason", "selfhost-emit-java-rvl-java-v3-type-residual", "selfhost/emit_java.rvl::java_v3_type: Residual null/empty type defaults require malformed type metadata; function types are explicitly refused; Result boxing is deferred."]
 
-["function", "selfhost-emit-java-rvl-java-v3-type-residual", "java_v3_type", 4, 4]
+["function", "selfhost-emit-java-rvl-java-v3-type-residual", "java_v3_type", 2, 2]
 
 ["reason", "selfhost-emit-java-rvl-let-keyword-only-defer", "selfhost/emit_java.rvl::let_keyword: Only <<DEFER-map-local-unpinned>> remains, the preexisting boundary for unannotated VALUE Map.empty inference. Annotated value Maps and inferred host Map.new are separate and covered."]
 
@@ -200,10 +200,6 @@
 
 ["function", "selfhost-emit-java-rvl-render-var-only-returning", "render_var", 1, 1]
 
-["reason", "selfhost-emit-java-rvl-starts-with-residual-length", "selfhost/emit_java.rvl::starts_with: Residual length-too-short return is impossible at production callers: rendered string segments are nonempty before quote-prefix tests, and dotted host fn names are at least as long as Map. before host-prefix tests."]
-
-["function", "selfhost-emit-java-rvl-starts-with-residual-length", "starts_with", 1, 1]
-
 ["reason", "selfhost-emit-java-rvl-stdlib-block-header-stdlib", "selfhost/emit_java.rvl::stdlib_block_header, stdlib_group_names: constant-returning helpers with no remaining Name-call sites in the emitted Python. The backend folds each into its call site, so the `def` body does not run while its value is emitted by every document that reaches a stdlib helper group (tests/fixtures/emit_java_corpus/stdlib_builtins.rvl)."]
 
 ["function", "selfhost-emit-java-rvl-stdlib-block-header-stdlib", "stdlib_block_header", 1, 1]
@@ -222,9 +218,9 @@
 
 ["function", "selfhost-emit-java-rvl-step-needs-frame-residual", "step_needs_frame", 3, 3]
 
-["reason", "selfhost-emit-java-rvl-type-map-only-unit", "selfhost/emit_java.rvl::type_map: Only Unit-to-void remains. Its sole caller java_v3_type returns void for raw Unit before calling type_map, making this redundant table arm unreachable."]
+["reason", "selfhost-emit-java-rvl-uses-builtin-result-short-circuit", "selfhost/emit_java.rvl::uses_builtin_result: the witnessed-extern, Result adt, Ok/Err arm and checked-division answers are short-circuited in the corpus: every document that builds or matches a Result also names it in a signature, so the signature scan (issue #2325) answers first, and no java corpus document holds a witnessed extern or a checked division."]
 
-["function", "selfhost-emit-java-rvl-type-map-only-unit", "type_map", 1, 1]
+["function", "selfhost-emit-java-rvl-uses-builtin-result-short-circuit", "uses_builtin_result", 4, 4]
 
 ["reason", "selfhost-emit-java-rvl-uses-revl-frame-only", "selfhost/emit_java.rvl::uses_revl_frame: Only the missing-components early return remains. lower.py always materializes components, even when empty, in every versioned document (6637)."]
 
