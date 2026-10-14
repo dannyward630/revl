@@ -1972,6 +1972,12 @@ def _rewrite_module(program: Program, val_renames: dict[str, str],
     # than the name clash this pass exists to repair.
     for ev in getattr(program, "event_decls", ()):
         ev.name = type_renames.get(ev.name, ev.name)
+    # issue #2451: a service operation's signature names the module's types
+    # exactly as a fn signature does. Left bare, `service Other { fn get() ->
+    # In }` resolved to whichever same-named `In` kept the bare spelling after
+    # the merge (a carried or another module's type), silently.
+    for svc in program.services:
+        _rewrite_service(svc, type_renames)
 
     # 2. bodies: value references (shadow-aware) + body-level type annotations.
     for fn in program.fn_decls:
@@ -1987,6 +1993,46 @@ def _rewrite_module(program: Program, val_renames: dict[str, str],
         for slot in (getattr(ext, "undo", None), getattr(ext, "compensate", None)):
             if slot is not None:
                 _rewrite_expr(slot, val_renames, type_renames, set())
+    # issue #2451: a component is the module's own code too. Its config fields,
+    # a `Stream[T]` requirement, its provide methods' annotations and bodies,
+    # and its activation statements name the module's types and helpers.
+    for comp in program.components:
+        _rewrite_component(comp, val_renames, type_renames)
+
+
+def _subst_type_args(t: str | None, renames: dict[str, str]) -> str | None:
+    """Substitute inside a type's arguments only, keeping its head. A
+    component header names a SERVICE (`requires store: Store`) or a
+    `Stream[T]`; a service name is not a type name, so only `T` can move."""
+    if not t or not renames:
+        return t
+    head, args = parse_type(t)
+    if not args:
+        return t
+    return format_type(head, [_subst_type(a, renames) for a in args])
+
+
+def _rewrite_service(svc, type_renames: dict[str, str]) -> None:
+    """Rewrite the type annotations of a service's operation signatures."""
+    if not type_renames:
+        return
+    for method in svc.methods.values():
+        method.params = [(name, _subst_type(t, type_renames))
+                         for name, t in method.params]
+        method.returns = _subst_type(method.returns, type_renames)
+
+
+def _rewrite_component(comp, val_renames: dict[str, str],
+                       type_renames: dict[str, str]) -> None:
+    """Rewrite a component's type annotations and value references. Its
+    requirement locals are in scope for the whole body, so a body reference to
+    one of them is a shadow and keeps its spelling."""
+    for fld in comp.config:
+        fld.type = _subst_type(fld.type, type_renames)
+    comp.requires = [(local, _subst_type_args(svc, type_renames), line)
+                     for local, svc, line in comp.requires]
+    bound = {local for local, _, _ in comp.requires}
+    _rewrite_body(comp.body, val_renames, type_renames, bound)
 
 
 def _rewrite_body(stmts: list, val_renames: dict[str, str],
@@ -2049,6 +2095,44 @@ def _rewrite_stmt(stmt, val_renames, type_renames, bound: set[str]) -> None:
         inner = set(bound)
         inner.add(stmt.bind)
         _rewrite_body(stmt.body, val_renames, type_renames, inner)
+    else:
+        _rewrite_component_stmt(stmt, val_renames, type_renames, bound)
+
+
+def _rewrite_component_stmt(stmt, val_renames, type_renames,
+                            bound: set[str]) -> None:
+    """The statements only a component body holds (issue #2451): provide
+    blocks, the state hand-off, effects, timers, emissions and approvals."""
+    def subst(t):
+        return _subst_type(t, type_renames)
+
+    def walk(e, b=bound):
+        if e is not None:
+            _rewrite_expr(e, val_renames, type_renames, b)
+
+    if isinstance(stmt, _ast.ProvideStmt):
+        for method in stmt.methods:
+            method.param_types = [subst(t) for t in method.param_types]
+            method.returns = subst(method.returns)
+            _rewrite_body(method.body, val_renames, type_renames,
+                          bound | set(method.params))
+    elif isinstance(stmt, _ast.HandoffStmt):
+        stmt.state_type = subst(stmt.state_type)
+    elif isinstance(stmt, (_ast.LetEffect, _ast.EffectStmt)):
+        _rewrite_body(stmt.setup, val_renames, type_renames, bound)
+        walk(stmt.acquire)
+        if isinstance(stmt, _ast.LetEffect):
+            bound.add(stmt.bind)
+        walk(stmt.undo)
+    elif isinstance(stmt, _ast.TimerStmt):
+        _rewrite_body(stmt.body, val_renames, type_renames, bound)
+    elif isinstance(stmt, _ast.EmitStmt):
+        walk(stmt.expr)
+        walk(stmt.compensate)
+    elif isinstance(stmt, _ast.LetApprovalStmt):
+        for _, value in stmt.request.fields or ():
+            walk(value)
+        bound.add(stmt.bind)
 
 
 def _rewrite_expr(expr, val_renames, type_renames, bound: set[str]) -> None:
