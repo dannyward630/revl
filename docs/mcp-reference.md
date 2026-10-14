@@ -367,19 +367,20 @@ guarantee:
   - `unchecked` when the compile refused before it could prove that guarantee.
     That is not a pass. Fix the failures and check again.
 - `summary`: the `pass` / `fail` / `unchecked` counts.
-- `admissible`: true only when the compile succeeded with no open holes and no
-  unmet requirement.
-- `unmetRequirements`: present when a `requires` key is provided by no
-  component of the checked composition (issue #2386). Each record names the
-  `component`, `key`, `service` and a `fix`. The compiler accepts such a
-  requirement, but this server supplies no ambient provision, so the component
-  cannot activate: a cold load leaves it PENDING, and a swap that adds it is
+- `admissible`: true only when the compile succeeded with no open holes.
+- `unmetRequirements`: a warning about this session, present when a
+  `requires` key is provided by no component of the checked composition
+  (issue #2386). Each record names the `component`, `key`, `service` and a
+  `fix`. It does not change `admissible`: a host service, a `--providers` model
+  host or a placement remote can provide the key at run time (as the host's
+  `webui` does for `examples/app/notes.rvl`). This MCP session supplies none of
+  them, so here the component would stay PENDING, and a swap that adds it is
   refused by the health gate, whose refusal names the same key.
 - `otherFailures`: refusals under any other code (a type error, an amendment,
   an extended guarantee such as `G-SECRET`), so a green row is never read past
   a red one elsewhere.
-- `note`: why a draft with holes or an unmet requirement is not admissible,
-  or why rows are `unchecked`.
+- `note`: why a draft with holes is not admissible, the unmet-requirement
+  warning, or why rows are `unchecked`.
 
 - Inputs: `source` / `files` / `modules`, or none at all (see below);
   `session: true` asks for the held form explicitly; `returnCanonical` adds the
