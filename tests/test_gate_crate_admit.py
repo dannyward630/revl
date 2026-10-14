@@ -699,6 +699,54 @@ def test_the_manifest_admission_arm_refuses_a_name_folded_onto_a_rowless_running
     assert apart["admitted"] is True, apart
 
 
+# Issue #2382: a realm label is a string literal in the source, so a running
+# composition may spell one as a reference keyword, and `manifest_wire` puts it
+# on the wire as written (`revl.manifest._wire_name` is a bare identifier,
+# keywords included). The fold's `bare_ident` reads it as a name; the
+# admission surface's `is_wire_name` used to decline the whole wire over it.
+_KEYWORD_REALM_RUNNING = """
+service Store {
+  fn get(key: Str) -> Str
+}
+service AppSvc {
+  fn snapshot() -> Str
+}
+component Kv provides store: Store {
+  isolate store in realm("REALM")
+  provide store { fn get(key) = key }
+}
+component App requires store: Store provides app: AppSvc {
+  isolate store in realm("REALM")
+  provide app { fn snapshot() = store.get("x") }
+}
+"""
+
+
+@pytest.mark.parametrize("keyword", ["match", "if", "service", "fn"])
+def test_a_keyword_wire_name_has_one_verdict_on_every_surface(consumer, keyword):
+    """Issue #2382: one rule for a wire name. The reference renders a keyword
+    realm label and admits a fresh interface into that composition; the crate's
+    fold (`admit_into`, the self-host `bare_ident` reading) and its admission
+    surface (`issue_admission_into`, `is_wire_name`) must both give the same
+    answer for the same wire."""
+    from revl import gate as py_gate
+    running = compile_source(
+        _KEYWORD_REALM_RUNNING.replace("REALM", keyword), "running.rvl")
+    wire = manifest_wire(running)
+    assert f"Kv/store/{keyword};" in wire, wire
+    fresh = "service Ledger {\n  fn append(row: Str) -> Int\n}\n"
+
+    reference = py_gate.admit_into(fresh, running)
+    assert reference.admitted is True, reference
+    [fold] = _crate_verdicts(consumer, [fresh], "--into", wire)
+    assert fold["verdict"] == "no_objection", (
+        f"the self-host fold objects to {wire!r}: {fold}")
+    [issued] = _crate_verdicts(consumer, [fresh], "--admission-into", wire)
+    assert issued["admitted"] is True, (
+        f"the admission surface declined a wire the reference and the fold "
+        f"both read, over the keyword realm {keyword!r}: {issued}")
+
+
 def test_every_refusal_the_crate_issues_is_a_real_reference_refusal(agreement):
     """The sound direction, held on its own over the whole corpus at once: the
     crate must never REFUSE a program the reference admits either — that would

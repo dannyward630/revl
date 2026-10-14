@@ -358,8 +358,7 @@ fn is_name(token: &str) -> bool {
     }
 }
 
-/// A name as a MANIFEST WIRE field: every byte an identifier byte, and not a
-/// reference keyword.
+/// A name as a MANIFEST WIRE field: a non-empty run of ASCII identifier bytes.
 ///
 /// [`is_name`] is written for tokens that already came out of [`tokens`], where
 /// an identifier run is guaranteed and only the first byte has to be checked. A
@@ -367,8 +366,18 @@ fn is_name(token: &str) -> bool {
 /// reading either as a name would have the certifier compare a running service
 /// list against strings it never verified. So this checks every byte, and a row
 /// it cannot read is a wire the surface declines rather than one it guesses at.
+///
+/// A reference KEYWORD is a wire name (issue #2382). This is the rule the
+/// renderer writes by (`revl.manifest._wire_name`, a bare ASCII identifier) and
+/// the one the fold reads by (`selfhost/lower.rvl`'s `bare_ident`). A realm
+/// label is a string literal in the source, so `realm("match")` puts `match`
+/// on the wire and the reference admits into that composition; declining the
+/// wire over it gave this surface a different answer from the fold for the
+/// same bytes. A keyword can never be a NAME in a candidate ([`is_name`] still
+/// refuses one), so a keyword on the wire matches nothing the candidate
+/// declares or calls.
 fn is_wire_name(field: &str) -> bool {
-    if field.is_empty() || REFERENCE_KEYWORDS.contains(&field) {
+    if field.is_empty() {
         return false;
     }
     let bytes = field.as_bytes();
@@ -1351,6 +1360,23 @@ mod tests {
     }
 
     #[test]
+    fn a_keyword_is_a_wire_name_and_still_not_a_candidate_name() {
+        // Issue #2382: the wire rule is the renderer's and the fold's, a bare
+        // identifier with keywords included; a garbled field still is not.
+        for keyword in ["match", "if", "service", "fn", "realm"] {
+            assert!(REFERENCE_KEYWORDS.contains(&keyword), "{}", keyword);
+            assert!(is_wire_name(keyword), "{}", keyword);
+            assert!(!is_name(keyword), "{}", keyword);
+        }
+        for garbled in ["", "1a", "a-b", "a/b", "a<b", "é"] {
+            assert!(!is_wire_name(garbled), "{:?}", garbled);
+        }
+        let wire = "Kv/store/match;App/app/;App<store/match;!services;:Store;:AppSvc";
+        let fresh = "service Ledger {\n  fn append(row: Str) -> Int\n}\n";
+        assert!(certify_into(fresh, wire).is_some());
+    }
+
+    #[test]
     fn the_empty_source_is_the_empty_composition_and_is_certified() {
         for source in ["", "   \n", "// just a note\n"] {
             let basis = certify(source).expect("a source with no declarations is admissible");
@@ -1591,11 +1617,15 @@ mod tests {
             "Kv/store/;!services;:Store;:Store",
             "Kv/store/;!services;:9bad",
             "Kv/store/;!services;:",
-            "Kv/store/;!services;:service",
             "Kv/store/;!services;:A/b",
         ] {
             assert!(certify_into("", wire).is_none(), "must not certify into {:?}", wire);
         }
+        // A keyword is a wire name (issue #2382): the fold reads `:service` as
+        // a service name and raises no objection, and this surface agrees.
+        let keyword = "Kv/store/;!services;:service";
+        assert_eq!(crate::admit_into("", keyword), crate::Verdict::NoObjection);
+        assert!(certify_into("", keyword).is_some());
     }
 
     // The provide-method layer (issue #346, docs/design/457 T6).

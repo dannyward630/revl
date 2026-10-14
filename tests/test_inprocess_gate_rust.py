@@ -217,11 +217,20 @@ def _py_tag(source: str, error: RevlError) -> str:
     """The guarantee tag of a py refusal. A refusal the PARSER raises is `BAD`,
     the crate's tag for a parse failure (`COVERED_LAYER`); the oracle's
     classifier has no parse class and would answer `OUT:` for it, though the
-    rust gate decides it (issue #2359 brought the statement grammar in)."""
+    rust gate decides it (issue #2359 brought the statement grammar in).
+
+    The tag follows the stage that RAISED `error`, not whether the source
+    parses (issue #2419): `error` is the parser's only when it is the parse
+    error itself, same line and same message. A refusal some other stage
+    raised over a source that also fails to parse (a manifest-level refusal on
+    the `compile_files` path, say) keeps its own tag, so a rust `BAD` given
+    for a different reason reads as the disagreement it is."""
     try:
         parse_text(source, "<string>")
-    except RevlError:
-        return "BAD"
+    except RevlError as parse_error:
+        if (parse_error.line, parse_error.message) == (error.line,
+                                                         error.message):
+            return "BAD"
     return oracle._classify(error)
 
 
@@ -256,6 +265,22 @@ def _py_manifest_reference(source: str, base: dict) -> tuple[str, str]:
         return ("", "")
     except RevlError as error:
         return (_py_tag(source, error), error.message)
+
+
+def test_the_py_tag_is_the_raising_stage_not_a_reparse():
+    """Issue #2419. A refusal raised by a stage other than the parser keeps its
+    own tag even when the source would not parse; only the parse error itself
+    is `BAD`. Needs no harness build: it holds the tagging rule on its own."""
+    unparseable = "service S { fn f("
+    with pytest.raises(RevlError) as parsed:
+        compile_source(unparseable)
+    assert _py_tag(unparseable, parsed.value) == "BAD"
+    # a manifest-level refusal (an unknown IR field), raised by a later stage
+    with pytest.raises(RevlError) as manifest_level:
+        compile_source("// nothing to add\n", manifest={"not_an_ir_field": 1})
+    assert manifest_level.value.message != parsed.value.message
+    assert _py_tag(unparseable, manifest_level.value) == oracle._classify(
+        manifest_level.value) != "BAD"
 
 
 # ------------------------------------------- the release-blocking direction
