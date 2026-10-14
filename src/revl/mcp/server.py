@@ -1507,9 +1507,11 @@ def _tool_source(arguments: dict) -> dict:
         reader = _stdlib.read if stdlib else _symbols.read
         try:
             result = reader(vs, symbol, deps=deps, comments=comments)
-        except _symbols.SymbolError:
-            # a name that is no declaration may be a held buffer (issue #2322)
-            result = None if stdlib else _edit.read_buffer(vs, symbol)
+        except _symbols.NoDeclaration:
+            # a name that is no declaration may be a held buffer (issue #2322);
+            # an AMBIGUOUS name is a declaration, and keeps its own refusal
+            result = None if stdlib else _edit.read_buffer(
+                vs, symbol, modifiers=_declaration_options(arguments))
             if result is None:
                 raise
     except RevlError as error:
@@ -1520,13 +1522,23 @@ def _tool_source(arguments: dict) -> dict:
         return report(error)
     except (_symbols.SymbolError, _edit.EditError) as error:
         return _session_error(str(error))
-    if "knowledge" in (arguments.get("with") or []) and result["kind"] != "buffer":
+    if "knowledge" in (arguments.get("with") or []):
         entries = (_knowledge.refresh(SESSION)
                    if SESSION.loaded and arguments.get("proposal") is not True
                    else _knowledge.index_of(vs, None))
         result["knowledge"] = {**_knowledge.ride(entries, [result["symbol"]]),
                                "notes": _notes.concerning(SESSION, [result["symbol"]])}
     return {"ok": True, **result}
+
+
+def _declaration_options(arguments: dict) -> tuple:
+    """The options of a call that only a declaration read can honour."""
+    out = []
+    if arguments.get("with"):
+        out.append("`with: " + json.dumps(list(arguments["with"])) + "`")
+    if arguments.get("comments") is False:
+        out.append("`comments: false`")
+    return tuple(out)
 
 
 def _stdlib_answer() -> dict:
@@ -4438,8 +4450,10 @@ TOOLS = [
             "properties": {
                 "symbol": {"type": "string",
                            "description": "`Name`, `<buffer>:Name` or "
-                                          "`<buffer>:<line>`; omit, with nothing "
-                                          "loaded, for the packaged stdlib"},
+                                          "`<buffer>:<line>`; a held buffer's "
+                                          "name reads it whole; omit, with "
+                                          "nothing else asked for, for the "
+                                          "packaged stdlib"},
                 "with": {"type": "array", "items": {"type": "string",
                                                     "enum": ["deps", "knowledge"]},
                          "description": "`deps`: also the declarations it names; "

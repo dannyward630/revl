@@ -35,6 +35,13 @@ class SymbolError(RuntimeError):
     A result the agent reads; nothing was changed."""
 
 
+class NoDeclaration(SymbolError):
+    """No top-level declaration matches: the one miss that is absence (as
+    opposed to an ambiguous name or a bad range). A caller that has a second
+    reading of the name, as `revl_source` has for a buffer name, catches only
+    this (issue #2322)."""
+
+
 @dataclass(frozen=True)
 class Decl:
     name: str
@@ -194,7 +201,7 @@ def resolve(vs: dict, symbol: str) -> tuple[tuple[str, str], str, Decl]:
                     or decl.name == rest:
                 hits.append((buffer, text, decl))
     if not hits:
-        raise SymbolError(f"no top-level declaration matches `{symbol}`")
+        raise NoDeclaration(f"no top-level declaration matches `{symbol}`")
     if len(hits) > 1:
         where = ", ".join(f"{b[1]}:{d.name}" for b, _, d in hits)
         raise SymbolError(f"`{symbol}` names more than one declaration ({where}); "
@@ -612,5 +619,5 @@ def touched(before: dict, after: dict) -> list[dict]:
     return out
 
 
-__all__ = ["SymbolError", "declarations", "resolve", "read", "replace", "remove",
+__all__ = ["SymbolError", "NoDeclaration", "declarations", "resolve", "read", "replace", "remove",
            "touched"]

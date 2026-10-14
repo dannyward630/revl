@@ -28,7 +28,7 @@ from revl.mcp.server import handle  # noqa: E402
 
 needs_runtime = pytest.mark.skipif(
     importlib.util.find_spec("cordis") is None,
-    reason="the session tools need the cordis-py runtime — install it with "
+    reason="the session tools need the cordis-py runtime: install it with "
            "`sh backends/python/setup.sh`")
 
 PLAIN = """service Kv {
@@ -153,6 +153,23 @@ def test_an_empty_source_is_read_as_its_own_buffer(session):
     assert "packaged" not in _message(result), result
 
 
+def test_a_held_draft_is_read_by_the_handler(session):
+    """The handler, not just the predicate: a draft is read, never the stdlib."""
+    server_mod.SESSION.pending_draft = {"vs": {"source": PLAIN, "modules": {}}}
+    try:
+        declared = _call("revl_source", {"symbol": "Store"})
+        assert declared["ok"] is True and declared["kind"] == "component", declared
+        whole = _call("revl_source", {"symbol": "source"})
+        assert whole["ok"] is True and whole["kind"] == "buffer", whole
+        bare = _call("revl_source", {})
+        assert bare["kind"] == "stdlib" and bare["held"][0]["buffer"] == "source"
+        unknown = _call("revl_source", {"symbol": "list_sort"})
+        assert unknown["ok"] is False
+        assert "packaged" not in _message(unknown), unknown
+    finally:
+        server_mod.SESSION.pending_draft = None
+
+
 def test_a_held_draft_is_not_the_stdlib(monkeypatch):
     monkeypatch.setattr(server_mod._draft, "pending",
                         lambda session: {"vs": {"source": PLAIN}})
@@ -190,3 +207,66 @@ def test_the_description_does_not_limit_the_listing_to_nothing_loaded():
     tool = next(t for t in server_mod.TOOLS if t["name"] == "revl_source")
     assert "With nothing loaded and no" not in tool["description"]
     assert "buffer" in tool["description"]
+    symbol = tool["inputSchema"]["properties"]["symbol"]["description"]
+    assert "with nothing loaded" not in symbol and "buffer" in symbol
+
+
+# -- review follow-ups -------------------------------------------------------
+
+def _two(tmp_path):
+    a, b = tmp_path / "a" / "plain.rvl", tmp_path / "b" / "plain.rvl"
+    for path in (a, b):
+        path.parent.mkdir()
+        path.write_text(PLAIN, encoding="utf-8")
+    return a, b
+
+
+def test_a_name_declared_in_two_buffers_keeps_its_ambiguity(session, tmp_path):
+    """`Store` is declared in two files and one of them is `Store.rvl`: the
+    name is a declaration (twice), not a request for that buffer."""
+    a, b = tmp_path / "Store.rvl", tmp_path / "other.rvl"
+    a.write_text(PLAIN, encoding="utf-8")
+    b.write_text(PLAIN.replace("Kv", "Kw"), encoding="utf-8")
+    result = _call("revl_source", {"symbol": "Store", "files": [str(a), str(b)]})
+    assert result["ok"] is False, result
+    assert "more than one declaration" in _message(result), result
+
+
+def test_two_buffers_matching_one_name_are_refused_with_both(session, tmp_path):
+    a, b = _two(tmp_path)
+    result = _call("revl_source", {"symbol": "plain.rvl",
+                                   "files": [str(a), str(b)]})
+    assert result["ok"] is False, result
+    message = _message(result)
+    assert "2 held buffers" in message and str(a) in message and str(b) in message
+    one = _call("revl_source", {"symbol": str(a), "files": [str(a), str(b)]})
+    assert one["ok"] is True and one["buffer"] == str(a), one
+
+
+@pytest.mark.parametrize("extra", [{"comments": False}, {"with": ["deps"]},
+                                   {"with": ["knowledge"]}])
+def test_a_buffer_read_refuses_declaration_options(plain, extra):
+    result = _call("revl_source", {"symbol": "plain.rvl",
+                                   "files": [str(plain)], **extra})
+    assert result["ok"] is False, result
+    assert "read whole" in _message(result), result
+
+
+def test_a_loaded_file_beats_a_dependency_with_its_basename():
+    from revl.mcp import edit
+
+    vs = {"files": ["/w/plain.rvl"], "files_content": {"/w/plain.rvl": PLAIN},
+          "dependencies": {"/w/lib/plain.rvl": "service Dep {\n}\n"}}
+    read = edit.read_buffer(vs, "plain.rvl")
+    assert read["buffer"] == "/w/plain.rvl" and read["text"] == PLAIN, read
+
+
+def test_a_dependency_buffer_is_read_whole():
+    from revl.mcp import edit
+
+    dep = "service Dep {\n}\n"
+    vs = {"files": ["/w/plain.rvl"], "files_content": {"/w/plain.rvl": PLAIN},
+          "dependencies": {"/w/lib/dep.rvl": dep}}
+    read = edit.read_buffer(vs, "dep.rvl")
+    assert read["buffer"] == "/w/lib/dep.rvl" and read["text"] == dep, read
+    assert read["kind"] == "buffer" and read["lines"] == 2, read

@@ -1123,7 +1123,12 @@ names and no comments is about 300.
   buffer (issue #2322): a loaded file by its path, basename or trailing path
   (with or without `.rvl`), an in-memory module by its key, or `source` for
   inline source. The answer is `{kind: "buffer", buffer, line: 1, lines, text}`.
-  A declaration of the same name wins, so `Store` still reads the declaration.
+  A declaration of the same name wins, so `Store` still reads the declaration
+  (and a name declared in two buffers keeps its "more than one declaration"
+  refusal). A loaded file is matched before a file reached through `use`; a
+  name that still matches several buffers is refused with them listed. A
+  whole buffer takes no `comments: false` or `with`: they are refused, not
+  ignored.
   `source` on a composition loaded from files names no buffer: the refusal
   lists the files, and `<path>:Name` or `<path>:<line>` reads from one.
 
@@ -1139,11 +1144,13 @@ readable only by an agent that already knew it.
   and its exported `symbols` by kind (`fn`, `type`, `service`, `component`,
   `extern`, ...). That is the whole vocabulary in one call - which modules
   exist and what each one declares. `packaged` is read from the stdlib root on
-  disk; a root that is missing is refused as "not installed" instead of being
-  listed as an empty stdlib. The call is answered the same way when the session
-  holds a composition or a draft, with one more key, `held`: each held buffer
-  (`buffer`, `origin`, `lines`) and the declarations in it by kind, so the names
-  a read takes (issue #2322) are in the first answer.
+  disk; a root that is missing, with nothing held, is refused as "not
+  installed" instead of being listed as an empty stdlib (when a composition or
+  draft is held the call still answers, with `packaged: false` and no modules).
+  The call is answered the same way when the session holds a composition or a
+  draft, with one more key, `held`: each held buffer (`buffer`, `origin`,
+  `lines`, and `symbols`, the declarations in it by kind), so the names a read
+  takes (issue #2322) are in the first answer.
 - The `builtin` entry is the base type surface (`Str`, `List`, `Map`, `Int`,
   `Value`, ...) as `typecheck` admits it. Those methods are built into the
   language and declared by no file ([stdlib-2.0.md](stdlib-2.0.md), §The

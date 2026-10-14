@@ -259,27 +259,33 @@ def _buffers_named(vs: dict, name: str) -> list[tuple[tuple[str, str], str]]:
 
     held = _model.buffers(vs)
     spellings = [name] + ([] if name.endswith(".rvl") else [name + ".rvl"])
-    for spelling in spellings:
-        exact = [b for b in held if b[0][1] == spelling]
-        if exact:
-            return exact
-        files = [key for (kind, key), _ in held if kind in ("file", "dependency")]
-        path = _match_file(files, spelling)
-        paths = [path] if path is not None else _suffix_matches(files, spelling)
-        found = [b for b in held if b[0][0] in ("file", "dependency")
-                 and b[0][1] in paths]
-        if found:
-            return found
+    # a loaded file before a read-only dependency, as `_resolve_buffer` orders
+    # them: a dependency that shares a basename must not make a file ambiguous
+    for kinds in (("source", "module", "file"), ("dependency",)):
+        pool = [b for b in held if b[0][0] in kinds]
+        keys = [b[0][1] for b in pool if b[0][0] in ("file", "dependency")]
+        for spelling in spellings:
+            exact = [b for b in pool if b[0][1] == spelling]
+            if exact:
+                return exact
+            path = _match_file(keys, spelling)
+            paths = [path] if path is not None else _suffix_matches(keys, spelling)
+            found = [b for b in pool if b[0][0] in ("file", "dependency")
+                     and b[0][1] in paths]
+            if found:
+                return found
     return []
 
 
-def read_buffer(vs: dict, symbol: str) -> dict | None:
+def read_buffer(vs: dict, symbol: str, *, modifiers: tuple = ()) -> dict | None:
     """What `revl_source` answers when `symbol` is no declaration but names a
     held buffer (issue #2322): the whole buffer, as `kind: "buffer"`. None when
     `symbol` names no buffer, so the caller keeps its own refusal. A name that
     several buffers share is refused with the candidates; `source` on a
     composition that holds no inline source is refused with the spelling that
-    does read."""
+    does read. `modifiers` are the declaration-only options the call carried
+    (`comments: false`, `with: [...]`); a whole buffer has no use for them, so
+    they are refused rather than silently ignored."""
     name = symbol.strip()
     found = _buffers_named(vs, name)
     if not found and name == "source" and vs.get("files"):
@@ -290,6 +296,11 @@ def read_buffer(vs: dict, symbol: str) -> dict | None:
                         f"{', '.join(b[0][1] for b in found)}")
     if not found:
         return None
+    if modifiers:
+        raise EditError(
+            f"`{name}` is a held buffer, read whole: {', '.join(modifiers)} "
+            "apply to a declaration. Read a declaration with `<buffer>:Name`, "
+            "or drop the option")
     (kind, key), text = found[0]
     return {"symbol": key, "kind": "buffer", "buffer": key, "line": 1,
             "lines": len(text.splitlines()), "text": text}
