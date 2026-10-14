@@ -8155,8 +8155,8 @@ def _acquired_surface_type(component: dict, bind: str, env: "_Env",
     Declared `Object`, that return is "Object cannot be converted to long" for
     an `Int` method. The acquisition's type is in the IR: a required-service
     call's declared return, a free fn's return, a config field's type, or an
-    annotated arithmetic `bin`. A type `_declarable_type` cannot spell, and a
-    host acquisition, stay `Object`.
+    operator (`_expr_surface_type`). A type `_declarable_type` cannot spell,
+    and a host acquisition, stay `Object`.
     """
     for step in component.get("body") or []:
         if step.get("step") != "let-effect" or step.get("bind") != bind:
@@ -8171,17 +8171,41 @@ def _acquired_surface_type(component: dict, bind: str, env: "_Env",
     return None
 
 
+_NUMERIC_SURFACES = ("Int", "Int32", "Float")
+
+
 def _expr_surface_type(node: object, env: "_Env", functions: list | None,
                        v3_ctx: "_V3Ctx | None") -> str | None:
-    """`_map_value_expr_type`, plus an arithmetic or comparison `bin` read off
-    its `operands` annotation (docs/arithmetic.md: `/` on two `Int`s or two
-    `Int32`s is `Float`)."""
-    if isinstance(node, dict) and node.get("kind") == "bin":
+    """`_map_value_expr_type`, plus the operator forms it does not type.
+
+    An arithmetic `bin` or a unary `-` is read off its `operands` annotation
+    (docs/arithmetic.md: `/` on two `Int`s or two `Int32`s is `Float`), or,
+    unannotated, off its operands: a `+` with a `Str` side is concatenation,
+    and a `-x` takes the type of `x`. A comparison, `&&`, `||` and `!` are
+    `Bool`. A backtick template is typed by `_map_value_expr_type`."""
+    kind = node.get("kind") if isinstance(node, dict) else None
+    if kind == "un":
+        if node.get("op") == "!":
+            return "Bool"
+        if node.get("op") != "-":
+            return None
+        operands = node.get("operands")
+        if operands in _NUMERIC_SURFACES:
+            return operands
+        inner = _expr_surface_type(node.get("operand"), env, functions, v3_ctx)
+        return inner if inner in _NUMERIC_SURFACES else None
+    if kind == "bin":
         op, operands = node.get("op"), node.get("operands")
         if op in _BOOL_BIN_OPS:
             return "Bool"
-        if op in ("+", "-", "*", "/", "%") and operands in ("Int", "Int32", "Float"):
+        if op not in ("+", "-", "*", "/", "%"):
+            return None
+        if operands in _NUMERIC_SURFACES:
             return "Float" if op == "/" else operands
+        sides = {_expr_surface_type(node.get(k), env, functions, v3_ctx)
+                 for k in ("left", "right")}
+        if op == "+" and "Str" in sides:
+            return "Str"
         return None
     return _map_value_expr_type(node, {}, env, functions or [], v3_ctx)
 

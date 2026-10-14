@@ -4,7 +4,7 @@
 
 ["function", "backends-java-emit-py-acquired-bind-type-nonhost", "_emit_component.bind_decl", 1, 1]
 
-["function", "backends-java-emit-py-acquired-bind-type-nonhost", "_expr_surface_type", 8, 8]
+["function", "backends-java-emit-py-acquired-bind-type-nonhost", "_expr_surface_type", 24, 24]
 
 ["reason", "backends-java-emit-py-arrow-callee-the-remaining", "backends/java/emit.py::_arrow_callee: The remaining returns recognize inline arrows and locally bound arrow callees. Local arrows/beta reduction are an existing port boundary; control.rvl is a strict divergent regression."]
 
