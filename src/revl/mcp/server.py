@@ -1737,8 +1737,7 @@ def _tool_edit(arguments: dict, verify=None, caller: str = "revl_edit",
         if decision.gated and not decision.allowed:
             return {**_refused_by_operator(decision), "loaded": False,
                     "edited": False, "swapped": False}
-        loaded = (_tool_load(load_arguments) if compiled is None
-                  else _tool_load(load_arguments, compiled))
+        loaded = _tool_load(load_arguments, compiled)
         if not loaded.get("ok"):
             return {**loaded, "loaded": False, "edited": False, "swapped": False}
         if loaded.get("draft"):

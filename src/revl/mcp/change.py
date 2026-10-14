@@ -227,9 +227,10 @@ def shape(intent: str, result: dict, plan: dict | None, withdrawn: list[str],
 def _unchanged_suffix(result: dict) -> str:
     """Issue #2407: "the running composition is unchanged" is true only when
     something runs. A cold call that was refused or failed to load answers
-    `loaded: false`, and nothing was running to leave unchanged."""
+    `loaded: false`, and nothing was running to leave unchanged. A proposal
+    held across an unload is still reported (issue #2230)."""
     if result.get("loaded") is False:
-        return ""
+        return _held_unchanged(result)
     return "; the running composition is unchanged" + _held_unchanged(result)
 
 

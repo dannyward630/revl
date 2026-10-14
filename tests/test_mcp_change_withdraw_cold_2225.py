@@ -254,6 +254,21 @@ def test_the_warm_refusal_still_says_the_running_composition_is_unchanged(clean_
     assert result["note"].endswith("the running composition is unchanged"), result["note"]
 
 
+def test_a_proposal_held_across_an_unload_is_still_reported(clean_session):
+    """A proposal survives `revl_unload` (issue #2230). A cold refusal drops the
+    "running composition" suffix, but not the word about the held proposal."""
+    assert _call("revl_load", {"source": SOURCE})["ok"] is True
+    staged = _call("revl_change", {"withdraw": {"component": "FixedClock"}})
+    assert staged["ok"] is True and staged["committed"] is False, staged
+    server_mod.SESSION.unload()
+    cold = _call("revl_change", {"withdraw": "MemStore", "source": SOURCE})
+    assert cold["ok"] is False and cold["loaded"] is False, cold
+    assert cold["proposal"]["stale"] is True, cold.get("proposal")
+    assert "running composition" not in cold["note"], cold["note"]
+    assert "your held proposal is still held" in cold["note"], cold["note"]
+    assert "{discard: true}" in cold["note"]
+
+
 # ------------------------------------------------ issue #2407: holes, drafts
 
 

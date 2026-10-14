@@ -504,7 +504,7 @@ def test_a_cold_edit_that_carries_source_still_runs_its_load(monkeypatch,
     _held(monkeypatch, _HeldSession(loaded=False))
     loaded_with = []
 
-    def _record(arguments):
+    def _record(arguments, compiled=None):
         loaded_with.append(arguments)
         return {"ok": False, "diagnostics": [{
             "severity": "error", "code": "REVL", "category": "compile",
