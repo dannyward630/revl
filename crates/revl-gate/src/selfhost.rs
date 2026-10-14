@@ -35043,6 +35043,47 @@ fn lift_captures(ts: Vec<Token>, lo: i64, hi: i64, env: Vec<Bind>) -> Vec<String
     return sort_strs(&caps);
 }
 
+fn lift_arm_arrow(ts: &[Token], i: i64, inner: &str) -> bool {
+    if ((inner != "{") || (!atk(ts, i, "=>"))) {
+        return false;
+    }
+    let bare = (atk(ts, (i).checked_sub(1i64).expect("revl: Int overflow"), "ident") && ba_sep(ts, (i).checked_sub(2i64).expect("revl: Int overflow")));
+    let bound = ((((atk(ts, (i).checked_sub(1i64).expect("revl: Int overflow"), ")") && atk(ts, (i).checked_sub(2i64).expect("revl: Int overflow"), "ident")) && atk(ts, (i).checked_sub(3i64).expect("revl: Int overflow"), "(")) && atk(ts, (i).checked_sub(4i64).expect("revl: Int overflow"), "ident")) && ba_sep(ts, (i).checked_sub(5i64).expect("revl: Int overflow")));
+    return (bare || bound);
+}
+
+fn lift_opaque(ts: &[Token], lo: i64, hi: i64) -> bool {
+    let mut stack: Vec<String> = vec![];
+    let mut i = lo;
+    while (i < hi) {
+        let k = tkc(ts, i).kind;
+        if (k == "template") {
+            return true;
+        }
+        if ((k == "=>") && (!lift_arm_arrow(ts, i, &ba_top(&stack)))) {
+            return true;
+        }
+        if ba_opener(&k) {
+            stack.push(k.clone());
+        }
+        if ba_closer(&k) {
+            stack = ba_pop(stack.clone());
+        }
+        i = (i).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return false;
+}
+
+fn lift_own_marks(ts: Vec<Token>, lo: i64, t0: i64, sm: std::collections::HashMap<String, String>) -> OwnMarks {
+    let ru = ru_at(ts.clone(), t0);
+    let ret = if ru.ok { ostep_ru(String::from("return"), t0, String::from(""), ru.base.clone(), ru.upds.clone()) } else { ostep_simple(String::from("return"), expr_at(ts.clone(), t0).e) };
+    let steps = own_scan(ts.clone(), lo, t0).revl_push(ret);
+    let r = own_stmts(&steps, 0i64, own_alive(std::collections::HashMap::new()), wacc_fresh(std::collections::HashMap::new()), sm.clone());
+    let marks = r.a.marks;
+    let copies = own_copies(&steps, 0i64, marks.clone(), std::collections::HashMap::new());
+    return OwnMarks { marks: marks.clone(), births: own_births(&steps, 0i64, copies.clone(), std::collections::HashMap::new()) };
+}
+
 fn lift_fail() -> LiftArm {
     return LiftArm { ok: false, blob: String::from("") };
 }
@@ -35088,6 +35129,12 @@ fn lift_arm(ts: Vec<Token>, p: i64, e: i64, m: i64, env: Vec<Bind>, marks: std::
     while ((tend > t0) && atk(&ts, (tend).checked_sub(1i64).expect("revl: Int overflow"), ";")) {
         tend = (tend).checked_sub(1i64).expect("revl: Int overflow");
     }
+    if ba_has(&ts, t0, tend.clone()) {
+        return lift_fail();
+    }
+    let om = lift_own_marks(ts.clone(), (p).checked_add(2i64).expect("revl: Int overflow"), t0, own_program_summary(ts.clone()));
+    let hmarks = { let mut c = ({ let mut c = ({ let mut c = om.marks.clone(); c.insert(String::from("@try_fn"), mget_int(marks.clone(), String::from("@try_fn"))); c }).clone(); c.insert(String::from("@try_end"), mget_int(marks.clone(), String::from("@try_end"))); c }).clone(); c.insert(String::from("@lift"), 1i64); c };
+    let hbirths = om.births;
     let mut benv = henv.clone();
     let mut muts: Vec<String> = vec![];
     let mut body = String::from("");
@@ -35096,7 +35143,7 @@ fn lift_arm(ts: Vec<Token>, p: i64, e: i64, m: i64, env: Vec<Bind>, marks: std::
         if atk(&ts, j.clone(), ";") {
             j = (j).checked_add(1i64).expect("revl: Int overflow");
         } else {
-            let st = lir_one_stmt(ts.clone(), j.clone(), t0, benv.clone(), muts.clone(), String::from(""), marks.clone(), births.clone(), al.clone());
+            let st = lir_one_stmt(ts.clone(), j.clone(), t0, benv.clone(), muts.clone(), String::from(""), hmarks.clone(), hbirths.clone(), al.clone());
             if (st.i <= j) {
                 return lift_fail();
             }
@@ -35117,6 +35164,17 @@ fn lift_arm(ts: Vec<Token>, p: i64, e: i64, m: i64, env: Vec<Bind>, marks: std::
     return LiftArm { ok: true, blob: (((((lift_open().revl_concat(&(p).to_string())).revl_concat(&lift_sep())).revl_concat(&args)).revl_concat(&lift_sep())).revl_concat(&rest)).revl_concat(&lift_close()) };
 }
 
+fn lift_under_arm(opens: &[i64], scrut: std::collections::HashMap<String, i64>) -> bool {
+    let mut k = 0i64;
+    while ((k).checked_add(1i64).expect("revl: Int overflow") < opens.revl_length()) {
+        if (mget_int(scrut.clone(), ((opens)[(k) as usize]).to_string()) > 0i64) {
+            return true;
+        }
+        k = (k).checked_add(1i64).expect("revl: Int overflow");
+    }
+    return false;
+}
+
 fn lift_rw(ts: Vec<Token>, lo: i64, hi: i64, env: Vec<Bind>, marks: std::collections::HashMap<String, i64>, births: std::collections::HashMap<String, String>, al: std::collections::HashMap<String, String>) -> LiftRw {
     let mut out: Vec<Token> = vec![];
     let mut orig: Vec<i64> = vec![];
@@ -35124,6 +35182,9 @@ fn lift_rw(ts: Vec<Token>, lo: i64, hi: i64, env: Vec<Bind>, marks: std::collect
     let mut stack: Vec<String> = vec![];
     let mut opens: Vec<i64> = vec![];
     let mut scrut = std::collections::HashMap::new();
+    if lift_opaque(&ts, lo, hi) {
+        return LiftRw { toks: vec![], orig: vec![], blobs: vec![], ok: false };
+    }
     let mut i = lo;
     while (i < hi) {
         let t = tkc(&ts, i);
@@ -35136,6 +35197,9 @@ fn lift_rw(ts: Vec<Token>, lo: i64, hi: i64, env: Vec<Bind>, marks: std::collect
         let e = if ba_arm_at(&ts, i, &ba_top(&stack)) { close_brace(&ts, (i).checked_add(1i64).expect("revl: Int overflow")) } else { (0i64).checked_sub(1i64).expect("revl: Int overflow") };
         if ((e != (0i64).checked_sub(1i64).expect("revl: Int overflow")) && (e <= hi)) {
             let b = if (opens.revl_length() > 0i64) { (opens)[((opens.revl_length()).checked_sub(1i64).expect("revl: Int overflow")) as usize].clone() } else { (0i64).checked_sub(1i64).expect("revl: Int overflow") };
+            if lift_under_arm(&opens, scrut.clone()) {
+                return LiftRw { toks: vec![], orig: vec![], blobs: vec![], ok: false };
+            }
             let a = lift_arm(ts.clone(), i, e.clone(), (mget_int(scrut.clone(), (b).to_string())).checked_sub(1i64).expect("revl: Int overflow"), env.clone(), marks.clone(), births.clone(), al.clone());
             if (!a.ok) {
                 return LiftRw { toks: vec![], orig: vec![], blobs: vec![], ok: false };
@@ -35227,6 +35291,10 @@ fn lir_lift_stmt(ts: Vec<Token>, i: i64, se: i64, env: Vec<Bind>, muts: Vec<Stri
         k = (k).checked_add(1i64).expect("revl: Int overflow");
     }
     return mk_one(js.clone(), st.env.clone(), st.muts.clone(), se);
+}
+
+fn lift_unexpanded_fn() -> String {
+    return (String::from("{\"name\":\"block_arm_lift_unexpanded\",\"params\":[],\"returns\":null,").revl_concat("\"public\":false,\"body\":[{\"step\":\"return\",\"expr\":")).revl_concat("{\"kind\":\"block_arm_lift_unexpanded\"}}]}");
 }
 
 fn lift_taken(ts: &[Token]) -> Vec<String> {
@@ -36722,14 +36790,15 @@ pub fn lower_to_ir_refs_at(src: String, fname: String, rows: Vec<String>) -> Str
     let fo = fns_walk(ts.clone(), 0i64, String::from(""), case_binds(ts.clone(), plan.al.clone()), plan.colored.clone(), own_program_summary(ts.clone()), plan.al.clone(), plan.monos.clone(), plan.origins.clone(), fnty, std::collections::HashMap::new());
     let taken = lift_taken(&ts);
     let lx = lift_expand(fo.js.clone(), 0i64, String::from(""), std::collections::HashMap::new(), &taken, std::collections::HashMap::new());
-    let mut fnsjs = lx.js;
-    if (lx.helpers != "") {
+    let mut fnsjs = if lx.ok { lx.js } else { lift_unexpanded_fn() };
+    if (lx.ok && (lx.helpers != "")) {
         fnsjs = if (fnsjs == "") { lx.helpers } else { (fnsjs.revl_concat(",")).revl_concat(&lx.helpers) };
     }
     let mut ci = 0i64;
     while (ci < plan.origins.revl_length()) {
         let cjs0 = mget_str(fo.clones.clone(), mget_str(plan.monos.clone(), (plan.origins)[(ci) as usize].clone()));
-        let cjs = lift_expand(cjs0.clone(), 0i64, String::from(""), std::collections::HashMap::new(), &taken, lx.names.clone()).js;
+        let cx = lift_expand(cjs0.clone(), 0i64, String::from(""), std::collections::HashMap::new(), &taken, lx.names.clone());
+        let cjs = if cx.ok { cx.js } else { lift_unexpanded_fn() };
         if (cjs != "") {
             fnsjs = if (fnsjs == "") { cjs.clone() } else { (fnsjs.revl_concat(", ")).revl_concat(&cjs) };
         }

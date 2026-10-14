@@ -31140,7 +31140,50 @@ fn lift_captures(ts: List[Token], lo: Int, hi: Int, env: List[Bind]) -> List[Str
   return sort_strs(caps)
 }
 
+// Is the `=>` at i a match arm's (`Case =>` or `Case(x) =>` right after the
+// match's `{` or a `,`), block-bodied or not? Any other `=>` is an arrow.
+fn lift_arm_arrow(ts: List[Token], i: Int, inner: Str) -> Bool {
+  if (inner != "{" || !atk(ts, i, "=>")) { return false }
+  let bare = atk(ts, i - 1, "ident") && ba_sep(ts, i - 2)
+  let bound = atk(ts, i - 1, ")") && atk(ts, i - 2, "ident")
+    && atk(ts, i - 3, "(") && atk(ts, i - 4, "ident") && ba_sep(ts, i - 5)
+  return bare || bound
+}
+
+// Whether `[lo, hi)` holds a form whose names this token scan does not read
+// the way `_collect_arm_names` walks them: an arrow (its parameters bind, and
+// the reference refuses the generic combinators it feeds, issue #2317) or a
+// template (its `${...}` reads ride inside one token).
+fn lift_opaque(ts: List[Token], lo: Int, hi: Int) -> Bool {
+  var stack: List[Str] = []
+  var i = lo
+  while (i < hi) {
+    let k = tkc(ts, i).kind
+    if (k == "template") { return true }
+    if (k == "=>" && !lift_arm_arrow(ts, i, ba_top(stack))) { return true }
+    if (ba_opener(k)) { stack = stack.push(k) }
+    if (ba_closer(k)) { stack = ba_pop(stack) }
+    i += 1
+  }
+  return false
+}
+
 type LiftArm = { ok: Bool, blob: Str }
+
+// `own_marks` for a lifted helper: the arm's statements `[lo, t0)` and its
+// tail at t0 read as the helper's `return`, which is what the reference's
+// ownership pass sees. Read as a bare expression statement, the tail kept
+// every accumulation local alive and no write was marked unique.
+fn lift_own_marks(ts: List[Token], lo: Int, t0: Int, sm: Map[Str, Str]) -> OwnMarks {
+  let ru = ru_at(ts, t0)
+  let ret = ru.ok ? ostep_ru("return", t0, "", ru.base, ru.upds)
+    : ostep_simple("return", expr_at(ts, t0).e)
+  let steps = own_scan(ts, lo, t0).push(ret)
+  let r = own_stmts(steps, 0, own_alive(Map.empty()), wacc_fresh(Map.empty()), sm)
+  let marks = r.a.marks
+  let copies = own_copies(steps, 0, marks, Map.empty())
+  return { marks: marks, births: own_births(steps, 0, copies, Map.empty()) }
+}
 
 fn lift_fail() -> LiftArm { return { ok: false, blob: "" } }
 
@@ -31179,6 +31222,15 @@ fn lift_arm(ts: List[Token], p: Int, e: Int, m: Int, env: List[Bind],
   let t0 = ba_tail_start(ts, p + 2, e - 1)
   var tend = e - 1
   while (tend > t0 && atk(ts, tend - 1, ";")) { tend -= 1 }
+  // a block arm in the tail is lifted by the reference BEFORE this one, which
+  // the tail's expression read cannot do: left to the ordinary path
+  if (ba_has(ts, t0, tend)) { return lift_fail() }
+  // the helper is a fn of its own to the ownership pass: its marks are
+  // computed over the arm's span, not read off the enclosing fn's
+  let om = lift_own_marks(ts, p + 2, t0, own_program_summary(ts))
+  let hmarks = om.marks.set("@try_fn", mget_int(marks, "@try_fn"))
+    .set("@try_end", mget_int(marks, "@try_end")).set("@lift", 1)
+  let hbirths = om.births
   var benv = henv
   var muts: List[Str] = []
   var body = ""
@@ -31186,7 +31238,7 @@ fn lift_arm(ts: List[Token], p: Int, e: Int, m: Int, env: List[Bind],
   while (j < t0) {
     if (atk(ts, j, ";")) { j += 1 }
     else {
-      let st = lir_one_stmt(ts, j, t0, benv, muts, "", marks, births, al)
+      let st = lir_one_stmt(ts, j, t0, benv, muts, "", hmarks, hbirths, al)
       if (st.i <= j) { return lift_fail() }
       if (st.js != "") { body = body == "" ? st.js : body.concat(",").concat(st.js) }
       benv = st.env
@@ -31209,6 +31261,16 @@ fn lift_arm(ts: List[Token], p: Int, e: Int, m: Int, env: List[Bind],
 // for a placeholder), so the ownership marks keyed by index follow it.
 type LiftRw = { toks: List[Token], orig: List[Int], blobs: List[Bind], ok: Bool }
 
+// Whether any open bracket below the innermost one is a match's arms brace.
+fn lift_under_arm(opens: List[Int], scrut: Map[Str, Int]) -> Bool {
+  var k = 0
+  while (k + 1 < opens.length()) {
+    if (mget_int(scrut, opens[k].to_str()) > 0) { return true }
+    k += 1
+  }
+  return false
+}
+
 fn lift_rw(ts: List[Token], lo: Int, hi: Int, env: List[Bind], marks: Map[Str, Int],
            births: Map[Str, Str], al: Map[Str, Str]) -> LiftRw {
   var out: List[Token] = []
@@ -31218,6 +31280,7 @@ fn lift_rw(ts: List[Token], lo: Int, hi: Int, env: List[Bind], marks: Map[Str, I
   var opens: List[Int] = []
   // the `{` that opens a match's arms, keyed by index, to its `match` + 1
   var scrut: Map[Str, Int] = Map.empty()
+  if (lift_opaque(ts, lo, hi)) { return { toks: [], orig: [], blobs: [], ok: false } }
   var i = lo
   while (i < hi) {
     let t = tkc(ts, i)
@@ -31228,6 +31291,9 @@ fn lift_rw(ts: List[Token], lo: Int, hi: Int, env: List[Bind], marks: Map[Str, I
     let e = ba_arm_at(ts, i, ba_top(stack)) ? close_brace(ts, i + 1) : 0 - 1
     if (e != 0 - 1 && e <= hi) {
       let b = opens.length() > 0 ? opens[opens.length() - 1] : 0 - 1
+      // an arm under an enclosing match's arm reads that arm's binder, which
+      // this statement's scope does not hold: left to the ordinary path
+      if (lift_under_arm(opens, scrut)) { return { toks: [], orig: [], blobs: [], ok: false } }
       let a = lift_arm(ts, i, e, mget_int(scrut, b.to_str()) - 1, env, marks, births, al)
       if (!a.ok) { return { toks: [], orig: [], blobs: [], ok: false } }
       out = out.push(t).push({ kind: "ident", text: lift_ph(i), line: t.line })
@@ -31306,6 +31372,12 @@ fn lir_lift_stmt(ts: List[Token], i: Int, se: Int, env: List[Bind], muts: List[S
     k += 1
   }
   return mk_one(js, st.env, st.muts, se)
+}
+
+fn lift_unexpanded_fn() -> Str {
+  return "{\"name\":\"block_arm_lift_unexpanded\",\"params\":[],\"returns\":null,"
+    .concat("\"public\":false,\"body\":[{\"step\":\"return\",\"expr\":")
+    .concat("{\"kind\":\"block_arm_lift_unexpanded\"}}]}")
 }
 
 // The names a helper may not take: every module fn's and extern's.
@@ -33045,12 +33117,15 @@ pub fn lower_to_ir_refs_at(src: Str, fname: Str, rows: List[Str]) -> Str {
   // before the `_revl_sync` clones; a clone calls its origin's helpers.
   let taken = lift_taken(ts)
   let lx = lift_expand(fo.js, 0, "", Map.empty(), taken, Map.empty())
-  var fnsjs = lx.js
-  if (lx.helpers != "") { fnsjs = fnsjs == "" ? lx.helpers : fnsjs.concat(",").concat(lx.helpers) }
+  // a blob the expansion cannot read is a defect of this producer: it is
+  // refused by name rather than leaking its markers into the IR text
+  var fnsjs = lx.ok ? lx.js : lift_unexpanded_fn()
+  if (lx.ok && lx.helpers != "") { fnsjs = fnsjs == "" ? lx.helpers : fnsjs.concat(",").concat(lx.helpers) }
   var ci = 0
   while (ci < plan.origins.length()) {
     let cjs0 = mget_str(fo.clones, mget_str(plan.monos, plan.origins[ci]))
-    let cjs = lift_expand(cjs0, 0, "", Map.empty(), taken, lx.names).js
+    let cx = lift_expand(cjs0, 0, "", Map.empty(), taken, lx.names)
+    let cjs = cx.ok ? cx.js : lift_unexpanded_fn()
     if (cjs != "") { fnsjs = fnsjs == "" ? cjs : fnsjs.concat(", ").concat(cjs) }
     ci += 1
   }

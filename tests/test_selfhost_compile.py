@@ -1021,6 +1021,57 @@ def test_block_arm_in_a_module_fn_lifts_like_the_reference(
     assert got == want
 
 
+# Issue #2317: block arms the lift does not read the way the reference does.
+# Each must come out byte-exact or LOUD (a refusal or an UNSUPPORTED node),
+# never as a plausible program with a missing capture or a wrong helper.
+_BLOCK_ARM_LOUD = {
+    # an arm under an enclosing match's EXPRESSION arm reads that arm's `v`
+    "under_expr_arm.rvl": (
+        "fn f(r: Result[Int, Str], o: Result[Int, Str]) -> Int {\n"
+        "  return match r { Ok(v) => match o { Ok(u) => { let s = u + v\n"
+        "    s }, Err(e) => 0 }, Err(e) => 1 }\n"
+        "}\n"),
+    # `k` is read only inside a template
+    "template_capture.rvl": (
+        "fn f(r: Result[Int, Str], k: Str) -> Int {\n"
+        "  return match r { Ok(v) => { let s = `a ${k}`\n"
+        "    s.length() + v }, Err(e) => 0 }\n"
+        "}\n"),
+    # an arrow in the arm: the reference refuses `list_map` (G1)
+    "arrow_in_arm.rvl": (
+        "fn f(r: Result[Int, Str], xs: List[Int]) -> Int {\n"
+        "  let x = 5\n"
+        "  return match r { Ok(v) => { let ys = xs.map((x: Int) => x + v)\n"
+        "    ys.length() }, Err(e) => x }\n"
+        "}\n"),
+    # a block arm in another arm's tail, which the reference numbers first
+    "arm_in_tail.rvl": (
+        "fn f(r: Result[Int, Str], o: Result[Int, Str]) -> Int {\n"
+        "  return match r { Ok(v) => { let a = v\n"
+        "    match o { Ok(u) => { let s = u + a\n"
+        "      s }, Err(e) => 0 } }, Err(e) => 1 }\n"
+        "}\n"),
+}
+
+
+@pytest.mark.parametrize("tier", ("py", "ts", "rust"))
+@pytest.mark.parametrize("name", sorted(_BLOCK_ARM_LOUD))
+def test_block_arm_the_lift_cannot_read_stays_loud(
+        compile_rvl, reference_emit, tmp_path, tier, name):
+    """Issue #2317: the self-host rule for the lift. A block arm whose captures
+    the token scan cannot read exactly is not lifted; the native chain then
+    agrees with the reference or says loudly that it does not."""
+    doc = tmp_path / name
+    doc.write_text(_BLOCK_ARM_LOUD[name], encoding="utf-8")
+    try:
+        want = reference_emit[tier](compile_files([str(doc)]))
+    except Exception:  # the reference refuses the document
+        want = None
+    got = compile_rvl["compile_to_at"](doc.read_text(encoding="utf-8"), tier, str(doc))
+    loud = got.startswith("REFUSED|") or "<<UNSUPPORTED-" in got
+    assert got == want or loud, got
+
+
 _STORE_COMPONENT = (
     "service Front { fn go() -> Str }\n\n"
     "component App requires store: Store provides front: Front {\n"
