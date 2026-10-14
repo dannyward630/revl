@@ -2207,13 +2207,18 @@ class Session:
                 comp = next((c for c in (ir.get("components") or [])
                              if c.get("name") == name), {})
                 keys = list((comp.get("provides") or {}).keys())
+                reason = f"the successor fiber is {state} after the swap load"
+                if state == "PENDING":
+                    # issue #2386: name the requirement that kept it PENDING
+                    from .authoring_loop import pending_reason  # noqa: PLC0415
+
+                    reason = pending_reason(ir, comp, driver.resolved_keys())
                 raise ActivationError(
                     name, keys,
-                    f"the successor fiber is {state} after the swap load — a swap "
-                    f"must not install a generation whose component failed to "
-                    f"activate (FAILED) or has an unmet requirement (PENDING). "
-                    f"item 372 makes both non-raising, so item 334's health gate "
-                    f"rejects them here")
+                    f"{reason}. A swap must not install a generation whose "
+                    f"component failed to activate (FAILED) or has an unmet "
+                    f"requirement (PENDING). item 372 makes both non-raising, "
+                    f"so item 334's health gate rejects them here")
         # 2) every key the successor is responsible for must resolve to a live
         #    provider: the ROOT provisions (non-template declarations) plus the
         #    INHERITED ones (keys gen N actually served that the successor still

@@ -3245,7 +3245,8 @@ def _check_as_sent(arguments: dict, held: dict | None = None) -> dict:
              if ir.get("holes") else [])
     result = {"ok": True, **_summary(ir), "boundary": _boundary_of(ir),
               "holes": holes, **_effect_classes.report(ir),
-              "selfCheck": _authoring_loop.self_check(None, holes)}
+              "selfCheck": _authoring_loop.self_check(
+                  None, holes, _authoring_loop.unmet_requirements(ir))}
     blocked = fillspec.unfillable(holes)
     if blocked:
         # flagged, not handed out: holes this author can never fill

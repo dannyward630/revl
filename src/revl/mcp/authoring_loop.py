@@ -66,7 +66,8 @@ def step_label(verb: str) -> str:
     raise KeyError(verb)
 
 
-def self_check(diagnostics: list[dict] | None, holes: list | None = None) -> dict:
+def self_check(diagnostics: list[dict] | None, holes: list | None = None,
+               unmet: list | None = None) -> dict:
     """Every guarantee G1-G9, from one compile.
 
     `diagnostics` is None when the compile succeeded: the checker enforces
@@ -77,6 +78,13 @@ def self_check(diagnostics: list[dict] | None, holes: list | None = None) -> dic
     checker did not make. Refusals under any other code (a type error, an
     extended guarantee, an amendment) are listed in `otherFailures`, so a
     green G-row is never read past a red one elsewhere.
+
+    `unmet` is `unmet_requirements(ir)` of the compiled composition (issue
+    #2386). A requirement nothing provides compiles, but its component can
+    never activate here: a cold load leaves it PENDING and a swap that adds it
+    is refused by the health gate. So it is listed in `unmetRequirements` and
+    keeps the composition out of `admissible`, the same fail-closed reading
+    the gate gives it, while every G-row still reports what the compile proved.
     """
     compiled = diagnostics is None
     failing: dict[str, list[dict]] = {}
@@ -107,21 +115,112 @@ def self_check(diagnostics: list[dict] | None, holes: list | None = None) -> dic
         "fail": sum(r["status"] == "fail" for r in rows),
         "unchecked": sum(r["status"] == "unchecked" for r in rows),
     }
+    unmet = list(unmet or []) if compiled else []
     result = {
-        "admissible": compiled and open_holes == 0,
+        "admissible": compiled and open_holes == 0 and not unmet,
         "guarantees": rows,
         "summary": summary,
         "otherFailures": other,
     }
+    if unmet:
+        result["unmetRequirements"] = unmet
     if compiled and open_holes:
         result["note"] = (f"every guarantee holds on this draft, but {open_holes} "
                           "open hole(s) keep it out of a running composition "
                           "(T3); fill them with revl_edit")
+    elif unmet:
+        result["note"] = _unmet_note(unmet)
     elif not compiled and summary["unchecked"]:
         result["note"] = ("the compile refused before it could prove the "
                           "`unchecked` guarantees; fix the failures and "
                           "re-run revl_check")
     return result
+
+
+def unmet_requirements(ir: dict) -> list[dict]:
+    """Every `requires` key that no component of the compiled composition
+    provides (issue #2386), one record per (component, key) in source order.
+
+    The compiler admits such a requirement: a composition may be completed by
+    a later load. But this session's runtime supplies no ambient provision, so
+    the component cannot activate in the composition that was checked. A key
+    any component provides counts as met, in any realm and a template's
+    provision included: the compiler already checks a realm route (item 162),
+    and a false report here would be worse than a missed one. Each record carries a
+    `fix` that names the key and, when the same service is provided under a
+    different key, that key: the usual slip is requiring a service by its
+    name, or requiring the service the component itself provides."""
+    components = ir.get("components") or []
+    provided: dict[str, str] = {}
+    by_service: dict[str, list[tuple[str, str]]] = {}
+    for comp in components:
+        for key, service in (comp.get("provides") or {}).items():
+            provided.setdefault(key, comp.get("name") or "")
+            by_service.setdefault(service, []).append((key, comp.get("name") or ""))
+    unmet = []
+    for comp in components:
+        name = comp.get("name") or ""
+        for key, service in (comp.get("requires") or {}).items():
+            if key in provided:
+                continue
+            unmet.append({"component": name, "key": key, "service": service,
+                          "fix": _unmet_fix(name, key, service,
+                                            by_service.get(service) or [])})
+    return unmet
+
+
+def _unmet_fix(component: str, key: str, service: str,
+               providers: list[tuple[str, str]]) -> str:
+    """The remedy for one unmet requirement (issue #2386)."""
+    own = [k for k, by in providers if by == component]
+    if own:
+        return (f"`{component}` already provides `{service}` as `{own[0]}`, and "
+                f"a component does not require the service it provides, so drop "
+                f"`requires {key}`")
+    if providers:
+        other_key, by = providers[0]
+        return (f"`{service}` is provided by `{by}` under the key `{other_key}`, "
+                f"and a requirement is matched by key: write `requires "
+                f"{other_key}: {service}`")
+    return (f"add a component that provides `{key}: {service}`, or drop "
+            f"`requires {key}` from `{component}`")
+
+
+def unmet_phrase(record: dict) -> str:
+    """One unmet requirement in words, shared by `revl_check`'s note and the
+    swap gate's PENDING refusal so both name the key the same way."""
+    return (f"`{record['component']}` requires `{record['key']}: "
+            f"{record['service']}`, which nothing in the composition provides")
+
+
+def pending_reason(ir: dict, comp: dict, resolved) -> str:
+    """Why the swap health gate found `comp`'s successor fiber PENDING (issue
+    #2386): every requirement of it that does not resolve after the load, each
+    named with its key and service. A key nothing in the composition provides
+    carries the same fix `revl_check` gives; a key that is provided, but whose
+    provider did not come up, says so instead."""
+    name = comp.get("name") or ""
+    static = {r["key"]: r for r in unmet_requirements(ir)
+              if r["component"] == name}
+    parts = []
+    for key, service in (comp.get("requires") or {}).items():
+        if key in static:
+            record = static[key]
+            parts.append(f"{unmet_phrase(record)} (fix: {record['fix']})")
+        elif key not in resolved:
+            parts.append(f"`{name}` requires `{key}: {service}`, whose provider "
+                         f"did not come up")
+    if not parts:
+        return "the successor fiber is PENDING after the swap load"
+    return ("the successor fiber is PENDING after the swap load because of an "
+            "unmet requirement: " + "; ".join(parts))
+
+
+def _unmet_note(unmet: list[dict]) -> str:
+    named = " ".join(f"{unmet_phrase(r)}. Fix: {r['fix']}." for r in unmet)
+    return ("every guarantee holds on this composition, but it is not "
+            f"admissible: {named} A cold load leaves such a component "
+            "PENDING, and a swap that adds it is refused")
 
 
 def _failure(record: dict) -> dict:
