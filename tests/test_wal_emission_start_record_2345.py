@@ -101,6 +101,22 @@ GO_BODY = """
 """
 
 
+_GO_REASON: list = []
+
+
+def _go_build_env() -> dict:
+    """The env every go build in this file uses. The module is resolved offline
+    (GOPROXY=off), which only works once stc-go is in the module cache, so ask
+    the go runtime probe first: it builds offline, retries over the network when
+    the cache is cold (populating it) and returns why go cannot run here, if so."""
+    if not _GO_REASON:
+        from revl.run_go import go_runtime_reason  # noqa: PLC0415
+        _GO_REASON.append(go_runtime_reason())
+    if _GO_REASON[0] is not None:
+        pytest.skip(f"cordis-go runtime not available; the go proof needs it: {_GO_REASON[0]}")
+    return {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+
+
 def _go_source() -> str:
     return _load_emitter("go").emit(_ir_with_emission("go", GO_BODY),
                                     "crashrecovery", record=True)
@@ -128,7 +144,7 @@ def go_producer(tmp_path_factory):
     shutil.copy(GO_SCENARIOS / "crashproof" / "crash_proof_test.go", pkg)
     (pkg / "gen_crash_recovery_test.go").write_text(_go_source(), encoding="utf-8")
     out = module / "crashproof.test"
-    env = {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+    env = _go_build_env()
     build = subprocess.run([GO, "test", "-c", "-o", str(out), "./crashproof/"],
                            cwd=str(module), capture_output=True, text=True, env=env)
     if build.returncode != 0:
@@ -458,7 +474,7 @@ def test_go_service_emission_compiles(tmp_path):
                                    record=True)
     assert 'revlJournalEmission("log", "write", "Log"' in src
     (pkg / "gen_crash_recovery_test.go").write_text(src, encoding="utf-8")
-    env = {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+    env = _go_build_env()
     vet = subprocess.run([GO, "test", "-c", "-o", str(module / "x.test"), "./crashproof/"],
                          cwd=str(module), capture_output=True, text=True, env=env)
     assert vet.returncode == 0, vet.stderr
@@ -530,7 +546,7 @@ def test_go_body_that_panics_writes_emission_failed(tmp_path):
         _ir_with_emission("go", '\n\tpanic("boom")\n'), "crashrecovery", record=True),
         encoding="utf-8")
     out = module / "crashproof.test"
-    env = {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+    env = _go_build_env()
     build = subprocess.run([GO, "test", "-c", "-o", str(out), "./crashproof/"],
                            cwd=str(module), capture_output=True, text=True, env=env)
     assert build.returncode == 0, build.stderr
@@ -660,7 +676,7 @@ def _go_build(tmp_path: Path, ir: dict) -> Path:
     (pkg / "gen_crash_recovery_test.go").write_text(
         _load_emitter("go").emit(ir, "crashrecovery", record=True), encoding="utf-8")
     out = module / "crashproof.test"
-    env = {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+    env = _go_build_env()
     build = subprocess.run([GO, "test", "-c", "-o", str(out), "./crashproof/"],
                            cwd=str(module), capture_output=True, text=True, env=env)
     assert build.returncode == 0, build.stderr
@@ -795,7 +811,7 @@ def test_go_service_compensation_compiles(tmp_path):
     pkg = module / "crashproof"
     pkg.mkdir()
     (pkg / "gen_crash_recovery_test.go").write_text(_emit_tier("go", ir), encoding="utf-8")
-    env = {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+    env = _go_build_env()
     build = subprocess.run([GO, "test", "-c", "-o", str(module / "x.test"), "./crashproof/"],
                            cwd=str(module), capture_output=True, text=True, env=env)
     assert build.returncode == 0, build.stderr
@@ -902,7 +918,7 @@ def test_go_service_emission_runs_journalled_end_to_end(tmp_path):
     (pkg / "gen_crash_recovery_test.go").write_text(src, encoding="utf-8")
     (pkg / "e2e_test.go").write_text(E2E_HARNESS, encoding="utf-8")
     out = module / "e2e.test"
-    env = {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+    env = _go_build_env()
     build = subprocess.run([GO, "test", "-c", "-o", str(out), "./crashproof/"],
                            cwd=str(module), capture_output=True, text=True, env=env)
     assert build.returncode == 0, build.stderr
