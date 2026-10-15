@@ -189,7 +189,12 @@ func TenantAStore() stc.Component {
 	return stc.Component{
 		Name:    "TenantAStore",
 		Provide: []stc.Key{_keyKv},
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			var store *Map[string]
 			if err := ctx.Effect(func() stc.Inverse {
 				store = MapNew[string]()
@@ -227,7 +232,12 @@ func TenantBStore() stc.Component {
 	return stc.Component{
 		Name:    "TenantBStore",
 		Provide: []stc.Key{_keyKv},
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			var store *Map[string]
 			if err := ctx.Effect(func() stc.Inverse {
 				store = MapNew[string]()
@@ -265,7 +275,12 @@ func TenantAApp() stc.Component {
 	return stc.Component{
 		Name:   "TenantAApp",
 		Inject: []stc.Key{_keyKv},
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			kv, err := stc.Service[Kv](ctx, _keyKv)
 			if err != nil {
 				return nil, err
@@ -286,7 +301,12 @@ func TenantBApp() stc.Component {
 	return stc.Component{
 		Name:   "TenantBApp",
 		Inject: []stc.Key{_keyKv},
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			kv, err := stc.Service[Kv](ctx, _keyKv)
 			if err != nil {
 				return nil, err

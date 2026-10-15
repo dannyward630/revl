@@ -194,3 +194,48 @@ def test_a_rollback_with_nothing_to_restore_carries_no_report():
     refused = _call("revl_rollback", {})
     assert refused["ok"] is False
     assert "stateDropped" not in refused
+
+
+@needs_runtime
+def test_a_rollback_that_faults_after_the_teardown_reports_the_state_it_dropped(
+        monkeypatch):
+    """Issue #2444: a fault that is not a `SessionError`, raised after the
+    teardown (here the activation gate itself breaks), still follows a cold
+    restart of the running generation. The answer names what that discarded."""
+    from revl.mcp.session import Session
+
+    _swapped_with_state()
+
+    def broken(self, *args, **kwargs):
+        raise RuntimeError("health gate unavailable")
+
+    monkeypatch.setattr(Session, "_assert_successor_activated", broken)
+    faulted = _call("revl_rollback", {})
+    assert faulted["ok"] is False, faulted
+    assert "health gate unavailable" in faulted["diagnostics"][0]["message"]
+    # the running generation keeps serving, but cold ...
+    assert _meter_call("version")["result"] == 2
+    assert _meter_call("get", "l1")["result"] is None
+    # ... and the answer names what that restart discarded
+    dropped = faulted["stateDropped"]
+    assert dropped["components"] == ["MeterBook"], dropped
+    assert "MeterBook" in dropped["note"]
+
+
+@needs_runtime
+def test_a_rollback_that_faults_before_the_teardown_carries_no_report(
+        monkeypatch):
+    """The generation counter did not move, so nothing was dropped. A guard,
+    not a fix check: it passes on origin/main too."""
+    from revl.mcp.session import Session
+
+    _swapped_with_state()
+
+    def broken(self, *args, **kwargs):
+        raise RuntimeError("plan unavailable")
+
+    monkeypatch.setattr(Session, "_plan_swap", broken, raising=False)
+    faulted = _call("revl_rollback", {})
+    assert faulted["ok"] is False, faulted
+    assert "stateDropped" not in faulted
+    assert _meter_call("get", "l1")["result"] == "l1"

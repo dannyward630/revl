@@ -1223,12 +1223,15 @@ _V3_BOXED = {
     "int": "java.lang.Integer",
     "double": "java.lang.Double",
     "boolean": "java.lang.Boolean",
+    # `void` is no type argument: `List[Unit]` and `Result[Unit, E]` are
+    # `java.lang.Void` (#2325).
+    "void": "java.lang.Void",
 }
 
 
 def _java_v3_type(name: object, *, boxed: bool = False) -> str:
     """IR v3 surface type -> Java type for emitted v3 classes."""
-    if name is None or name == "Unit":
+    if name is None:
         return "void"
     if not isinstance(name, str) or not name.strip():
         return "Object"
@@ -1261,6 +1264,16 @@ def _java_v3_type(name: object, *, boxed: bool = False) -> str:
                 f"RevlResult<{_java_v3_type(args[0], boxed=True)}, "
                 f"{_java_v3_type(args[1], boxed=True)}>"
             )
+        if base == "Set" and len(args) == 1:
+            # Not a stdlib type (docs/stdlib-list.md), but the checker admits
+            # the head, and a bare `Set<..>` names no class here (#2325).
+            return f"java.util.Set<{_java_v3_type(args[0], boxed=True)}>"
+        if base == "Stream":
+            # A stream is a host handle. The tier's `Stream` runtime class is
+            # emitted only for a document that holds a stream, and it takes no
+            # type parameter, so a signature widens it to `Object`, as rust
+            # widens it to `Value` (#2325).
+            return "Object"
         # A user generic type (`Bx[Int]`) applies its arguments boxed:
         # `Bx<java.lang.Long>`. The class declares the same parameters
         # (`_emit_v3_types`), so an `Object` here would not type-check a read
@@ -3145,8 +3158,7 @@ def _empty_list_decl_type(value: dict) -> str:
 
 
 #: The scalar leaves an empty list may declare precisely: every TYPE_MAP name
-#: whose boxed spelling is a Java type. `Int32` boxes to `int` and `Unit` to
-#: `void`, so both are left out.
+#: whose boxed spelling is a Java type. `Int32` and `Unit` are left out.
 _DECLARABLE_SCALARS = frozenset(TYPE_MAP) - {"Int32", "Unit"}
 
 
@@ -3154,7 +3166,7 @@ def _declarable_type(name: str) -> bool:
     """True when `_java_v3_type` spells *name* as a real Java type (#2296).
 
     An allowlist, not a denylist: `_java_v3_type` turns any name it does not
-    know into a bare identifier (`Int8`, `Duration`, `Set<Object>`), and
+    know into a bare identifier (`Int8`, `Duration`), and
     rejects a function type outright. So a leaf is declarable only when it is
     a `_DECLARABLE_SCALARS` name or a type the document declares, nested only
     under `List`, `Opt` and `Map`.
@@ -3320,7 +3332,41 @@ def _uses_builtin_result(ir: dict) -> bool:
     # it (mirrors backends/python/emit.py's identical witnessed gate).
     if any(ext.get("class") == "witnessed" for ext in ir.get("externs") or []):
         return True
+    if any(_names_result(t) for t in _signature_types(ir)):
+        return True
     return walk(ir.get("functions")) or walk(ir.get("tests")) or walk(ir.get("components"))
+
+
+def _names_result(type_name: object) -> bool:
+    """True when a surface type spells the built-in `Result[..]` anywhere."""
+    if not isinstance(type_name, str) or "[" not in type_name:
+        return False
+    base = type_name[: type_name.index("[")].strip()
+    inner = type_name[type_name.index("[") + 1 : type_name.rindex("]")]
+    return base == "Result" or any(_names_result(a) for a in _split_v3_types(inner))
+
+
+def _signature_types(ir: dict):
+    """Every surface type a v3 declaration renders through `_java_v3_type`:
+    fn and extern parameters and returns, record fields, variant payloads and
+    service method signatures. A `Result[..]` in any of them names
+    `RevlResult`, so the class is emitted even when no value is built or
+    matched (#2325)."""
+    for fn in (ir.get("functions") or []) + (ir.get("externs") or []):
+        yield fn.get("returns")
+        for p in fn.get("params") or []:
+            if isinstance(p, dict):
+                yield p.get("type")
+    for spec in (ir.get("types") or {}).values():
+        yield from (spec.get("fields") or {}).values()
+        for case in spec.get("cases") or []:
+            yield case.get("payload")
+    for service in (ir.get("services") or {}).values():
+        for decl in (service.get("methods") or {}).values():
+            yield decl.get("returns")
+            for p in decl.get("params") or []:
+                if isinstance(p, dict):
+                    yield p.get("type")
 
 
 def _emit_result_type() -> list[str]:
@@ -3748,13 +3794,18 @@ def _emit_v3_types(types: dict) -> list[str]:
             cases = spec.get("cases") or []
             case_names = [_ident(case.get("name"), "case name") for case in cases]
             permits = ", ".join(f"{name}.{case}" for case in case_names)
-            lines.append(f"public sealed interface {name} permits {permits} {{")
+            # A generic variant declares its parameters on the interface and
+            # on every case, so a use applies them (`Box<java.lang.Long>`)
+            # and a payload of type `T` has `T` in scope (#2325).
+            tparams = _v3_type_params(spec)
+            owner = f"{name}{tparams}"
+            lines.append(f"public sealed interface {owner} permits {permits} {{")
             for case in cases:
                 cname = _ident(case.get("name"), "case name")
                 payload = case.get("payload")
                 shape = ", RevlSecretShape" if _SECRET_MODE else ""
                 if payload is None:
-                    lines.append(f"    final class {cname} implements {name}{shape} {{")
+                    lines.append(f"    final class {cname}{tparams} implements {owner}{shape} {{")
                     lines.append(f"        public {cname}() {{}}")
                     lines.extend(
                         "    " + line if line else line
@@ -3769,7 +3820,7 @@ def _emit_v3_types(types: dict) -> list[str]:
                     lines.append("    }")
                 else:
                     ptype = _java_v3_type(payload)
-                    lines.append(f"    final class {cname} implements {name}{shape} {{")
+                    lines.append(f"    final class {cname}{tparams} implements {owner}{shape} {{")
                     lines.append(f"        public final {ptype} value;")
                     lines.append(
                         f"        public {cname}({ptype} value) {{ this.value = value; }}"
@@ -6748,7 +6799,9 @@ def _component_map_values(env: _Env, functions: list,
 
 
 def _bind_decl_type(component: dict, bind: str, render_type,
-                    map_values: dict[str, str]) -> str:
+                    map_values: dict[str, str], env: "_Env | None" = None,
+                    functions: list | None = None,
+                    v3_ctx: "_V3Ctx | None" = None) -> str:
     """The Java type of a binding's declaration in the legacy (v1/v2) path:
     the host object's class, or a generic `Map<...>` whose value type comes
     from the IR (FR-4). `render_type` is the signature renderer in use
@@ -6760,6 +6813,10 @@ def _bind_decl_type(component: dict, bind: str, render_type,
         if render_type is _java_v3_type:
             return f"Map<{_java_v3_type(surface, boxed=True)}>"
         return f"Map<{_java_type_arg(surface)}>"
+    if host == "Object" and env is not None:
+        surface = _acquired_surface_type(component, bind, env, functions, v3_ctx)
+        if surface is not None:
+            return render_type(surface)
     return host
 
 
@@ -8059,7 +8116,8 @@ def _body_holds_stream_event(node) -> bool:
 
 
 def _bind_type(component: dict, bind: str, v3_ctx: _V3Ctx,
-               map_values: dict[str, str] | None = None) -> str:
+               map_values: dict[str, str] | None = None,
+               env: "_Env | None" = None, functions: list | None = None) -> str:
     host = _host_of(component, bind)
     if host == "Map":
         # FR-4: the host Map is generic; the value type is learned from the
@@ -8091,7 +8149,80 @@ def _bind_type(component: dict, bind: str, v3_ctx: _V3Ctx,
                 return "double"
             if isinstance(value, str):
                 return "String"
+        if env is not None:
+            surface = _acquired_surface_type(component, bind, env, functions, v3_ctx)
+            if surface is not None:
+                return _java_v3_type(surface)
     return "Object"
+
+
+#: The `bin` operators whose result is a `Bool` whatever their operands.
+_BOOL_BIN_OPS = ("==", "!=", "<", "<=", ">", ">=", "&&", "||")
+
+
+def _acquired_surface_type(component: dict, bind: str, env: "_Env",
+                           functions: list | None,
+                           v3_ctx: "_V3Ctx | None") -> str | None:
+    """The surface type of a `let-effect` bind that holds no host object, or
+    None when it cannot be told (#2380).
+
+    The bind becomes a provider-class field, and a provide method returns it.
+    Declared `Object`, that return is "Object cannot be converted to long" for
+    an `Int` method. The acquisition's type is in the IR: a required-service
+    call's declared return, a free fn's return, a config field's type, or an
+    operator (`_expr_surface_type`). A type `_declarable_type` cannot spell,
+    and a host acquisition, stay `Object`.
+    """
+    for step in component.get("body") or []:
+        if step.get("step") != "let-effect" or step.get("bind") != bind:
+            continue
+        acquire = step.get("acquire") or {}
+        if acquire.get("kind") == "host":
+            return None
+        surface = _expr_surface_type(acquire, env, functions, v3_ctx)
+        if isinstance(surface, str) and _declarable_type(surface):
+            return surface
+        return None
+    return None
+
+
+_NUMERIC_SURFACES = ("Int", "Int32", "Float")
+
+
+def _expr_surface_type(node: object, env: "_Env", functions: list | None,
+                       v3_ctx: "_V3Ctx | None") -> str | None:
+    """`_map_value_expr_type`, plus the operator forms it does not type.
+
+    An arithmetic `bin` or a unary `-` is read off its `operands` annotation
+    (docs/arithmetic.md: `/` on two `Int`s or two `Int32`s is `Float`), or,
+    unannotated, off its operands: a `+` with a `Str` side is concatenation,
+    and a `-x` takes the type of `x`. A comparison, `&&`, `||` and `!` are
+    `Bool`. A backtick template is typed by `_map_value_expr_type`."""
+    kind = node.get("kind") if isinstance(node, dict) else None
+    if kind == "un":
+        if node.get("op") == "!":
+            return "Bool"
+        if node.get("op") != "-":
+            return None
+        operands = node.get("operands")
+        if operands in _NUMERIC_SURFACES:
+            return operands
+        inner = _expr_surface_type(node.get("operand"), env, functions, v3_ctx)
+        return inner if inner in _NUMERIC_SURFACES else None
+    if kind == "bin":
+        op, operands = node.get("op"), node.get("operands")
+        if op in _BOOL_BIN_OPS:
+            return "Bool"
+        if op not in ("+", "-", "*", "/", "%"):
+            return None
+        if operands in _NUMERIC_SURFACES:
+            return "Float" if op == "/" else operands
+        sides = {_expr_surface_type(node.get(k), env, functions, v3_ctx)
+                 for k in ("left", "right")}
+        if op == "+" and "Str" in sides:
+            return "Str"
+        return None
+    return _map_value_expr_type(node, {}, env, functions or [], v3_ctx)
 
 
 def _method_body_lines(
@@ -8996,7 +9127,7 @@ def _emit_component_modern(
         for local, service in env.reqs.items():
             out.append(f"    private final {service} {env.req_fields[local]};")
         for b in _binds(component):
-            btype = _bind_type(component, b, v3_ctx, map_values)
+            btype = _bind_type(component, b, v3_ctx, map_values, env, functions)
             out.append(f"    private final {btype} {b};")
         # A provide method that reads `config.<f>` needs the field HERE, not
         # only on the plugin (see `_provider_config_fields`).
@@ -9007,7 +9138,8 @@ def _emit_component_modern(
             ["Context ctx", "Context.EffectScope fx"]
             + (["RevlFrame frame"] if needs_frame else [])
             + [f"{service} {env.req_fields[local]}" for local, service in env.reqs.items()]
-            + [f"{_bind_type(component, b, v3_ctx, map_values)} {b}" for b in _binds(component)]
+            + [f"{_bind_type(component, b, v3_ctx, map_values, env, functions)} {b}"
+               for b in _binds(component)]
             + [f"{_java_v3_type(f.get('type'))} {_ident(f.get('name'), 'config field')}"
                for f in provider_config]
         )
@@ -9255,6 +9387,10 @@ def _emit_component(
     cname = _ident(name, "component")
     out: list[str] = []
 
+    def bind_decl(bind: str) -> str:
+        return _bind_decl_type(component, bind, render_type, map_values,
+                               env, functions, v3_ctx)
+
     for key, service in env.provides.items():
         # item 449 (G2): a routed provided key is realized by its router class,
         # never an empty provide body (refused at compile). Routed components
@@ -9274,11 +9410,11 @@ def _emit_component(
             out.append(f"    private final {req_service} {env.req_fields[local]};")
         for b in _binds(component):
             out.append(
-                f"    private final {_bind_decl_type(component, b, render_type, map_values)} {b};")
+                f"    private final {bind_decl(b)} {b};")
         ctor_args = ", ".join(
             [f"{req_service} {env.req_fields[local]}"
              for local, req_service in env.reqs.items()]
-            + [f"{_bind_decl_type(component, b, render_type, map_values)} {b}"
+            + [f"{bind_decl(b)} {b}"
                for b in _binds(component)]
         )
         out.append(f"    {struct}({ctor_args}) {{")
@@ -9335,7 +9471,7 @@ def _emit_component(
         if kind == "let-effect":
             bind = _ident(step["bind"], "binding")
             out.append(
-                f"            {_bind_decl_type(component, step['bind'], render_type, map_values)} "
+                f"            {bind_decl(step['bind'])} "
                 f"{bind} = {_expr(step['acquire'], None, None, env)};")
             undo = _expr(step['undo'], None, None, env)
             out.append(f"            undos.add(Disposables.of(() -> {undo}));")

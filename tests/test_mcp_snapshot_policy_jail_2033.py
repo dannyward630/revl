@@ -15,7 +15,7 @@ The fix is CLASSIFICATION, not loosening. `policy` and `registry` are paths only
 where a tool DECLARES them as one — the top level of its own arguments, the only
 two sites that open them (`_tool_resolve`, `_tool_repair`). The `files` family
 stays path-bearing at every depth, because its nested occurrences really are read
-from disk: a restore document's `sources.files` (`_restore_authoring_refusal`)
+from disk: a restore document's `sources.files` (`persist.restore`)
 and a repair candidate's `candidate.files` (`repair._compile_candidate`).
 
 Both directions are pinned here: the round trip succeeds, and every genuine
@@ -120,7 +120,7 @@ def test_a_snapshots_policy_name_contributes_no_path():
 def test_a_snapshots_nested_sources_files_contributes_every_path():
     """Acceptance 5, second half: the nested key that IS read from disk.
 
-    `revl_restore` compiles `sources.files` (`_restore_authoring_refusal`), so
+    `revl_restore` compiles `sources.files` (`persist.restore`), so
     the same document's nested `files` must still be collected — the fix narrows
     the allowlist, it does not stop descending."""
     out: list = []

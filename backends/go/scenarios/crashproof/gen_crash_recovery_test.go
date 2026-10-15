@@ -967,7 +967,12 @@ type Noop interface {
 func Crasher() stc.Component {
 	return stc.Component{
 		Name: "Crasher",
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			_revlFrame := newRevlFrame()
 			if err := ctx.Effect(func() stc.Inverse {
 				return func() error { _revlFrame.runCompensationPhase(); return nil }

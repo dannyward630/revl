@@ -170,7 +170,12 @@ func Tagger() stc.Component {
 	return stc.Component{
 		Name:    "Tagger",
 		Provide: []stc.Key{_keyG},
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			var store *Map[[]string]
 			if err := ctx.Effect(func() stc.Inverse {
 				store = MapNew[[]string]()

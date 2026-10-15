@@ -108,11 +108,9 @@
       ]
     },
     "unported": {
-      "Existing built-in Result boundary: _v3_match_expr emits Ok/Err switch arms and _uses_builtin_result inspects cases/patterns; the port has no Result runtime. Strict result_ctor_302.rvl preserves the family divergence.": [
+      "Existing built-in Result construction boundary: _uses_builtin_result and the constructor path read an Ok/Err adt case; the port defers construction behind <<UNSUPPORTED-result-ctor:..>>, and strict result_ctor_302.rvl preserves the family divergence. A match over a Result is ported and boxed_generics.rvl covers it.": [
         "case=Err",
-        "case=Ok",
-        "pattern=Err",
-        "pattern=Ok"
+        "case=Ok"
       ],
       "Existing destructuring boundary: _v3_stmt/_emit_setup_stmt handle let_pattern record/list bindings; the port v3_stmt has no destructuring arm and setup is rejected by its component gate.": [
         "pattern=record",

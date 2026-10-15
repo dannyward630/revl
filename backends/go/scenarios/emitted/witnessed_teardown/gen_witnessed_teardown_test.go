@@ -760,7 +760,12 @@ type Noop interface {
 func C() stc.Component {
 	return stc.Component{
 		Name: "C",
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			_revlFrame := newRevlFrame()
 			if err := ctx.Effect(func() stc.Inverse {
 				return func() error { _revlFrame.runCompensationPhase(); return nil }
@@ -824,7 +829,12 @@ func C() stc.Component {
 func CAbort() stc.Component {
 	return stc.Component{
 		Name: "CAbort",
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			_revlFrame := newRevlFrame()
 			if err := ctx.Effect(func() stc.Inverse {
 				return func() error { _revlFrame.runCompensationPhase(); return nil }

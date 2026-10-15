@@ -1013,7 +1013,12 @@ var _keyOps = stc.NewKey[Ops]("ops")
 func SiteAbort() stc.Component {
 	return stc.Component{
 		Name: "SiteAbort",
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			_revlFrame := newRevlFrame()
 			if err := ctx.Effect(func() stc.Inverse {
 				return func() error { _revlFrame.runCompensationPhase(); return nil }
@@ -1041,7 +1046,12 @@ func SiteAbort() stc.Component {
 func ExternOk() stc.Component {
 	return stc.Component{
 		Name: "ExternOk",
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			_revlFrame := newRevlFrame()
 			if err := ctx.Effect(func() stc.Inverse {
 				return func() error { _revlFrame.runCompensationPhase(); return nil }
@@ -1068,7 +1078,12 @@ func ExternOk() stc.Component {
 func ExternAbort() stc.Component {
 	return stc.Component{
 		Name: "ExternAbort",
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			_revlFrame := newRevlFrame()
 			if err := ctx.Effect(func() stc.Inverse {
 				return func() error { _revlFrame.runCompensationPhase(); return nil }
@@ -1153,7 +1168,12 @@ func (revlSelf *Agent_ops) Nested(x string) int64 {
 func Beat() stc.Component {
 	return stc.Component{
 		Name: "Beat",
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			_revlFrame := newRevlFrame()
 			if err := ctx.Effect(func() stc.Inverse {
 				return func() error { _revlFrame.runCompensationPhase(); return nil }

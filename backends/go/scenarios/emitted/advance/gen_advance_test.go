@@ -661,7 +661,12 @@ func TickCounter() stc.Component {
 	return stc.Component{
 		Name:    "TickCounter",
 		Provide: []stc.Key{_keyCounter},
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			_revlJournal := revlJournalNew()
 			if err := ctx.Effect(func() stc.Inverse {
 				return func() error { _revlJournal.Judge(); return nil }
@@ -709,7 +714,12 @@ func Heartbeat() stc.Component {
 	return stc.Component{
 		Name:   "Heartbeat",
 		Inject: []stc.Key{_keyCounter},
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			counter, err := stc.Service[Counter](ctx, _keyCounter)
 			if err != nil {
 				return nil, err
@@ -733,7 +743,12 @@ func Warmup() stc.Component {
 	return stc.Component{
 		Name:   "Warmup",
 		Inject: []stc.Key{_keyCounter},
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			counter, err := stc.Service[Counter](ctx, _keyCounter)
 			if err != nil {
 				return nil, err

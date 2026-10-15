@@ -95,8 +95,8 @@
 //   * spawn/instances (`_v3_spawn`/`instance-get`/`RevlSpawnHandle`), timers and
 //     routers; and the `Pool` host runtime — `_emit_host_stubs` emits Map/Job, but
 //     a `Pool` acquisition surfaces a loud `<<UNSUPPORTED-host-stub:Pool>>`;
-//   * the built-in Result surface — `Ok`/`Err` construction and `match`, the
-//     sealed `RevlResult` (`_emit_result_type`), and `_emit_checked_div_helpers`,
+//   * the built-in Result surface — `Ok`/`Err` construction (a `match` over a
+//     Result and the sealed `RevlResult` are ported), and `_emit_checked_div_helpers`,
 //     so the `checked_*` builtin methods stay behind a loud
 //     `<<UNSUPPORTED-checked-div:..>>`; and the `revlDivFloor`/`revlDivEuclid`/`revlMod`
 //     int-arith block, so `div_floor`/`div_euclid`/`mod` stay behind a loud
@@ -400,6 +400,9 @@ fn box(java_type: Str, boxed: Bool) -> Str {
   if (java_type == "int") { return "java.lang.Integer" }
   if (java_type == "double") { return "java.lang.Double" }
   if (java_type == "boolean") { return "java.lang.Boolean" }
+  // `void` is no type argument: `List[Unit]` and `Result[Unit, E]` are
+  // `java.lang.Void` (issue #2325).
+  if (java_type == "void") { return "java.lang.Void" }
   return java_type
 }
 fn type_map(name: Str) -> Str {
@@ -415,7 +418,6 @@ fn type_map(name: Str) -> Str {
 fn java_v3_type(tv: Any, boxed: Bool) -> Str {
   if (value_is_null(tv)) { return "void" }
   let raw = value_str(tv)
-  if (raw == "Unit") { return "void" }
   let name = trim(raw)
   if (name == "") { return "Object" }
   // item 383 (self-host port): a declared function type `(P, ..) -> R` is NOT
@@ -449,6 +451,13 @@ fn java_v3_type(tv: Any, boxed: Bool) -> Str {
     if (base == "Result" && args.length() == 2) {
       return `RevlResult<${java_v3_type(args[0], true)}, ${java_v3_type(args[1], true)}>`
     }
+    // Not a stdlib type, but the checker admits the head (issue #2325).
+    if (base == "Set" && args.length() == 1) {
+      return `java.util.Set<${java_v3_type(args[0], true)}>`
+    }
+    // A stream is a host handle with no generic runtime class: `Object`, as
+    // the reference widens it (issue #2325).
+    if (base == "Stream") { return "Object" }
     // A user generic type applies its arguments boxed (`Bx<java.lang.Long>`),
     // matching the type parameters `emit_v3_types` declares (issue #2303).
     var applied = []
@@ -457,6 +466,74 @@ fn java_v3_type(tv: Any, boxed: Bool) -> Str {
   }
   // A user type name (`_ident`) — mapped to its emitted class/interface name.
   return mangle(name)
+}
+
+// `_names_result`: does a surface type spell the built-in `Result[..]` anywhere?
+fn names_result(tv: Any) -> Bool {
+  let name = trim(value_str(tv))
+  let lb = name.indexOf("[")
+  if (lb < 0) { return false }
+  if (trim(name.slice(0, lb)) == "Result") { return true }
+  for (a of split_top(name.slice(lb + 1, last_index_of(name, "]")), ",")) {
+    if (names_result(a)) { return true }
+  }
+  return false
+}
+
+// `_signature_types`: every surface type a v3 declaration renders through
+// `java_v3_type` (fn/extern params and returns, record fields, variant payloads,
+// service method signatures). A `Result[..]` in any of them names `RevlResult`
+// (issue #2325).
+fn signature_types(ir: Any) -> List[Any] {
+  var out: List[Any] = []
+  for (fn_decl of value_list(value_field(ir, "functions")).concat(value_list(value_field(ir, "externs")))) {
+    out = out.push(value_field(fn_decl, "returns"))
+    for (p of value_list(value_field(fn_decl, "params"))) { out = out.push(value_field(p, "type")) }
+  }
+  let types = value_field(ir, "types")
+  for (tname of value_keys(types)) {
+    let spec = value_field(types, tname)
+    for (fv of value_children(value_field(spec, "fields"))) { out = out.push(fv) }
+    for (c of value_list(value_field(spec, "cases"))) { out = out.push(value_field(c, "payload")) }
+  }
+  let services = value_field(ir, "services")
+  for (sname of value_keys(services)) {
+    let methods = value_field(value_field(services, sname), "methods")
+    for (mname of value_keys(methods)) {
+      let decl = value_field(methods, mname)
+      out = out.push(value_field(decl, "returns"))
+      for (p of value_list(value_field(decl, "params"))) { out = out.push(value_field(p, "type")) }
+    }
+  }
+  return out
+}
+
+// `_uses_builtin_result`: an `adt` typed Result, a match arm on `Ok`/`Err`, a
+// total division form, a witnessed extern, or a signature naming `Result[..]`
+// pulls in the sealed `RevlResult`.
+fn uses_builtin_result(ir: Any) -> Bool {
+  for (ext of value_list(value_field(ir, "externs"))) {
+    if (value_str(value_field(ext, "class")) == "witnessed") { return true }
+  }
+  for (t of signature_types(ir)) { if (names_result(t)) { return true } }
+  for (key of ["functions", "tests", "components"]) {
+    for (n of java_ir_nodes(value_field(ir, key))) {
+      if (value_kind(n) == "record") {
+        let kind = value_str(value_field(n, "kind"))
+        if (kind == "adt" && starts_with(value_str(value_field(n, "type")), "Result")) { return true }
+        if (kind == "match") {
+          for (arm of value_list(value_field(n, "arms"))) {
+            let pat = value_str(value_field(arm, "pattern"))
+            if (pat == "Ok" || pat == "Err") { return true }
+          }
+        }
+        let m = value_str(value_field(n, "method"))
+        if (m == "checked_div_trunc" || m == "checked_div_floor"
+            || m == "checked_div_euclid" || m == "checked_mod") { return true }
+      }
+    }
+  }
+  return false
 }
 
 // `_lit`: a v3 literal.
@@ -851,8 +928,9 @@ fn render_interp(node: Any, ctx: Ctx, counter: Int) -> Rendered {
 // by a user variant) discriminates via `.map(..).orElseGet(..)`; a user variant
 // lowers to a pattern `switch` carrying the document-wide `__revl_case_N` /
 // `__revl_ignored_N` temp numbering. The arm lines carry a fixed indent (the
-// enclosing statement only pads the first line). Built-in Result (`Ok`/`Err`) is
-// DEFERRED.
+// enclosing statement only pads the first line). A built-in Result (`Ok`/`Err`,
+// when NOT shadowed) switches over the sealed `RevlResult`; only its
+// CONSTRUCTION is deferred (`<<UNSUPPORTED-result-ctor:..>>`).
 fn opt_arm_body(arms: List[Any], want: Str, ctx: Ctx, counter: Int) -> Rendered {
   for (arm of arms) {
     if (value_str(value_field(arm, "pattern")) == want) {
@@ -872,6 +950,43 @@ fn has_optional_arms(arms: List[Any], ctx: Ctx) -> Bool {
     if ((p == "Some" || p == "None") && !resolved(map_get(ctx.ca, p))) { return true }
   }
   return false
+}
+fn has_result_arms(arms: List[Any], ctx: Ctx) -> Bool {
+  for (arm of arms) {
+    let p = value_str(value_field(arm, "pattern"))
+    if ((p == "Ok" || p == "Err") && !resolved(map_get(ctx.ca, p))) { return true }
+  }
+  return false
+}
+// The built-in Result arm of `_v3_match_expr`: a wildcard type pattern per
+// case, and the payload cast to the arm's declared `payload_type` (Result's
+// type arguments are not recoverable at the pattern site).
+fn result_match(scrutinee: Str, arms: List[Any], ctx: Ctx, counter: Int) -> Rendered {
+  var lines = [`switch (${scrutinee}) {`]
+  var c = counter
+  var wildcard = `            default -> { throw new IllegalArgumentException("non-exhaustive match"); }`
+  for (arm of arms) {
+    let pattern = value_str(value_field(arm, "pattern"))
+    let br = render_expr(value_field(arm, "body"), ctx, c)
+    c = br.counter
+    if (pattern == "_") {
+      wildcard = `            default -> { yield (${br.text}); }`
+    } else {
+      c = c + 1
+      let ignored = `__revl_ignored_${c}`
+      lines = lines.push(`            case RevlResult.${pattern}<?, ?> ${ignored} -> {`)
+      let bind = value_str(value_field(arm, "bind"))
+      if (bind != "" && bind != "_") {
+        let ptype = java_v3_type(value_field(arm, "payload_type"), true)
+        lines = lines.push(`                final var ${mangle(bind)} = (${ptype}) ${ignored}.value();`)
+      }
+      lines = lines.push(`                yield (${br.text});`)
+      lines = lines.push(`            }`)
+    }
+  }
+  lines = lines.push(wildcard)
+  lines = lines.push(`        }`)
+  return { text: lines.join(newline()), counter: c }
 }
 fn opt_bind(arms: List[Any]) -> Str {
   for (arm of arms) {
@@ -895,6 +1010,7 @@ fn match_expr(node: Any, ctx: Ctx, counter: Int) -> Rendered {
       counter: none_body.counter
     }
   }
+  if (has_result_arms(arms, ctx)) { return result_match(sr.text, arms, ctx, c) }
   var lines = [`switch (${sr.text}) {`]
   var wildcard = ""
   var has_wild = false
@@ -1357,12 +1473,16 @@ fn emit_v3_types(types: Any) -> List[Str] {
       for (case of cases) {
         permits = permits.push(`${mn}.${mangle(value_str(value_field(case, "name")))}`)
       }
-      out = out.push(`public sealed interface ${mn} permits ${permits.join(", ")} {`)
+      // A generic variant declares its parameters on the interface and on
+      // every case (issue #2325).
+      let tparams = type_params(spec)
+      let owner = `${mn}${tparams}`
+      out = out.push(`public sealed interface ${owner} permits ${permits.join(", ")} {`)
       for (case of cases) {
         let cname = mangle(value_str(value_field(case, "name")))
         let payload = value_field(case, "payload")
         if (value_is_null(payload)) {
-          out = out.push(`    final class ${cname} implements ${mn} {`)
+          out = out.push(`    final class ${cname}${tparams} implements ${owner} {`)
           out = out.push(`        public ${cname}() {}`)
           for (l of emit_v3_value_equality(cname, [], [], `${mn}.${cname}`)) {
             if (l == "") { out = out.push("") } else { out = out.push("    ".concat(l)) }
@@ -1370,7 +1490,7 @@ fn emit_v3_types(types: Any) -> List[Str] {
           out = out.push("    }")
         } else {
           let ptype = java_v3_type(payload, false)
-          out = out.push(`    final class ${cname} implements ${mn} {`)
+          out = out.push(`    final class ${cname}${tparams} implements ${owner} {`)
           out = out.push(`        public final ${ptype} value;`)
           out = out.push(`        public ${cname}(${ptype} value) { this.value = value; }`)
           let peq = [v3_component_eq(ptype, "this.value", "__revl_other.value")]
@@ -3758,6 +3878,15 @@ pub fn emit_java_src(ir: Any) -> Str {
   out = out.push("public final class Components {")
   out = out.push("    private Components() {}")
   out = out.push("")
+  // `_emit_result_type`, the built-in Result as a generic sealed interface.
+  // Only `_emit_v3` emits it; the v1/v2 paths never do.
+  if (ver == 3 && uses_builtin_result(ir)) {
+    out = out.push("    public sealed interface RevlResult<T, E> permits RevlResult.Ok, RevlResult.Err {")
+    out = out.push("        record Ok<T, E>(T value) implements RevlResult<T, E> {}")
+    out = out.push("        record Err<T, E>(E value) implements RevlResult<T, E> {}")
+    out = out.push("    }")
+    out = out.push("")
+  }
   if (value_keys(types).length() > 0) {
     for (l of emit_v3_types(types)) {
       if (l == "") { out = out.push("") } else { out = out.push("    ".concat(l)) }

@@ -2700,6 +2700,33 @@ def _refuse_required_stream(component: dict, tier: str) -> None:
                 "(item 130 §6b)" % (component.get("name"), key, svc, tier))
 
 
+#: Component steps that run nothing in the activation: a `provide` block only
+#: wires an impl value, and an `intercept` is load-site metadata.
+_APPLY_WIRING_STEPS = ("provide", "intercept")
+
+
+def _emit_apply_header(body, out) -> None:
+    """Open the component's `Apply` closure.
+
+    stc-go runs `Apply` on a goroutine of its own with no `recover`, so a panic
+    in an activation step, or in a provide method or extern the step calls,
+    killed the process and the abort path never ran (issue #2464). An
+    activation that runs a step recovers the panic into the error it returns,
+    the same failed activation a `fail` step gives: stc-go marks the fiber
+    failed and unwinds it, which replays the witnessed inverses and runs the
+    compensations the body registered. A component whose body only wires its
+    provide blocks runs no author code here and keeps the plain signature."""
+    if all(step.get("step") in _APPLY_WIRING_STEPS for step in body or []):
+        out.append("\t\tApply: func(ctx *stc.Context) (stc.Inverse, error) {")
+        return
+    out.append("\t\tApply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {")
+    out.append("\t\t\tdefer func() {")
+    out.append("\t\t\t\tif r := recover(); r != nil {")
+    out.append('\t\t\t\t\t_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)')
+    out.append("\t\t\t\t}")
+    out.append("\t\t\t}()")
+
+
 def _emit_component(comp, services, out):
     global _BIND_HOST, _REQ_SERVICE, _BIND_MAP_VALUE, _BIND_IS_PTR
     global _CONFIG_TYPES, _SERVICES
@@ -2790,7 +2817,7 @@ def _emit_component(comp, services, out):
         out.append("\t\tInject: []stc.Key{%s}," % ", ".join(_key_var(r) for r in reqs_gated))
     if provides:
         out.append("\t\tProvide: []stc.Key{%s}," % ", ".join(_key_var(p) for p in provides))
-    out.append("\t\tApply: func(ctx *stc.Context) (stc.Inverse, error) {")
+    _emit_apply_header(body, out)
 
     # item 243/247: a component using a witnessed effect or a compensation
     # needs the per-activation teardown accumulator. `_revlFrame` is created
@@ -11920,6 +11947,12 @@ def _emit(ir: dict, package: str = "emitted", package_name: str | None = None,
         # renders a value with from `json.Marshal` itself, so the same import is
         # needed whenever a marking is declared.
         out.append('\t"encoding/json"')
+    # packages a @go extern body hoisted via `//revl:import` (issue #2457),
+    # each once: Go rejects a path this block already imports
+    imported = set(out[out.index("import ("):])
+    for path in sorted(extern_ctx.extern_imports):
+        if f'\t"{path}"' not in imported:
+            out.append(f'\t"{path}"')
     out.append("")
     out.append('\tstc "github.com/0xdenny218/stc-go"')
     out.append(")")
@@ -12751,6 +12784,10 @@ def _emit_v3_combined(ir: dict, package: str, placement: bool = True) -> str:
     imports.append('\t"slices"')
     if has_spawn:
         imports.append('\tstdctx "context"')
+    # packages a @go extern body hoisted via `//revl:import` (issue #2457);
+    # the `sorted(set(imports))` below drops one this block already imports
+    for path in sorted(ctx.extern_imports):
+        imports.append(f'\t"{path}"')
     # the stc-go side always needs fmt + sync + the runtime
     imports.append('\t"fmt"')
     imports.append('\t"sync"')

@@ -4682,12 +4682,17 @@ _REVL_EQ_HELPER = """function revlEq(a: unknown, b: unknown): boolean {
 # fingerprint of the string (its length and three code units, first, middle
 # and last) held beside each slot, and runs the content `===` only for a slot
 # whose fingerprint matches. The fingerprint can only reject: a hit still needs
-# `===`, so the semantics are exactly those of the content key. What is left is
-# the rare pair that agrees on length and on all three sampled units yet
-# differs elsewhere, and equal-content strings that are distinct objects: both
-# still compare by content on a lookup, the cost this helper had before. The cache retains at most eight strings and their
-# arrays for the module's lifetime, and an array is never handed to a mutating
-# caller (`slice` copies). `revlIndexOf` deliberately stays on its own
+# `===`, so the semantics are exactly those of the content key. The fingerprint
+# is one packed number, not the tuple (length, first, middle, last), so
+# a match does not mean the sampled units agree: different samples can pack to
+# the same number (for length 100, units 65, 65, 65 and units 66, 34, 65 both
+# give 3043645). What gets past the fingerprint is therefore any pair with the
+# same packed number, whether or not the sampled units are equal, plus
+# equal-content strings that are distinct objects: both still compare by
+# content on a lookup, the cost this helper had before, and a collision costs
+# one content compare and nothing else. The cache retains at most eight strings
+# and their arrays for the module's lifetime, and an array is never handed to a
+# mutating caller (`slice` copies). `revlIndexOf` deliberately stays on its own
 # `Array.from`: its argument is a fresh substring per call.
 #
 # `revlCharAt`/`revlCharCodeAt` THROW for an index outside `0 <= i < length()`

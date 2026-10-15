@@ -9,3 +9,32 @@ fn maybe(x: Opt[Int32]) -> Opt[Int32] { return x }
 fn boxes(bs: List[Bx[Int]]) -> List[Bx[Int]] { return bs }
 fn by_name(m: Map[Str, Bx[Str]]) -> Map[Str, Bx[Str]] { return m }
 fn pair(p: Pair[Str, Int]) -> Int { return p.second }
+// issue #2325: `Unit` as a type argument is `java.lang.Void`, a `Result[..]`
+// in a signature alone emits `RevlResult`, a `Set[..]` is `java.util.Set` and
+// a `Stream[..]` widens to `Object`.
+type Held = { done: Result[Unit, Str], tags: Set[Str] }
+fn units(xs: List[Unit]) -> List[Unit] { return xs }
+fn results(rs: List[Result[Int, Str]]) -> List[Result[Int, Str]] { return rs }
+fn settle(r: Result[Unit, Str]) -> Result[Unit, Str] { return r }
+fn tags(s: Set[Int]) -> Set[Int] { return s }
+fn feed(s: Stream[Int]) -> Stream[Int] { return s }
+// A generic variant declares its type parameters on the interface and on
+// every case, so a signature applies them (issue #2325).
+type Box[T] = Full(T) | Empty
+type Either[L, R] = Left(L) | Right(R) | Neither
+fn keep(b: Box[Int]) -> Box[Int] { return b }
+fn eithers(es: List[Either[Str, Int]]) -> List[Either[Str, Int]] { return es }
+// A `match` over a built-in Result switches over the sealed `RevlResult` and
+// casts each bound payload to the arm's type.
+fn settled(r: Result[Int, Str]) -> Int {
+  return match r {
+    Ok(v) => v,
+    Err(_) => 0,
+  }
+}
+fn reason(r: Result[Int, Str]) -> Str {
+  return match r {
+    Err(e) => e,
+    _ => "ok",
+  }
+}

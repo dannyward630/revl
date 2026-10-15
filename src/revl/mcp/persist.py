@@ -70,15 +70,20 @@ class RestoreError(RuntimeError):
     def __init__(self, message: str, diagnostic: dict | None = None) -> None:
         super().__init__(message)
         self.diagnostic = diagnostic
+        self.revl_error: RevlError | None = None
 
     @classmethod
     def from_revl(cls, error: RevlError) -> "RestoreError":
         diagnostic = classify(error)
-        return cls(
+        refused = cls(
             f"restore refused: a component the current checker rejects cannot be "
             f"re-admitted — {diagnostic.get('message', str(error))}",
             diagnostic=diagnostic,
         )
+        # the compiler error itself, so a caller can report it in its own shape
+        # (`revl_restore` answers an authoring refusal as `revl_load` does)
+        refused.revl_error = error
+        return refused
 
 
 # ---------------------------------------------------------------- snapshot
@@ -231,15 +236,21 @@ def admitted_name(snap: dict | None) -> str:
     return "<snapshot>.rvl"
 
 
-def _recompile(sources: dict, name: str = "<snapshot>.rvl") -> dict:
+def _recompile(sources: dict, name: str = "<snapshot>.rvl",
+               profile=None) -> dict:
     """Compile the snapshotted sources through the very entry points a live
     `revl_load` uses. This *is* the gate: parse + check + lower run here, so a
     component the current checker rejects raises `RevlError` right here.
-    `name` is the file a single-`source` snapshot compiles as (`admitted_name`)."""
+    `name` is the file a single-`source` snapshot compiles as (`admitted_name`).
+
+    `profile` is the authoring trust the text is admitted under: `None` for the
+    operator's own snapshot, the session's untrusted-author profile for one an
+    agent sent (`revl_restore`). It applies to this one compile, so the text
+    admitted is exactly the text loaded, `dependencies` included."""
     source = sources.get(ORIGIN_SOURCE)
     modules = sources.get(ORIGIN_MODULES)
     if source is not None:
-        return compile_source(source, name, modules=modules)
+        return compile_source(source, name, modules=modules, profile=profile)
 
     files = sources.get(ORIGIN_FILES)
     if files:
@@ -253,7 +264,8 @@ def _recompile(sources: dict, name: str = "<snapshot>.rvl") -> dict:
         virtual.update({os.path.abspath(path): text
                         for path, text in
                         (sources.get(ORIGIN_DEPENDENCIES) or {}).items()})
-        return compile_files(list(files), sources=virtual or None)
+        return compile_files(list(files), sources=virtual or None,
+                             profile=profile)
 
     from .session import SessionError  # noqa: PLC0415
 
@@ -355,7 +367,7 @@ def _refuse_policy_downgrade(session, meta: dict) -> None:
             "refuse-don't-degrade)")
 
 
-def restore(session, snap: dict) -> dict:
+def restore(session, snap: dict, profile=None) -> dict:
     """Re-admit a snapshot into `session`, replaying admission.
 
     Refuses if a composition is already loaded. Refuses a snapshot taken under an
@@ -365,6 +377,10 @@ def restore(session, snap: dict) -> dict:
     nothing is loaded), then boots them through `Session.load` — the same holes
     gate and runtime path a live load takes. Cross-checks that the re-admitted
     component set matches what the snapshot claimed.
+
+    `profile` is the authoring trust the snapshot's text compiles under (see
+    `_recompile`); an agent-supplied snapshot passes the session's, and that
+    single compile is both the admission decision and the IR that is loaded.
     """
     from .session import SessionError  # noqa: PLC0415
 
@@ -384,7 +400,7 @@ def restore(session, snap: dict) -> dict:
     _refuse_policy_downgrade(session, meta)
 
     try:
-        ir = _recompile(sources, admitted_name(snap))
+        ir = _recompile(sources, admitted_name(snap), profile=profile)
     except RevlError as error:
         # the load-bearing failure: a snapshot whose component the current
         # checker refuses does not load — it fails here, with the diagnostic

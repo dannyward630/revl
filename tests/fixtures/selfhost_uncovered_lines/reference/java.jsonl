@@ -1,3 +1,11 @@
+["reason", "backends-java-emit-py-acquired-bind-type-nonhost", "backends/java/emit.py::_acquired_surface_type, _expr_surface_type and the legacy _emit_component.bind_decl closure: a let-effect bind that holds no host object takes its acquisition's surface type (issue #2380). Only a non-host acquire reaches them, and the port defers every such component through body_step_supported's host-only gate with a loud `<<UNSUPPORTED-component-nonsimple:NAME>>`. tests/test_activation_bind_2380.py holds the reference: javac compiles it and it answers the python table."]
+
+["function", "backends-java-emit-py-acquired-bind-type-nonhost", "_acquired_surface_type", 11, 11]
+
+["function", "backends-java-emit-py-acquired-bind-type-nonhost", "_emit_component.bind_decl", 1, 1]
+
+["function", "backends-java-emit-py-acquired-bind-type-nonhost", "_expr_surface_type", 24, 24]
+
 ["reason", "backends-java-emit-py-arrow-callee-the-remaining", "backends/java/emit.py::_arrow_callee: The remaining returns recognize inline arrows and locally bound arrow callees. Local arrows/beta reduction are an existing port boundary; control.rvl is a strict divergent regression."]
 
 ["function", "backends-java-emit-py-arrow-callee-the-remaining", "_arrow_callee", 3, 3]
@@ -6,17 +14,17 @@
 
 ["function", "backends-java-emit-py-arrow-repeatable-the-recursive", "_arrow_repeatable", 10, 10]
 
-["reason", "backends-java-emit-py-bind-decl-type-legacy", "backends/java/emit.py::_bind_decl_type: Legacy effect-binding declaration types (including Map boxing and scalar host lookup) require nonsimple v1/v2 components, rejected by the port's simple-component gate; modern host Map bindings are covered separately."]
+["reason", "backends-java-emit-py-bind-decl-type-legacy", "backends/java/emit.py::_bind_decl_type: Legacy effect-binding declaration types (including Map boxing and scalar host lookup) require nonsimple v1/v2 components, rejected by the port's simple-component gate; modern host Map bindings are covered separately. The issue #2380 surface-type fallback needs the same nonsimple components."]
 
-["function", "backends-java-emit-py-bind-decl-type-legacy", "_bind_decl_type", 7, 7]
+["function", "backends-java-emit-py-bind-decl-type-legacy", "_bind_decl_type", 11, 11]
 
 ["reason", "backends-java-emit-py-bind-local-arrow-the", "backends/java/emit.py::_bind_local_arrow: The remaining capture-renaming and argument-pinning branches require a let-bound arrow. Local arrows are explicitly deferred; the simple non-arrow return is covered."]
 
 ["function", "backends-java-emit-py-bind-local-arrow-the", "_bind_local_arrow", 11, 11]
 
-["reason", "backends-java-emit-py-bind-type-residual-record", "backends/java/emit.py::_bind_type: Residual record/list/scalar acquire inference, its ambiguous-record catch and final Object fallback require nonhost let-effect, excluded by body_step_supported's host-only binding gate. Host Map/Job typing is covered."]
+["reason", "backends-java-emit-py-bind-type-residual-record", "backends/java/emit.py::_bind_type: Residual record/list/scalar acquire inference, its ambiguous-record catch and final Object fallback require nonhost let-effect, excluded by body_step_supported's host-only binding gate. Host Map/Job typing is covered. The issue #2380 surface-type fallback is gated the same way."]
 
-["function", "backends-java-emit-py-bind-type-residual-record", "_bind_type", 24, 24]
+["function", "backends-java-emit-py-bind-type-residual-record", "_bind_type", 28, 28]
 
 ["reason", "backends-java-emit-py-call-label-missing-returns", "backends/java/emit.py::_call_label: Missing '?' returns require non-dict/unknown label nodes; the callee-name compatibility call lacks target, whereas lower.py emits target/method for service calls and kind=fn for free calls. Valid host, fn and service labels are covered."]
 
@@ -106,10 +114,6 @@
 
 ["function", "backends-java-emit-py-emit-record-sink-record", "_emit_record_sink", 2, 2]
 
-["reason", "backends-java-emit-py-emit-result-type-built", "backends/java/emit.py::_emit_result_type: Built-in Result wrapper text is demanded by Ok/Err and checked division, explicitly deferred; result_ctor_302.rvl is a strict divergent regression. User variants and Opt are covered."]
-
-["function", "backends-java-emit-py-emit-result-type-built", "_emit_result_type", 1, 1]
-
 ["reason", "backends-java-emit-py-emit-secret-registry-item", "backends/java/emit.py::_emit_secret_registry: item 421 F6: the redaction registry preamble, emitted into Components once under `_SECRET_MODE`. No java corpus document enables secret mode, and selfhost/emit_java.rvl does not port the registry (item-429(d))."]
 
 ["function", "backends-java-emit-py-emit-secret-registry-item", "_emit_secret_registry", 1, 1]
@@ -148,7 +152,7 @@
 
 ["reason", "backends-java-emit-py-emit-v3-remaining-assembly", "backends/java/emit.py::_emit_v3: Remaining assembly branches reject empty typed documents or insert Result, checked-division, Float-to-Str, extern, in-file/lifecycle-test and record=True sections. These are the specifically declared runtime/extern/test or optional recording boundaries, not all v3 helpers. Plus the item-421-F6 `Secret[T]` registry emission behind `_SECRET_MODE`, which no corpus document reaches and selfhost/emit_java.rvl does not port (item-429(d)). Issue #957's `Map` subscript arm adds one statement: no corpus document indexes a `Map`, and one that did would flip the byte-agreement oracle RED rather than close the gap, because selfhost/emit_java.rvl has no map-subscript arm (item-429(d)); the reference half is pinned by tests/test_cross_tier_execution.py. Item 458 adds one more: the `_uses_int_arith` call that pulls in the revlDivFloor/revlDivEuclid/revlMod block, on the same helper-demand boundary as the checked-division one beside it."]
 
-["function", "backends-java-emit-py-emit-v3-remaining-assembly", "_emit_v3", 17, 17]
+["function", "backends-java-emit-py-emit-v3-remaining-assembly", "_emit_v3", 16, 16]
 
 ["reason", "backends-java-emit-py-emit-v3-secret-members", "backends/java/emit.py::_emit_v3_secret_members: item 421 F6, declared-shape half: the `revlSecretMembers()` method every generated record class and variant case declares, so the registry's walk can reach a declared shape's LEAVES by path. The walk cannot see these classes reflectively (`instanceof Record` is false for them), so the shape hands its members over instead. Reached only in `_SECRET_MODE`, which no java corpus document enters; unported in selfhost/emit_java.rvl (item-429(d))."]
 
@@ -232,7 +236,7 @@
 
 ["reason", "backends-java-emit-py-java-v3-type-residual", "backends/java/emit.py::_java_v3_type: Residual Result boxing and undeclared host Pool Row-to-Object typing belong to the explicit Result/Pool boundaries. Missing/non-string types are hand-built or invalid IR."]
 
-["function", "backends-java-emit-py-java-v3-type-residual", "_java_v3_type", 3, 3]
+["function", "backends-java-emit-py-java-v3-type-residual", "_java_v3_type", 2, 2]
 
 ["reason", "backends-java-emit-py-lit-residual-null-and", "backends/java/emit.py::_lit: Residual null and unsupported-value branches are outside source literals: lower.py rejects explicit null (5389/6938/11072); Opt None uses a var/constructor node. Unsupported Python values raise."]
 
@@ -374,9 +378,9 @@
 
 ["function", "backends-java-emit-py-v3-lifecycle-step-load", "_v3_lifecycle_step", 32, 32]
 
-["reason", "backends-java-emit-py-v3-match-expr-residual", "backends/java/emit.py::_v3_match_expr: Residual Ok/Err Result switch emission is explicitly deferred. The other missing branch is the defensive nonexhaustive user-variant default; lower.py rejects nonexhaustive matches before emit. Issue #1980 adds one more statement: the all-void-arm host-Map `match` -- the admitted restored-value inverse `undo match prev { Some(v) => m.insert(k, v), None => m.remove(k) }` -- lowers to `ifPresentOrElse` with BLOCK arm bodies (a parenthesised method invocation is not a Java `StatementExpression`, JLS 14.8). It is reached by backends/java/test_emit_java.py::LEDGER_SRC and can be reached by no corpus document, because the self-host java port defers every provide-method body that contains a method-body `let` (body_step_supported -> emit_component emits `<<DEFER-component-nonsimple:...>>`), so there are no reference bytes for a corpus document to agree with. Measured 21 -> 22."]
+["reason", "backends-java-emit-py-v3-match-expr-residual", "backends/java/emit.py::_v3_match_expr: The Ok/Err Result switch is ported and boxed_generics.rvl covers it. One missing branch is the defensive nonexhaustive user-variant default; lower.py rejects nonexhaustive matches before emit. Issue #1980 adds one more statement: the all-void-arm host-Map `match` -- the admitted restored-value inverse `undo match prev { Some(v) => m.insert(k, v), None => m.remove(k) }` -- lowers to `ifPresentOrElse` with BLOCK arm bodies (a parenthesised method invocation is not a Java `StatementExpression`, JLS 14.8). It is reached by backends/java/test_emit_java.py::LEDGER_SRC and can be reached by no corpus document, because the self-host java port defers every provide-method body that contains a method-body `let` (body_step_supported -> emit_component emits `<<DEFER-component-nonsimple:...>>`), so there are no reference bytes for a corpus document to agree with. Measured 21 -> 22."]
 
-["function", "backends-java-emit-py-v3-match-expr-residual", "_v3_match_expr", 22, 22]
+["function", "backends-java-emit-py-v3-match-expr-residual", "_v3_match_expr", 2, 2]
 
 ["reason", "backends-java-emit-py-v3-spawn-spawn-bindings", "backends/java/emit.py::_v3_spawn: Spawn bindings/requirements/config construction requires spawn expressions, explicitly deferred and reproduced by instance_accessor.rvl."]
 

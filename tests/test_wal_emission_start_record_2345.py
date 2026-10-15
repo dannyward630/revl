@@ -101,6 +101,22 @@ GO_BODY = """
 """
 
 
+_GO_REASON: list = []
+
+
+def _go_build_env() -> dict:
+    """The env every go build in this file uses. The module is resolved offline
+    (GOPROXY=off), which only works once stc-go is in the module cache, so ask
+    the go runtime probe first: it builds offline, retries over the network when
+    the cache is cold (populating it) and returns why go cannot run here, if so."""
+    if not _GO_REASON:
+        from revl.run_go import go_runtime_reason  # noqa: PLC0415
+        _GO_REASON.append(go_runtime_reason())
+    if _GO_REASON[0] is not None:
+        pytest.skip(f"cordis-go runtime not available; the go proof needs it: {_GO_REASON[0]}")
+    return {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+
+
 def _go_source() -> str:
     return _load_emitter("go").emit(_ir_with_emission("go", GO_BODY),
                                     "crashrecovery", record=True)
@@ -128,7 +144,7 @@ def go_producer(tmp_path_factory):
     shutil.copy(GO_SCENARIOS / "crashproof" / "crash_proof_test.go", pkg)
     (pkg / "gen_crash_recovery_test.go").write_text(_go_source(), encoding="utf-8")
     out = module / "crashproof.test"
-    env = {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+    env = _go_build_env()
     build = subprocess.run([GO, "test", "-c", "-o", str(out), "./crashproof/"],
                            cwd=str(module), capture_output=True, text=True, env=env)
     if build.returncode != 0:
@@ -167,6 +183,35 @@ def _rust_source(ir: dict) -> str:
     return _load_emitter("rust").emit(ir, record=True)
 
 
+def _rust_names(label: str) -> tuple[str, str]:
+    """Package and binary name for the crate built under `label`.
+
+    A shared CARGO_TARGET_DIR keys cargo's freshness check on the package
+    name, so a crate named like the scenario's own `revl_crashproof` /
+    `crash_producer` is "fresh" against another test's older sources and hands
+    back that test's binary (tests/test_wal_fsync_fail_closed_2345.py builds
+    the scenario in place). Every crate here takes a name of its own."""
+    return f"revl_start_{label}", f"start_{label}"
+
+
+def _rust_crate_files(crate: Path, label: str, source: str) -> tuple[str, str]:
+    """Write `crate` as the crashproof scenario under its own package and
+    binary names, around the lib `source`; return the names."""
+    package, binary = _rust_names(label)
+    text = (RUST_SCENARIO / "Cargo.toml").read_text(encoding="utf-8")
+    for old, new in (('name = "revl_crashproof"\nversion', f'name = "{package}"\nversion'),
+                     ('name = "crash_producer"', f'name = "{binary}"'),
+                     ('path = "src/bin/crash_producer.rs"', f'path = "src/bin/{binary}.rs"')):
+        assert text.count(old) == 1, old
+        text = text.replace(old, new)
+    (crate / "src" / "bin").mkdir(parents=True)
+    (crate / "Cargo.toml").write_text(text, encoding="utf-8")
+    shutil.copy(RUST_SCENARIO / "src" / "bin" / "crash_producer.rs",
+                crate / "src" / "bin" / f"{binary}.rs")
+    (crate / "src" / "lib.rs").write_text(source, encoding="utf-8")
+    return package, binary
+
+
 def _rust_crate(tmp_path_factory, label: str, ir: dict) -> Path:
     """Build the crashproof producer crate around a freshly emitted lib."""
     from revl.run_rust import rust_runtime_reason  # noqa: PLC0415
@@ -174,17 +219,15 @@ def _rust_crate(tmp_path_factory, label: str, ir: dict) -> Path:
     if reason is not None:
         pytest.skip(f"cordis-rs runtime not available; the rust proof needs it: {reason}")
     crate = tmp_path_factory.mktemp(label)
-    shutil.copy(RUST_SCENARIO / "Cargo.toml", crate / "Cargo.toml")
-    shutil.copytree(RUST_SCENARIO / "src" / "bin", crate / "src" / "bin")
-    (crate / "src" / "lib.rs").write_text(_rust_source(ir), encoding="utf-8")
+    _, bin_name = _rust_crate_files(crate, label, _rust_source(ir))
     target = Path(os.environ.get("CARGO_TARGET_DIR") or (crate / "target"))
     build = subprocess.run(
-        ["cargo", "build", "--bin", "crash_producer",
+        ["cargo", "build", "--bin", bin_name,
          "--manifest-path", str(crate / "Cargo.toml")],
         capture_output=True, text=True, env={**os.environ, "CARGO_TARGET_DIR": str(target)})
     if build.returncode != 0:
         pytest.fail(f"building the rust producer failed:\n{build.stderr}")
-    binary = target / "debug" / "crash_producer"
+    binary = target / "debug" / bin_name
     out = crate / "crash_producer"
     shutil.copy(binary, out)
     return out
@@ -431,7 +474,7 @@ def test_go_service_emission_compiles(tmp_path):
                                    record=True)
     assert 'revlJournalEmission("log", "write", "Log"' in src
     (pkg / "gen_crash_recovery_test.go").write_text(src, encoding="utf-8")
-    env = {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+    env = _go_build_env()
     vet = subprocess.run([GO, "test", "-c", "-o", str(module / "x.test"), "./crashproof/"],
                          cwd=str(module), capture_output=True, text=True, env=env)
     assert vet.returncode == 0, vet.stderr
@@ -443,12 +486,9 @@ def test_rust_service_emission_compiles(tmp_path):
     if reason is not None:
         pytest.skip(f"cordis-rs runtime not available: {reason}")
     crate = tmp_path / "svc_rust"
-    (crate / "src").mkdir(parents=True)
-    shutil.copy(RUST_SCENARIO / "Cargo.toml", crate / "Cargo.toml")
-    shutil.copytree(RUST_SCENARIO / "src" / "bin", crate / "src" / "bin")
     src = _rust_source(_ir_with_service_emission("rust"))
     assert 'RevlEmission::start("log", "write", Some("Log"))' in src
-    (crate / "src" / "lib.rs").write_text(src, encoding="utf-8")
+    _rust_crate_files(crate, "svc_rust", src)
     target = Path(os.environ.get("CARGO_TARGET_DIR") or (crate / "target"))
     build = subprocess.run(
         ["cargo", "build", "--lib", "--manifest-path", str(crate / "Cargo.toml")],
@@ -506,7 +546,7 @@ def test_go_body_that_panics_writes_emission_failed(tmp_path):
         _ir_with_emission("go", '\n\tpanic("boom")\n'), "crashrecovery", record=True),
         encoding="utf-8")
     out = module / "crashproof.test"
-    env = {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+    env = _go_build_env()
     build = subprocess.run([GO, "test", "-c", "-o", str(out), "./crashproof/"],
                            cwd=str(module), capture_output=True, text=True, env=env)
     assert build.returncode == 0, build.stderr
@@ -636,7 +676,7 @@ def _go_build(tmp_path: Path, ir: dict) -> Path:
     (pkg / "gen_crash_recovery_test.go").write_text(
         _load_emitter("go").emit(ir, "crashrecovery", record=True), encoding="utf-8")
     out = module / "crashproof.test"
-    env = {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+    env = _go_build_env()
     build = subprocess.run([GO, "test", "-c", "-o", str(out), "./crashproof/"],
                            cwd=str(module), capture_output=True, text=True, env=env)
     assert build.returncode == 0, build.stderr
@@ -771,7 +811,7 @@ def test_go_service_compensation_compiles(tmp_path):
     pkg = module / "crashproof"
     pkg.mkdir()
     (pkg / "gen_crash_recovery_test.go").write_text(_emit_tier("go", ir), encoding="utf-8")
-    env = {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+    env = _go_build_env()
     build = subprocess.run([GO, "test", "-c", "-o", str(module / "x.test"), "./crashproof/"],
                            cwd=str(module), capture_output=True, text=True, env=env)
     assert build.returncode == 0, build.stderr
@@ -786,10 +826,7 @@ def test_rust_service_compensation_compiles(tmp_path):
     if reason is not None:
         pytest.skip(f"cordis-rs runtime not available: {reason}")
     crate = tmp_path / "comp_rust"
-    (crate / "src").mkdir(parents=True)
-    shutil.copy(RUST_SCENARIO / "Cargo.toml", crate / "Cargo.toml")
-    shutil.copytree(RUST_SCENARIO / "src" / "bin", crate / "src" / "bin")
-    (crate / "src" / "lib.rs").write_text(src, encoding="utf-8")
+    _rust_crate_files(crate, "comp_rust", src)
     target = Path(os.environ.get("CARGO_TARGET_DIR") or (crate / "target"))
     build = subprocess.run(
         ["cargo", "build", "--lib", "--manifest-path", str(crate / "Cargo.toml")],
@@ -881,7 +918,7 @@ def test_go_service_emission_runs_journalled_end_to_end(tmp_path):
     (pkg / "gen_crash_recovery_test.go").write_text(src, encoding="utf-8")
     (pkg / "e2e_test.go").write_text(E2E_HARNESS, encoding="utf-8")
     out = module / "e2e.test"
-    env = {**os.environ, "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+    env = _go_build_env()
     build = subprocess.run([GO, "test", "-c", "-o", str(out), "./crashproof/"],
                            cwd=str(module), capture_output=True, text=True, env=env)
     assert build.returncode == 0, build.stderr

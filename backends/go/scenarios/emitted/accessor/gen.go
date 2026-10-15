@@ -209,7 +209,12 @@ func App() stc.Component {
 	return stc.Component{
 		Name:    "App",
 		Provide: []stc.Key{_keyReader},
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			var a *RevlSpawnHandle
 			if err := ctx.Effect(func() stc.Inverse {
 				a = revlSpawnCell(ctx, CellConfig{Id: 1})
