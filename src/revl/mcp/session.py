@@ -3321,13 +3321,15 @@ class Session:
 
         return _snapshot(self)
 
-    def restore(self, snap: dict) -> dict:
+    def restore(self, snap: dict, profile=None) -> dict:
         """Re-admit a snapshot into this (empty) session by replaying
         admission — compile through the gate, then boot. A component the
-        current checker rejects fails loudly and loads nothing."""
+        current checker rejects fails loudly and loads nothing. `profile` is
+        the authoring trust the snapshot's text compiles under (`None` for the
+        operator's own snapshot)."""
         from .persist import restore as _restore  # noqa: PLC0415 — lazy
 
-        return _restore(self, snap)
+        return _restore(self, snap, profile=profile)
 
     def unload(self) -> dict:
         """Tear down and report the residue checks — R4 from inside the

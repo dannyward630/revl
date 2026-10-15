@@ -95,8 +95,7 @@ from . import ship as _ship
 from . import stdlib as _stdlib
 from . import undo_record as _undo_record
 from . import deploy as _mcp_deploy
-from .persist import (ORIGIN_DEPENDENCIES, RestoreError,
-                      admitted_name as _admitted_name)
+from .persist import ORIGIN_DEPENDENCIES, RestoreError
 from .approval import (ApprovalRequired, two_step_payload, _sha as _approval_sha,
                        _canon as _approval_canon)
 from .. import query as Q
@@ -237,7 +236,7 @@ _PATH_ARGUMENTS = frozenset({"files", "candidateFiles", "baselineFiles",
 #
 # The `files` family stays path-bearing at EVERY depth, because its nested
 # occurrences ARE read from disk: a restore document's `sources.files`
-# (`_restore_authoring_refusal`) and a repair candidate's `candidate.files`
+# (`persist.restore`) and a repair candidate's `candidate.files`
 # (`repair._compile_candidate`). The other three never nest in any current
 # schema; they are kept at every depth anyway, so the narrower classification
 # can only ever refuse more, never admit more.
@@ -550,7 +549,10 @@ def _jail_refusal(arguments: dict) -> dict | None:
 # closure and therefore still lives in the compiler, on the `_compile` verbs.
 
 _SOURCE_ARGUMENTS = frozenset({"source", "candidate", "baseline", "replacement"})
-_SOURCE_MAP_ARGUMENTS = frozenset({"modules", "files_content"})
+# a snapshot's `dependencies` is source text the restore compiles too: the
+# `use`-reached modules it lays over `files_content` (`persist._recompile`)
+_SOURCE_MAP_ARGUMENTS = frozenset({"modules", "files_content",
+                                   ORIGIN_DEPENDENCIES})
 
 
 def _collect_sources(node, out: list) -> None:
@@ -2817,39 +2819,25 @@ def _tool_snapshot(_arguments: dict) -> dict:
         return _session_error(error)
 
 
-def _restore_authoring_refusal(snap) -> dict | None:
-    """The full decision compile for a `revl_restore`, or `None` when the
-    snapshot's sources admit under the session's authoring trust. Mirrors
-    `persist._recompile`'s inputs exactly (virtual file contents included) so the
-    decision is taken over the same text the restore will compile, and adds the
-    profile `persist` deliberately does not carry (its other caller is the
-    operator's own `--restore`)."""
-    profile = AUTHORING.profile()
-    if profile is None or not isinstance(snap, dict):
-        return None
-    sources = snap.get("sources") or {}
-    if not isinstance(sources, dict):
-        return None
-    try:
-        source = sources.get("source")
-        if source is not None:
-            compile_source(source, _admitted_name(snap),
-                           modules=sources.get("modules") or None, profile=profile)
-        elif sources.get("files"):
-            virtual = {os.path.abspath(path): text for path, text
-                       in (sources.get("files_content") or {}).items()}
-            compile_files(list(sources["files"]), sources=virtual or None,
-                          profile=profile)
-    except RevlError as error:
-        payload = report(error)
-        payload["restored"] = False
-        payload["reAdmitted"] = False
-        payload["authoringTrust"] = "untrusted"
-        payload["note"] = ("nothing was restored — a snapshot is agent-supplied "
-                           "source and admits under the same authoring trust "
-                           "`revl_load` does")
-        return payload
-    return None
+def _restore_authoring_refusal(error: RevlError) -> dict:
+    """The answer to a `revl_restore` whose snapshot does not admit under the
+    session's untrusted authoring trust: the same report `revl_load` gives.
+
+    The decision is not a separate compile. `persist.restore` compiles the
+    snapshot ONCE, under the profile `_tool_restore` hands it, over the very
+    text it then loads (`files_content` with `dependencies` laid over it, or
+    `source` with its `modules`). A decision compile of its own here once read
+    `files_content` alone while the load also read `dependencies`, so a
+    harmless `files_content` copy of a module admitted a host-body `extern` in
+    its `dependencies` copy; one compile cannot drift that way."""
+    payload = report(error)
+    payload["restored"] = False
+    payload["reAdmitted"] = False
+    payload["authoringTrust"] = "untrusted"
+    payload["note"] = ("nothing was restored — a snapshot is agent-supplied "
+                       "source and admits under the same authoring trust "
+                       "`revl_load` does")
+    return payload
 
 
 def _tool_restore(arguments: dict) -> dict:
@@ -2860,9 +2848,10 @@ def _tool_restore(arguments: dict) -> dict:
     newer checker. The running system is untouched on failure.
 
     The snapshot document is AGENT-SUPPLIED over the transport, so it is
-    authored source like any other and gets the same decision compile
-    `Gate.propose` runs before it swaps: a snapshot may no more smuggle a host
-    body past the authoring trust than `revl_load` may. (The operator's own
+    authored source like any other and compiles under the session's authoring
+    trust: a snapshot may no more smuggle a host body past it than `revl_load`
+    may. That compile is the one whose IR is loaded (`persist.restore`), so
+    the text admitted is the text that runs, `dependencies` included. (The operator's own
     `revl mcp serve --restore` path is not agent-supplied and is unaffected.)"""
     snap = arguments.get("snapshot")
     if snap is None:
@@ -2873,12 +2862,12 @@ def _tool_restore(arguments: dict) -> dict:
         leased = _leases.check(SESSION, "restore", arguments)
         if leased is not None:
             return _refused_by_lease(leased)
-    refusal = _restore_authoring_refusal(snap)
-    if refusal is not None:
-        return refusal
+    profile = AUTHORING.profile()
     try:
-        return {"ok": True, **SESSION.restore(snap)}
+        return {"ok": True, **SESSION.restore(snap, profile=profile)}
     except RestoreError as error:
+        if profile is not None and error.revl_error is not None:
+            return _restore_authoring_refusal(error.revl_error)
         # a rejected re-admission is a *result*: surface the diagnostic, and
         # make clear nothing was loaded
         payload = {"ok": False, "restored": False, "reAdmitted": False,
