@@ -1,0 +1,12 @@
+// A `//revl:import` directive that names its import (issue #2482). The go
+// reference emits `tm "time"` in the import block; the self-host port still
+// re-quotes the whole directive and emits `"tm "time"` (issue #2486).
+//
+// Not a byte-agreement case while the two differ, so it cannot live in the
+// tier's CORPUS. tests/test_selfhost_emit_go.py pins the difference.
+extern pure fn stamp() -> Str = @go {
+	//revl:import tm "time"
+	return tm.Unix(0, 0).UTC().Format("2006")
+}
+
+fn epoch_year() -> Str { return stamp() }

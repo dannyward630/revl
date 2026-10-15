@@ -1,0 +1,15 @@
+// Two `//revl:import` directives that bind one alias to two paths (issue
+// #2482). Go rejects `tm` declared twice in one import block, so the go
+// reference REFUSES the extern by name instead of emitting it.
+//
+// Not a byte-agreement case, so it cannot live in the tier's CORPUS. The
+// line-coverage gate drives the reference over it here.
+extern pure fn stamp() -> Str = @go {
+	//revl:import "os"
+	//revl:import _ "embed"
+	//revl:import tm "time"
+	//revl:import tm "text/template"
+	return os.Getenv("TZ")
+}
+
+fn zone() -> Str { return stamp() }

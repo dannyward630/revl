@@ -996,13 +996,52 @@ def test_a_declared_but_uncalled_deferred_emission_is_not_named(emitted, referen
      "extern `stamp`: malformed `//revl:import` directive"),
     ("import_directive_keyword_alias.rvl",
      "extern `stamp`: a `//revl:import` directive .* Go keyword `func`"),
+    ("import_directive_alias_clash.rvl",
+     "extern `stamp`: '//revl:import tm \"text/template\"': the "
+     "`//revl:import` alias `tm` is already bound to `tm \"time\"`"),
 ])
 def test_a_bad_import_directive_is_a_reference_refusal(reference, name, message):
     """issue #2482: the reference refuses a `//revl:import` line it cannot
-    parse, or whose alias is a Go keyword, by name and line."""
+    parse, whose alias is a Go keyword, or whose alias is already bound to
+    another path, by name and line."""
     ir = compile_files([str(ROOT / "tests" / "fixtures" / "emit_go_refusals" / name)])
     with pytest.raises(reference.EmitError, match=message):
         reference.emit(ir)
+
+
+# issue #2486: the port's `import_directive` (selfhost/emit_go.rvl) still trims
+# the quotes off the whole directive and the import block re-quotes it, so an
+# aliased directive emits `"tm "time"` where the reference emits `tm "time"`,
+# and the two directives the reference refuses come out as Go with no
+# `<<UNSUPPORTED` marker. A silent difference, recorded so it cannot read as
+# agreement.
+IMPORT_DIRECTIVE_SILENT_DIFFERENCES = (
+    "emit_go_refusals/import_directive_alias_clash.rvl",
+    "emit_go_refusals/import_directive_keyword_alias.rvl",
+    "emit_go_refusals/import_directive_malformed.rvl",
+    "emit_go_silent_differences/import_directive_alias.rvl",
+)
+
+
+@pytest.mark.parametrize("rel", IMPORT_DIRECTIVE_SILENT_DIFFERENCES)
+def test_an_import_directive_is_a_known_silent_difference(emitted, reference, rel):
+    """Issue #2486: the reference refuses the document (or emits other bytes)
+    and the port answers with Go and no marker. Fails the day the port is
+    fixed, so the entry is removed."""
+    ir = compile_files([str(ROOT / "tests" / "fixtures" / rel)])
+    got = emitted["emit_go_src"](ir)
+    if rel.startswith("emit_go_refusals/"):
+        with pytest.raises(reference.EmitError, match="`//revl:import`"):
+            reference.emit(ir)
+    else:
+        assert got != reference.emit(ir), (
+            f"{rel}: the port now matches the reference byte for byte; DELETE "
+            f"the entry from IMPORT_DIRECTIVE_SILENT_DIFFERENCES and move the "
+            f"document into CORPUS.")
+    assert "<<UNSUPPORTED" not in got, (
+        f"{rel}: the port now names it ({got[:160]!r}); if that matches the "
+        f"reference's refusal, DELETE the entry from "
+        f"IMPORT_DIRECTIVE_SILENT_DIFFERENCES.")
 
 
 # item 560 / issue #1914: the one key pair the injective mangling cannot split
