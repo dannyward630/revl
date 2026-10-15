@@ -767,7 +767,7 @@ def build_report(census, provenance, measured: dict,
             "by": "tools/gate_reference_census.py --engine crate",
             "what": ("the committed crates/revl-gate, built by cargo and asked "
                      "through a standalone consumer, over the same corpus"),
-            "recorded_in": str(CRATE_REPRODUCTION.relative_to(ROOT)),
+            "recorded_in": CRATE_REPRODUCTION.relative_to(ROOT).as_posix(),
             "recorded_at_checker_version": recorded_at,
             "current_checker_version": version,
             "is_current": current,

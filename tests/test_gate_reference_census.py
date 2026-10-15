@@ -309,7 +309,7 @@ def test_every_authority_rule_after_a_block_is_refused_by_both(measured):
     assert len(docs) >= 40, f"the block-nesting corpus shrank to {len(docs)}"
     wrong = []
     for doc in docs:
-        case = str(doc.relative_to(ROOT))
+        case = doc.relative_to(ROOT).as_posix()
         want = _block_nesting_expected(doc.stem)
         if got.get(case) != want:
             wrong.append(f"{case}: {got.get(case)}, expected {want}")
@@ -334,7 +334,7 @@ def test_every_value_crossing_bounds_a_spawned_child_in_both(measured):
     assert len(docs) == 16, f"the value-crossing corpus has {len(docs)} documents"
     wrong = []
     for doc in docs:
-        case = str(doc.relative_to(ROOT))
+        case = doc.relative_to(ROOT).as_posix()
         want = _block_nesting_expected(doc.stem)
         if got.get(case) != want:
             wrong.append(f"{case}: {got.get(case)}, expected {want}")
@@ -360,7 +360,7 @@ def test_every_effect_statement_document_is_decided_alike_by_both(measured):
     assert len(docs) == 14, f"the effect-statement corpus has {len(docs)} documents"
     wrong = []
     for doc in docs:
-        case = str(doc.relative_to(ROOT))
+        case = doc.relative_to(ROOT).as_posix()
         want = _block_nesting_expected(doc.stem)
         if got.get(case) != want:
             wrong.append(f"{case}: {got.get(case)}, expected {want}")
@@ -384,7 +384,7 @@ def test_every_model_reach_document_is_decided_alike_by_both(measured):
     assert len(docs) == 15, f"the model-reach corpus has {len(docs)} documents"
     wrong = []
     for doc in docs:
-        case = str(doc.relative_to(ROOT))
+        case = doc.relative_to(ROOT).as_posix()
         want = _block_nesting_expected(doc.stem)
         if got.get(case) != want:
             wrong.append(f"{case}: {got.get(case)}, expected {want}")
@@ -440,7 +440,7 @@ MODEL_REACH_SPAWN_PRODUCT_WIDENING = (
 def test_the_model_reach_spawn_corpus_is_decided_by_both(measured):
     _, (buckets, _) = measured
     got = {case: name for name, cases in buckets.items() for case in cases}
-    docs = sorted(str(doc.relative_to(ROOT))
+    docs = sorted(doc.relative_to(ROOT).as_posix()
                   for doc in MODEL_REACH_SPAWN.glob("*.rvl"))
     assert docs == sorted(MODEL_REACH_SPAWN_WIDENING
                           + MODEL_REACH_SPAWN_PRODUCT_WIDENING
@@ -472,7 +472,7 @@ def test_every_service_local_document_is_decided_alike_by_both(measured):
     assert len(docs) == 21, f"the service-local corpus has {len(docs)} documents"
     wrong = []
     for doc in docs:
-        case = str(doc.relative_to(ROOT))
+        case = doc.relative_to(ROOT).as_posix()
         want = _block_nesting_expected(doc.stem)
         if got.get(case) != want:
             wrong.append(f"{case}: {got.get(case)}, expected {want}")
@@ -494,7 +494,7 @@ def test_every_receiver_expression_document_is_decided_alike_by_both(measured):
     assert len(docs) == 22, f"the receiver-expression corpus has {len(docs)} documents"
     wrong = []
     for doc in docs:
-        case = str(doc.relative_to(ROOT))
+        case = doc.relative_to(ROOT).as_posix()
         want = _block_nesting_expected(doc.stem)
         if got.get(case) != want:
             wrong.append(f"{case}: {got.get(case)}, expected {want}")
@@ -517,7 +517,7 @@ def test_every_service_typed_param_document_is_decided_alike_by_both(measured):
     assert len(docs) == 10, f"the service-typed-param corpus has {len(docs)} documents"
     wrong = []
     for doc in docs:
-        case = str(doc.relative_to(ROOT))
+        case = doc.relative_to(ROOT).as_posix()
         want = _block_nesting_expected(doc.stem)
         if got.get(case) != want:
             wrong.append(f"{case}: {got.get(case)}, expected {want}")
@@ -539,7 +539,7 @@ def test_every_handle_bound_document_is_decided_alike_by_both(measured):
     assert len(docs) == 8, f"the handle-bound corpus has {len(docs)} documents"
     wrong = []
     for doc in docs:
-        case = str(doc.relative_to(ROOT))
+        case = doc.relative_to(ROOT).as_posix()
         want = _block_nesting_expected(doc.stem)
         if got.get(case) != want:
             wrong.append(f"{case}: {got.get(case)}, expected {want}")
@@ -560,7 +560,7 @@ def test_every_record_field_call_document_is_decided_alike_by_both(measured):
     assert len(docs) == 9, f"the record-field-call corpus has {len(docs)} documents"
     wrong = []
     for doc in docs:
-        case = str(doc.relative_to(ROOT))
+        case = doc.relative_to(ROOT).as_posix()
         want = _block_nesting_expected(doc.stem)
         if got.get(case) != want:
             wrong.append(f"{case}: {got.get(case)}, expected {want}")
@@ -582,7 +582,7 @@ def test_every_deferred_reach_document_is_decided_alike_by_both(measured):
     assert len(docs) == 9, f"the deferred-reach corpus has {len(docs)} documents"
     wrong = []
     for doc in docs:
-        case = str(doc.relative_to(ROOT))
+        case = doc.relative_to(ROOT).as_posix()
         want = _block_nesting_expected(doc.stem)
         if got.get(case) != want:
             wrong.append(f"{case}: {got.get(case)}, expected {want}")
@@ -605,7 +605,7 @@ def test_every_verified_method_document_is_decided_alike_by_both(measured):
     assert len(docs) == 4, f"the verified-method corpus has {len(docs)} documents"
     wrong = []
     for doc in docs:
-        case = str(doc.relative_to(ROOT))
+        case = doc.relative_to(ROOT).as_posix()
         want = _block_nesting_expected(doc.stem)
         if got.get(case) != want:
             wrong.append(f"{case}: {got.get(case)}, expected {want}")
@@ -628,7 +628,7 @@ def test_every_try_expr_document_is_decided_alike_by_both(measured):
     assert len(docs) == 17, f"the try-expr corpus has {len(docs)} documents"
     wrong = []
     for doc in docs:
-        case = str(doc.relative_to(ROOT))
+        case = doc.relative_to(ROOT).as_posix()
         want = _block_nesting_expected(doc.stem)
         if got.get(case) != want:
             wrong.append(f"{case}: {got.get(case)}, expected {want}")
@@ -655,7 +655,7 @@ def test_every_value_method_call_document_is_decided_alike_by_both(measured):
     assert len(docs) == 15, f"the value-method-call corpus has {len(docs)} documents"
     wrong = []
     for doc in docs:
-        case = str(doc.relative_to(ROOT))
+        case = doc.relative_to(ROOT).as_posix()
         want = _block_nesting_expected(doc.stem)
         if got.get(case) != want:
             wrong.append(f"{case}: {got.get(case)}, expected {want}")
@@ -678,7 +678,7 @@ def test_every_match_block_arm_document_is_decided_alike_by_both(measured):
     assert len(docs) == 16, f"the match-block-arm corpus has {len(docs)} documents"
     wrong = []
     for doc in docs:
-        case = str(doc.relative_to(ROOT))
+        case = doc.relative_to(ROOT).as_posix()
         want = _block_nesting_expected(doc.stem)
         if got.get(case) != want:
             wrong.append(f"{case}: {got.get(case)}, expected {want}")

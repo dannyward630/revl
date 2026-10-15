@@ -233,7 +233,7 @@ def _documents(dirs, skip) -> list[str]:
         for path in sorted(base.rglob("*.rvl")):
             if skip & set(path.parts):
                 continue
-            out.append(str(path.relative_to(ROOT)))
+            out.append(path.relative_to(ROOT).as_posix())
     return out
 
 

@@ -1013,7 +1013,7 @@ def load_corpus(oracle, *, everything: bool = False):
                 continue
             text = _read(path)
             if text is not None:
-                cases.append((str(path.relative_to(ROOT)), text))
+                cases.append((path.relative_to(ROOT).as_posix(), text))
     for name, src in oracle.ACCEPTED_PROGRAMS:
         cases.append((f"oracle-accept:{name}", src))
     for entry in oracle.REJECTED_PROGRAMS:

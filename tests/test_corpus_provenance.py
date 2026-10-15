@@ -225,6 +225,11 @@ def test_the_enumeration_uses_the_census_own_case_ids():
     want = [cid for cid, _ in census.load_corpus(oracle)]
     assert tool.enumerate_corpora()["census"] == want
     assert len(want) > 800
+    disk_cases = [cid for cid in want if not cid.startswith(
+        ("oracle-accept:", "oracle-reject:", "admission:"))]
+    assert all("/" in cid and (ROOT / cid).is_file()
+               for cid in disk_cases), (
+        "file-backed corpus IDs must use checkout-relative POSIX paths")
 
 
 def test_the_census_verdict_path_never_reads_the_manifest():

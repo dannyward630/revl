@@ -24,7 +24,7 @@ from _load_by_path import load_by_path  # noqa: E402
 
 TIERS = ("go", "java", "rust", "ts", "wasm")
 DOCUMENTS = sorted(
-    str(p.relative_to(ROOT))
+    p.relative_to(ROOT).as_posix()
     for p in (ROOT / "tests" / "fixtures").glob("emit_*_refusals/*.rvl"))
 MARKER = re.compile(r"<<UNSUPPORTED[^>]*>>")
 
