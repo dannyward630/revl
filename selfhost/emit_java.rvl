@@ -95,8 +95,8 @@
 //   * spawn/instances (`_v3_spawn`/`instance-get`/`RevlSpawnHandle`), timers and
 //     routers; and the `Pool` host runtime — `_emit_host_stubs` emits Map/Job, but
 //     a `Pool` acquisition surfaces a loud `<<UNSUPPORTED-host-stub:Pool>>`;
-//   * the built-in Result surface — `Ok`/`Err` construction and `match`, the
-//     sealed `RevlResult` (`_emit_result_type`), and `_emit_checked_div_helpers`,
+//   * the built-in Result surface — `Ok`/`Err` construction (a `match` over a
+//     Result and the sealed `RevlResult` are ported), and `_emit_checked_div_helpers`,
 //     so the `checked_*` builtin methods stay behind a loud
 //     `<<UNSUPPORTED-checked-div:..>>`; and the `revlDivFloor`/`revlDivEuclid`/`revlMod`
 //     int-arith block, so `div_floor`/`div_euclid`/`mod` stay behind a loud
@@ -928,8 +928,9 @@ fn render_interp(node: Any, ctx: Ctx, counter: Int) -> Rendered {
 // by a user variant) discriminates via `.map(..).orElseGet(..)`; a user variant
 // lowers to a pattern `switch` carrying the document-wide `__revl_case_N` /
 // `__revl_ignored_N` temp numbering. The arm lines carry a fixed indent (the
-// enclosing statement only pads the first line). Built-in Result (`Ok`/`Err`) is
-// DEFERRED.
+// enclosing statement only pads the first line). A built-in Result (`Ok`/`Err`,
+// when NOT shadowed) switches over the sealed `RevlResult`; only its
+// CONSTRUCTION is deferred (`<<UNSUPPORTED-result-ctor:..>>`).
 fn opt_arm_body(arms: List[Any], want: Str, ctx: Ctx, counter: Int) -> Rendered {
   for (arm of arms) {
     if (value_str(value_field(arm, "pattern")) == want) {
@@ -949,6 +950,43 @@ fn has_optional_arms(arms: List[Any], ctx: Ctx) -> Bool {
     if ((p == "Some" || p == "None") && !resolved(map_get(ctx.ca, p))) { return true }
   }
   return false
+}
+fn has_result_arms(arms: List[Any], ctx: Ctx) -> Bool {
+  for (arm of arms) {
+    let p = value_str(value_field(arm, "pattern"))
+    if ((p == "Ok" || p == "Err") && !resolved(map_get(ctx.ca, p))) { return true }
+  }
+  return false
+}
+// The built-in Result arm of `_v3_match_expr`: a wildcard type pattern per
+// case, and the payload cast to the arm's declared `payload_type` (Result's
+// type arguments are not recoverable at the pattern site).
+fn result_match(scrutinee: Str, arms: List[Any], ctx: Ctx, counter: Int) -> Rendered {
+  var lines = [`switch (${scrutinee}) {`]
+  var c = counter
+  var wildcard = `            default -> { throw new IllegalArgumentException("non-exhaustive match"); }`
+  for (arm of arms) {
+    let pattern = value_str(value_field(arm, "pattern"))
+    let br = render_expr(value_field(arm, "body"), ctx, c)
+    c = br.counter
+    if (pattern == "_") {
+      wildcard = `            default -> { yield (${br.text}); }`
+    } else {
+      c = c + 1
+      let ignored = `__revl_ignored_${c}`
+      lines = lines.push(`            case RevlResult.${pattern}<?, ?> ${ignored} -> {`)
+      let bind = value_str(value_field(arm, "bind"))
+      if (bind != "" && bind != "_") {
+        let ptype = java_v3_type(value_field(arm, "payload_type"), true)
+        lines = lines.push(`                final var ${mangle(bind)} = (${ptype}) ${ignored}.value();`)
+      }
+      lines = lines.push(`                yield (${br.text});`)
+      lines = lines.push(`            }`)
+    }
+  }
+  lines = lines.push(wildcard)
+  lines = lines.push(`        }`)
+  return { text: lines.join(newline()), counter: c }
 }
 fn opt_bind(arms: List[Any]) -> Str {
   for (arm of arms) {
@@ -972,6 +1010,7 @@ fn match_expr(node: Any, ctx: Ctx, counter: Int) -> Rendered {
       counter: none_body.counter
     }
   }
+  if (has_result_arms(arms, ctx)) { return result_match(sr.text, arms, ctx, c) }
   var lines = [`switch (${sr.text}) {`]
   var wildcard = ""
   var has_wild = false

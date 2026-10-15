@@ -24,3 +24,17 @@ type Box[T] = Full(T) | Empty
 type Either[L, R] = Left(L) | Right(R) | Neither
 fn keep(b: Box[Int]) -> Box[Int] { return b }
 fn eithers(es: List[Either[Str, Int]]) -> List[Either[Str, Int]] { return es }
+// A `match` over a built-in Result switches over the sealed `RevlResult` and
+// casts each bound payload to the arm's type.
+fn settled(r: Result[Int, Str]) -> Int {
+  return match r {
+    Ok(v) => v,
+    Err(_) => 0,
+  }
+}
+fn reason(r: Result[Int, Str]) -> Str {
+  return match r {
+    Err(e) => e,
+    _ => "ok",
+  }
+}
