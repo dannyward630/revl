@@ -98,11 +98,10 @@ def test_nullary_case_calls_do_not_crash_the_checker(src):
     `IndexError` out of the CHECKER — the second reference crash the campaign
     turned up, and the first outside the parser.
 
-    Zero arguments at a payload-carrying case is ACCEPTED on purpose here
-    (tests/test_selfhost_checker.py pins `Circle()` alongside the widening and
-    unknown-argument cases), so this asserts only the property the fuzzer
-    tests: a refusal is fine, an inferred type is fine, an `IndexError` is
-    not."""
+    Zero arguments at a payload-carrying case is refused since issue #2447
+    (tests/test_case_call_arity.py), but this asserts only the property the
+    fuzzer tests: a refusal is fine, an inferred type is fine, an `IndexError`
+    is not."""
     try:
         compile_source(src, "fuzz.rvl")
     except RevlError:

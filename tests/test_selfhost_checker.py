@@ -1621,11 +1621,11 @@ ACCEPTED_PROG_EXPR = [
     ("type S = Idle | Busy", "Some(Idle)"),
     ("type S = Idle | Busy", "Idle.x"),
     ("type Status = Pending", "Pending"),
-    # payload checking at a case call (widening, unknown, zero args)
+    # payload checking at a case call (widening, unknown); a wrong argument
+    # count is CASE_ARITY_SILENT_ADMITS below (issue #2447)
     ("type Shape = Circle(Float) | Square", "Circle(1.0)"),
     ("type Shape = Circle(Float) | Square", "Circle(1)"),
     ("type Shape = Circle(Float) | Square", "Circle(q)"),
-    ("type Shape = Circle(Float) | Square", "Circle()"),
     ("type Shape = Circle(Float) | Square", "Square"),
     ("type Box = Wrap(Any) | Empty", "Wrap(1)"),
     ("type Box = Wrap(Any) | Empty", "Empty"),
@@ -1636,7 +1636,6 @@ ACCEPTED_PROG_EXPR = [
     # Some/Ok/Err keep their builtin parametric results
     ("", "Some(1)"),
     ("", "None"),
-    ("", "None(1)"),
     ("", "Some(None)"),
     ("", "Some(Some(1))"),
     ("type Outcome = Ok(Row) | Err(Str)\ntype Row = { name: Str }",
@@ -1746,6 +1745,45 @@ def test_rejected_prog_expr_agree(infer_prog, prog_expr):
         f"selfhost accepted {prog!r} / {expr!r}"
 
 
+# Issue #2447: the reference refuses a case call with the wrong number of
+# payload arguments; `selfhost/checker.rvl` does not count them yet and still
+# infers a type. Each entry records the self-host's answer, so the difference
+# is NAMED rather than passing for agreement. The day the self-host refuses
+# too, the test fails on that entry and the entry moves to REJECTED_PROG_EXPR.
+CASE_ARITY_SILENT_ADMITS: dict[tuple[str, str], str] = {
+    ("type Shape = Circle(Float) | Square", "Circle()"): "Shape",
+    ("type Shape = Circle(Float) | Square", "Circle(1.0, 2.0)"): "Shape",
+    ("type Shape = Circle(Float) | Square", "Square(1)"): "Shape",
+    ("type S = Idle | Busy", "Idle(Idle)"): "S",
+    ("", "None(1)"): "Opt[Any]",
+    ("", "Some()"): "Opt[Any]",
+    ("", "Some(1, 2)"): "Opt[Int]",
+    ("", "Ok(1, 2)"): "Result[Int, Any]",
+    ("", "Err()"): "Result[Any, Any]",
+}
+
+
+@pytest.mark.parametrize("prog_expr", sorted(CASE_ARITY_SILENT_ADMITS))
+def test_case_arity_is_a_known_silent_admit(infer_prog, prog_expr):
+    prog, expr = prog_expr
+    assert _ref_prog_infer(prog, expr) == "refuse", \
+        f"corpus bug: reference accepts {prog!r} / {expr!r}"
+    # and refuses for the count, not for some other reason
+    program = refparser.Parser(prog, "diff.rvl").parse()
+    types = _lower_type_decls(program, "diff.rvl")
+    types[CASES_KEY] = _case_table(types)
+    with pytest.raises(RevlError) as refused:
+        infer_ast(_ref_parse(expr), dict(ENV), types, filename="diff.rvl")
+    case = expr.split("(")[0]
+    assert refused.value.message.startswith(f"variant case `{case}` takes "), \
+        refused.value.message
+    got = infer_prog(prog, expr)
+    assert got == CASE_ARITY_SILENT_ADMITS[prog_expr], (
+        f"{prog!r} / {expr!r}: recorded as "
+        f"{CASE_ARITY_SILENT_ADMITS[prog_expr]!r}, self-host now {got!r}. If "
+        f"it now refuses, move the entry to REJECTED_PROG_EXPR.")
+
+
 # ---------------------------------------------------------------- fuzz
 
 # Programs whose type tables exercise every slice-three shape; the first is
@@ -1780,6 +1818,11 @@ FUZZ_CTORS = [
 FUZZ_ATOMS3 = ["1", "0", "7", "2.5", "x", "y", "f", "s", "flag", "q",
                "true", "false"]
 
+# The nullary cases above. The generator calls only the others with an
+# argument: a nullary case called with one is refused by the reference and
+# still typed by the self-host (issue #2447, CASE_ARITY_SILENT_ADMITS).
+FUZZ_NULLARY = {"Idle", "Busy", "Square", "Empty", "N", "Stop"}
+
 
 def _gen3(rng: random.Random, ctors: list, depth: int) -> str:
     if depth <= 0:
@@ -1794,7 +1837,9 @@ def _gen3(rng: random.Random, ctors: list, depth: int) -> str:
     if roll < 0.30:
         return rng.choice(["None", f"Ok({g()})", f"Err({g()})"])
     if roll < 0.45:
-        return f"{rng.choice(ctors)}({g()})" if ctors else g()
+        callable_ctors = [c for c in ctors if c not in FUZZ_NULLARY]
+        return (f"{rng.choice(callable_ctors)}({g()})" if callable_ctors
+                else g())
     if roll < 0.55:
         return f"{g()}.length"
     if roll < 0.80:

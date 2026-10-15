@@ -2433,6 +2433,7 @@ def infer_ast(expr, tenv: dict, types: dict, filename: str | None = None) -> str
             if parse_type(local)[0] == FN_HEAD:
                 return call_function_value(expr, local, f"`{name}`", arg_types,
                                            tenv, types, filename, line)
+            check_case_call_arity(expr, tenv, types, filename)
             case = (types.get(CASES_KEY) or {}).get(name)
             params = generic_variant_params(case and case["adt"], types)
             if case is not None and params:
@@ -2448,21 +2449,19 @@ def infer_ast(expr, tenv: dict, types: dict, filename: str | None = None) -> str
                                    case["payload"], arg_types[0],
                                    why=unresolved_nominal_reason(
                                        case["payload"], arg_types[0], types))
-                # A case call with NO argument. Zero args at a payload-carrying
-                # case is deliberately ACCEPTED here — the payload check above
-                # skips it on `arg_types and arg_types[0]`, and
-                # tests/test_selfhost_checker.py pins `Circle()` as accepted
-                # alongside the widening and unknown-argument cases — so the
-                # only question is what it infers. For a user ADT that is
-                # `case["adt"]` below and there is nothing to read; for the
-                # three builtin cases it used to be `arg_types[0]`, which on an
-                # empty list threw a bare `IndexError` out of the checker.
-                # `fn k() -> Opt[Int] { return Some() }` was enough to do it.
+                # A case call with NO argument. With a filename,
+                # `check_case_call_arity` above refuses it at a payload case
+                # (issue #2447). Without one (an inference-only probe) it still
+                # reaches here, so the only question is what it infers. For a
+                # user ADT that is `case["adt"]` below and there is nothing to
+                # read; for the three builtin cases it used to be
+                # `arg_types[0]`, which on an empty list threw a bare
+                # `IndexError` out of the checker.
                 #
                 # `Any` is the answer the two lines already reach for when an
                 # argument's type cannot be worked out, and a missing argument
                 # is that same absence of information, so it needs no second
-                # rule — just the guard the list read never had. Found by
+                # rule, just the guard the list read never had. Found by
                 # tools/fuzz_frontend.py.
                 first = arg_types[0] if arg_types else None
                 if name == "Some":
@@ -2827,6 +2826,61 @@ def _check_arrow_args(args, params, tenv: dict, types: dict,
             )
 
 
+def case_payload_arity(name: str, case: dict) -> int:
+    """How many payload arguments a call of case `name` takes: 0 or 1.
+
+    The case table records the built-in `Opt`/`Result` cases with no payload
+    type (their result is parametric), so their count cannot be read off it:
+    of those, only `None` is nullary."""
+    if str(case.get("adt") or "").startswith(("Opt[", "Result[")):
+        return 0 if name == "None" else 1
+    return 0 if case.get("payload") is None else 1
+
+
+def check_case_call_arity(expr, tenv: dict, types: dict,
+                          filename: str | None) -> None:
+    """Refuse a variant case call with the wrong number of payload arguments.
+
+    Issue #2447: `Box(1, 2)` for `Box(Int)`, `Pp()` for `Pp(Int)`, `Qq(1)` for
+    a nullary `Qq` and `Some(1, 2)` were all admitted, and only some backends
+    noticed. A case carries at most one payload, so a call takes exactly 0 or
+    1 arguments. Anything that is not a call of a case (a local of function
+    type shadows the case name) is left alone."""
+    from .parser import ExprCall, ExprVar
+    if not filename or not isinstance(expr, ExprCall) \
+            or not isinstance(expr.callee, ExprVar):
+        return
+    name = expr.callee.name
+    if parse_type(tenv.get(name))[0] == FN_HEAD:
+        return
+    case = (types.get(CASES_KEY) or {}).get(name)
+    if case is not None:
+        check_case_arity(name, case, len(expr.args), filename,
+                         getattr(expr, "line", 0))
+
+
+def check_case_arity(name: str, case: dict, given: int, filename: str,
+                     line: int) -> None:
+    """Raise the issue #2447 refusal when `given` is not `name`'s payload
+    count. Shared by the AST checker and the component-body IR sweep."""
+    want = case_payload_arity(name, case)
+    if want == given:
+        return
+    payload = render_type(case.get("payload"))
+    if want == 0:
+        hint = f"`{name}` carries no payload: write `{name}` on its own"
+    elif payload:
+        hint = f"`{name}` carries one `{payload}` payload: write `{name}(value)`"
+    else:
+        hint = f"`{name}` carries one payload: write `{name}(value)`"
+    raise RevlError(
+        filename, line,
+        f"variant case `{name}` takes {want} payload "
+        f"argument{'' if want == 1 else 's'}, {given} given",
+        hint=hint, code="T1", category="type-mismatch",
+    )
+
+
 def call_function_value(expr, fn_type: str, what: str, arg_types: list,
                         tenv: dict, types: dict,
                         filename: str | None, line: int) -> str | None:
@@ -2987,6 +3041,9 @@ def check_ast(expr, expected: str | None, tenv: dict, types: dict,
     if expected is None:
         infer_ast(expr, tenv, types, filename)
         return
+    # a case call in check position meets the arity rule before any
+    # expectation-directed path can skip `infer_ast` (issue #2447)
+    check_case_call_arity(expr, tenv, types, filename)
     spec = types.get(expected or "")
     if isinstance(expr, ExprRecord) and spec is not None and spec.get("kind") == "record":
         declared = spec.get("fields", {})
@@ -3167,6 +3224,16 @@ def infer_ir(node, tenv: dict, types: dict, services: dict,
         # provision at lower time, so `service` is always present.
         return node.get("service")
     if kind == "call":
+        callee = node.get("callee")
+        if filename and isinstance(callee, dict) and callee.get("kind") == "var":
+            # `Some`/`None` (and an untagged `Ok`/`Err`) lower to a call of
+            # the constructor, not an `adt` node: count its arguments too
+            # (issue #2447)
+            case = (types.get(CASES_KEY) or {}).get(callee.get("name"))
+            if case is not None and str(case.get("adt") or "").startswith(
+                    ("Opt[", "Result[")):
+                check_case_arity(callee["name"], case,
+                                 len(node.get("args") or []), filename, line)
         target = node.get("target")
         if isinstance(target, dict) and target.get("kind") == "req":
             svc = services.get(tenv.get(f"req.{target.get('name')}") or "")
@@ -3271,6 +3338,10 @@ def infer_ir(node, tenv: dict, types: dict, services: dict,
         tname = node.get("type")
         case_name = node.get("case")
         args = node.get("args") or []
+        case_entry = (types.get(CASES_KEY) or {}).get(case_name)
+        if filename and case_entry is not None:
+            # issue #2447: the payload count, as `infer_ast` checks it
+            check_case_arity(case_name, case_entry, len(args), filename, line)
         spec = types.get(tname or "")
         generic = isinstance(spec, dict) and bool(spec.get("params"))
         payload = None

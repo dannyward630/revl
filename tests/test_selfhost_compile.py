@@ -3387,3 +3387,60 @@ def test_a_well_typed_var_or_if_is_admitted_on_both_sides(admit, name):
     text = _ISSUE_2405_ADMITTED[name]
     assert _reference_refusal(text) == ""
     assert admit(text) == ""
+
+
+# Issue #2447: the reference refuses a variant case call with the wrong number
+# of payload arguments. The documents are the reference's own table,
+# tests/test_case_call_arity.py; `selfhost/*.rvl` does not count the arguments
+# yet. Each entry records what the native chain gives on py, so a difference
+# is NAMED rather than passing for agreement: "EMITS" is a silent admit (the
+# native chain writes target code), anything else is its verdict string. The
+# three generic documents are loud refusals, but with another message (the
+# bare head `Mb`, issue #2402). The day the self-host gives the reference's
+# refusal, the entry fails and is DELETED.
+CASE_ARITY_NATIVE_VERDICTS: dict[str, str] = {
+    "argument_to_nullary": "EMITS",
+    "argument_to_nullary_as_argument": "EMITS",
+    "err_missing": "EMITS",
+    "extra_payload": "EMITS",
+    "extra_payload_in_let": "EMITS",
+    "generic_argument_to_nullary":
+        "REFUSED|T1|this function's return expects `Mb[Int]`, got `Mb`",
+    "generic_extra_payload":
+        "REFUSED|T1|this function's return expects `Mb[Int]`, got `Mb`",
+    "generic_missing_payload":
+        "REFUSED|T1|this function's return expects `Mb[Int]`, got `Mb`",
+    "missing_payload": "EMITS",
+    "none_argument": "EMITS",
+    "provide_block_body": "EMITS",
+    "provide_expression_body": "EMITS",
+    "ok_extra": "EMITS",
+    "some_extra": "EMITS",
+    "some_missing": "EMITS",
+    "user_ok_missing": "EMITS",
+}
+
+
+def _case_arity_docs():
+    from _load_by_path import load_by_path
+    return load_by_path("test_case_call_arity",
+                        ROOT / "tests" / "test_case_call_arity.py")
+
+
+def test_every_case_arity_refusal_has_a_native_verdict():
+    assert sorted(CASE_ARITY_NATIVE_VERDICTS) == sorted(_case_arity_docs().REFUSED)
+
+
+@pytest.mark.parametrize("name", sorted(CASE_ARITY_NATIVE_VERDICTS))
+def test_case_arity_refusal_is_a_recorded_native_difference(compile_to, name):
+    source, message = _case_arity_docs().REFUSED[name]
+    with pytest.raises(RevlError) as refused:
+        compile_source(source)
+    assert message in str(refused.value)
+    got = compile_to(source, "py")
+    verdict = ("EMITS" if not got.startswith(("REFUSED|", "UNKNOWN_TIER|"))
+               else got)
+    assert verdict == CASE_ARITY_NATIVE_VERDICTS[name], (
+        f"{name}: recorded as {CASE_ARITY_NATIVE_VERDICTS[name]!r}, now "
+        f"{verdict[:160]!r}. If the self-host now gives the reference's "
+        f"refusal, DELETE the entry.")
