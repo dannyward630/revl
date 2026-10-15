@@ -1011,6 +1011,49 @@ def test_extern_go_body_hoists_aliased_import_and_builds():
     _go_build(src, "aliased-import")
 
 
+@pytest.mark.parametrize("line", [
+    '//revl:import tm "time" x',
+    "//revl:import",
+    '//revl:import ""',
+    '//revl:import tm ""',
+    '//revl:import "time',
+    "\t//revl:import\t",
+])
+def test_extern_go_body_refuses_a_malformed_import_directive(line):
+    # kept as a Go comment, the line would compile and drop the import
+    with pytest.raises(emit.EmitError,
+                       match="extern `probe`: malformed `//revl:import`") as err:
+        emit.emit(_extern_ir(f"{line}\nreturn nil"), package="p")
+    assert repr(line.strip()) in str(err.value)
+
+
+def test_extern_go_body_keeps_a_longer_word_as_a_comment():
+    src = emit.emit(_extern_ir("//revl:imported is prose\nreturn nil"),
+                    package="p")
+    assert "\t//revl:imported is prose" in src
+
+
+_GO_KEYWORDS_25 = (
+    "break case chan const continue default defer else fallthrough for func "
+    "go goto if import interface map package range return select struct "
+    "switch type var").split()
+
+
+@pytest.mark.parametrize("alias", _GO_KEYWORDS_25)
+def test_extern_go_body_refuses_a_keyword_import_alias(alias):
+    line = f'//revl:import {alias} "time"'
+    with pytest.raises(emit.EmitError, match=f"Go keyword `{alias}`") as err:
+        emit.emit(_extern_ir(f"{line}\nreturn nil"), package="p")
+    assert repr(line) in str(err.value)
+
+
+@pytest.mark.parametrize("alias", ["_", "."])
+def test_extern_go_body_keeps_blank_and_dot_import_aliases(alias):
+    src = emit.emit(_extern_ir(f'//revl:import {alias} "time"\nreturn nil'),
+                    package="p")
+    assert f'\t{alias} "time"' in src
+
+
 def test_revl_any_maps_to_go_any():
     src = emit.emit(_extern_ir("return s", returns="Any"), package="p")
     assert "func probe(s string) any {" in src

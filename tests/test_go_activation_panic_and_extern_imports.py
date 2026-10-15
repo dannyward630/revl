@@ -211,3 +211,65 @@ def test_emit_hoists_an_extern_import_once(doc, tmp_path):
     assert proc.returncode == 0, output
     if doc == "live":
         assert "--- PASS" in output, output
+
+
+# ---- issue #2482: an aliased `//revl:import` on the component renderers ----
+
+ALIAS_EXTERN = """
+extern pure fn nap(ms: Int) -> Int = @go {
+	//revl:import tm "time"
+	//revl:import str "strings"
+	tm.Sleep(tm.Duration(ms) * tm.Millisecond)
+	return ms + int64(len(str.Repeat("x", 2)))
+}
+
+service Napper {
+  fn nap(ms: Int) -> Int
+}
+
+component Sleepy provides napper: Napper {
+  provide napper {
+    fn nap(ms) {
+      return nap(ms)
+    }
+  }
+}
+"""
+
+ALIAS_LIFECYCLE = ALIAS_EXTERN + """
+lifecycle test "the extern reaches time and strings through aliases" {
+  load Sleepy
+  let got = call napper.nap(5)
+  assert got == 7
+  unload Sleepy
+  assert no_residue
+}
+"""
+
+
+def test_placement_hoists_an_aliased_extern_import(tmp_path):
+    ir = compile_source(ALIAS_EXTERN, "alias.rvl")
+    gen = _go_emit().emit_placement(ir, "emitted").split("\f", 1)[0]
+    imports = _import_block(gen)
+    assert 'tm "time"' in imports and 'str "strings"' in imports, imports
+    _need_go()
+    from revl import placement  # noqa: PLC0415
+
+    assert Path(placement._build_go(ir, tmp_path)).exists()
+
+
+@pytest.mark.parametrize("doc", ["combined", "live"])
+def test_emit_hoists_an_aliased_extern_import_once(doc, tmp_path):
+    source = ALIAS_EXTERN if doc == "combined" else ALIAS_LIFECYCLE
+    src = _go_emit().emit(compile_source(source, "alias.rvl"), "alias")
+    imports = _import_block(src)
+    for spec in ('tm "time"', 'str "strings"'):
+        assert imports.count(spec) == 1, imports
+    assert not any('""' in line for line in imports), imports
+    _need_go()
+    run = "" if doc == "combined" else "."
+    proc = _go_test(tmp_path, "alias", src, run=run)
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 0, output
+    if doc == "live":
+        assert "--- PASS" in output, output

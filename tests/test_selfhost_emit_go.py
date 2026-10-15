@@ -991,6 +991,20 @@ def test_a_declared_but_uncalled_deferred_emission_is_not_named(emitted, referen
     assert got == reference.emit(ir)
 
 
+@pytest.mark.parametrize("name, message", [
+    ("import_directive_malformed.rvl",
+     "extern `stamp`: malformed `//revl:import` directive"),
+    ("import_directive_keyword_alias.rvl",
+     "extern `stamp`: a `//revl:import` directive .* Go keyword `func`"),
+])
+def test_a_bad_import_directive_is_a_reference_refusal(reference, name, message):
+    """issue #2482: the reference refuses a `//revl:import` line it cannot
+    parse, or whose alias is a Go keyword, by name and line."""
+    ir = compile_files([str(ROOT / "tests" / "fixtures" / "emit_go_refusals" / name)])
+    with pytest.raises(reference.EmitError, match=message):
+        reference.emit(ir)
+
+
 # item 560 / issue #1914: the one key pair the injective mangling cannot split
 # ---------------------------------------------------------------------------
 # `tests/fixtures/emit_go_refusals/host_identifier_collision.rvl` is the only

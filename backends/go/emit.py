@@ -8608,7 +8608,7 @@ def _emit_v3_go_externs(externs: list, ctx: _V3GoCtx,
         config_bind = _go_extern_config_bind(ext)
         if config_bind:
             out.append("\t" + config_bind)
-        body_lines = _hoist_go_imports(body, ctx) if body else []
+        body_lines = _hoist_go_imports(body, ctx, ext.get("name")) if body else []
         if body_lines:
             for line in body_lines:
                 out.append("\t" + line.rstrip())
@@ -8626,33 +8626,56 @@ def _emit_v3_go_externs(externs: list, ctx: _V3GoCtx,
 # module's import set and drops the directive from the emitted function body.
 # It is a comment to Go's own lexer, so a body that skipped emit (e.g. copied
 # by hand) still compiles; here it is structured data the emitter acts on.
+# A line whose first word is the directive's name but that does not parse (a
+# missing or empty path, a stray token, a keyword alias) is an EmitError naming
+# the line: kept as a comment it would compile and silently drop the import. A
+# longer word (`//revl:imported ...`) is an ordinary comment and stays.
+_GO_IMPORT_DIRECTIVE_NAME = "//revl:import"
+_GO_IMPORT_DIRECTIVE_WORD = re.compile(r'^//revl:import(?:\s|$)')
 _GO_IMPORT_DIRECTIVE = re.compile(
-    r'^\s*//revl:import\s+(?:(?P<alias>[A-Za-z_]\w*|\.)\s+)?'
-    r'(?P<path>"[^"]*"|\S+)\s*$'
+    r'^//revl:import\s+(?:(?P<alias>[A-Za-z_]\w*|\.)\s+)?'
+    r'(?P<path>"[^"\s]+"|[^"\s]+)$'
 )
+# The 25 Go keywords: none can name an import (`_` and `.` are not keywords).
+_GO_LANGUAGE_KEYWORDS = frozenset({
+    "break", "case", "chan", "const", "continue", "default", "defer", "else",
+    "fallthrough", "for", "func", "go", "goto", "if", "import", "interface",
+    "map", "package", "range", "return", "select", "struct", "switch", "type",
+    "var",
+})
 
 
-def _hoist_go_imports(body: str, ctx: "_V3GoCtx") -> list[str]:
+def _hoist_go_imports(body: str, ctx: "_V3GoCtx", extern: str) -> list[str]:
     """Split a @go extern body into emittable lines, pulling any
     `//revl:import [alias] <path>` directive out to the module import set (ctx)."""
     kept: list[str] = []
     for line in body.splitlines():
-        m = _GO_IMPORT_DIRECTIVE.match(line)
-        if m:
-            path = m.group("path")
-            if path.startswith('"') and path.endswith('"'):
-                path_value = path[1:-1]
-                import_path = path
-            else:
-                path_value = path
-                import_path = f'"{path}"'
-            if path_value:
-                alias = m.group("alias")
-                import_spec = f"{alias} {import_path}" if alias else import_path
-                ctx.extern_imports.add(import_spec)
+        if _GO_IMPORT_DIRECTIVE_WORD.match(line.strip()):
+            ctx.extern_imports.add(_go_import_spec(line.strip(), extern))
             continue
         kept.append(line)
     return kept
+
+
+def _go_import_spec(directive: str, extern: str) -> str:
+    """The Go import spec (`"time"`, `tm "time"`, `. "strings"`) a
+    `//revl:import [alias] <path>` directive line asks for; EmitError when the
+    line does not parse or its alias is a Go keyword."""
+    m = _GO_IMPORT_DIRECTIVE.match(directive)
+    if not m:
+        raise EmitError(
+            f"extern `{extern}`: malformed `{_GO_IMPORT_DIRECTIVE_NAME}` "
+            f"directive in its @go body: {directive!r} (expected "
+            f"`{_GO_IMPORT_DIRECTIVE_NAME} [alias] <path>`)")
+    alias = m.group("alias")
+    if alias in _GO_LANGUAGE_KEYWORDS:
+        raise EmitError(
+            f"extern `{extern}`: a `{_GO_IMPORT_DIRECTIVE_NAME}` directive in "
+            f"its @go body names its import with the Go keyword `{alias}`: "
+            f"{directive!r}")
+    path = m.group("path")
+    import_path = path if path.startswith('"') else f'"{path}"'
+    return f"{alias} {import_path}" if alias else import_path
 
 
 def _emit_v3_go_functions(functions: list, ctx: _V3GoCtx) -> list[str]:
@@ -11950,9 +11973,9 @@ def _emit(ir: dict, package: str = "emitted", package_name: str | None = None,
     # packages a @go extern body hoisted via `//revl:import` (issue #2457),
     # each once: Go rejects a path this block already imports
     imported = set(out[out.index("import ("):])
-    for path in sorted(extern_ctx.extern_imports):
-        if f'\t"{path}"' not in imported:
-            out.append(f'\t"{path}"')
+    for import_spec in sorted(extern_ctx.extern_imports):
+        if f"\t{import_spec}" not in imported:
+            out.append(f"\t{import_spec}")
     out.append("")
     out.append('\tstc "github.com/0xdenny218/stc-go"')
     out.append(")")
@@ -12786,8 +12809,8 @@ def _emit_v3_combined(ir: dict, package: str, placement: bool = True) -> str:
         imports.append('\tstdctx "context"')
     # packages a @go extern body hoisted via `//revl:import` (issue #2457);
     # the `sorted(set(imports))` below drops one this block already imports
-    for path in sorted(ctx.extern_imports):
-        imports.append(f'\t"{path}"')
+    for import_spec in sorted(ctx.extern_imports):
+        imports.append(f"\t{import_spec}")
     # the stc-go side always needs fmt + sync + the runtime
     imports.append('\t"fmt"')
     imports.append('\t"sync"')

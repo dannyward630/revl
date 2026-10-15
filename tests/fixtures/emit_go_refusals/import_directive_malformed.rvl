@@ -1,0 +1,12 @@
+// A `//revl:import` directive with a token after its path (issue #2482). The
+// go reference REFUSES the extern by name: kept as a body comment, the line
+// would compile and silently drop the import it asked for.
+//
+// Not a byte-agreement case, so it cannot live in the tier's CORPUS. The
+// line-coverage gate drives the reference over it here.
+extern pure fn stamp() -> Str = @go {
+	//revl:import tm "time" x
+	return tm.Now().String()
+}
+
+fn now() -> Str { return stamp() }

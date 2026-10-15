@@ -1,0 +1,12 @@
+// A `//revl:import` directive that names its import with a Go keyword (issue
+// #2482). `import func "time"` does not parse as Go, so the go reference
+// REFUSES the extern by name instead of emitting an import block go rejects.
+//
+// Not a byte-agreement case, so it cannot live in the tier's CORPUS. The
+// line-coverage gate drives the reference over it here.
+extern pure fn stamp() -> Str = @go {
+	//revl:import func "time"
+	return "now"
+}
+
+fn now() -> Str { return stamp() }
