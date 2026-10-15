@@ -198,14 +198,17 @@ def shape(intent: str, result: dict, plan: dict | None, withdrawn: list[str],
     committed = bool(result.get("swapped") or result.get("booted"))
     verified = {"admission": "passed" if committed or result.get("admitted")
                 else "refused" if result.get("ok") is False else "not reached"}
-    guarantees = _guarantees(verified["admission"], result)
+    guarantees = _guarantees(verified["admission"], result,
+                             result.get("unmetRequirements"))
     if guarantees is not None:
         verified["guarantees"] = guarantees
     if verifier is not None:
         verified["gauntlet"] = ("passed" if verifier.dossier is not None
                                 else "failed" if result.get("gauntlet")
                                 else "not reached")
-    out = {**result, "intent": intent, "committed": committed,
+    # the unmet list is reported once, inside the guarantees it qualifies
+    out = {**{k: v for k, v in result.items() if k != "unmetRequirements"},
+           "intent": intent, "committed": committed,
            "verified": verified,
            "components": components_touched(result, plan, withdrawn if committed
                                              else [])}
@@ -379,12 +382,14 @@ def _receivers(body: str, params: set) -> set:
     return {n for n in names if n not in bound}
 
 
-def _guarantees(admission: str, result: dict) -> dict | None:
+def _guarantees(admission: str, result: dict,
+                unmet: list | None = None) -> dict | None:
     """The G1-G9 self-check of the verification compile, when it ran: every
     guarantee passes once admitted, and a refusal names the one that failed
-    (with its fix). None when verification was not reached."""
+    (with its fix). None when verification was not reached. `unmet` is the
+    requirement nothing provides, which a proposal reports (issue #2454)."""
     if admission == "passed":
-        return _authoring_loop.self_check(None, result.get("holes"))
+        return _authoring_loop.self_check(None, result.get("holes"), unmet)
     diagnostics = result.get("diagnostics") or []
     if admission == "refused" and any(map(_from_a_compile, diagnostics)):
         return _authoring_loop.self_check(diagnostics)

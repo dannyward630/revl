@@ -2273,6 +2273,14 @@ def _tool_rollback(_arguments: dict) -> dict:
         dropped = getattr(error, "state_dropped", None)
         return _session_error(error, **({"stateDropped": dropped}
                                         if dropped else {}))
+    except Exception as error:  # noqa: BLE001 - answered below or re-raised
+        # a fault after the teardown (not a refusal) dropped the same state
+        # and says so (issue #2444); one before it propagates as any fault
+        dropped = getattr(error, "state_dropped", None)
+        if not dropped or isinstance(error, ApprovalRequired):
+            raise
+        return _session_error(f"{type(error).__name__}: {error}",
+                              category="internal", stateDropped=dropped)
 
 
 def _tool_undo(arguments: dict) -> dict:

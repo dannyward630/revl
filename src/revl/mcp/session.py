@@ -2443,17 +2443,21 @@ class Session:
         try:
             result = self.swap(restored, origin=restored_origin,
                                migrate="respawn")
-        except SessionError as error:
+        except Exception as error:  # noqa: BLE001 - re-raised below
             # The generation counter moves at the teardown and nowhere before
-            # it, so a refusal that left it alone left the running generation
+            # it, so a failure that left it alone left the running generation
             # untouched. One that moved it (the activation gate, a failed
-            # reload) rebooted the generation that was running, cold: its live
-            # state is gone although the rollback was refused, and the error
-            # says so (the verb attaches it to the answer). Nothing was
-            # withdrawn: the reloaded generation is the one that was running.
+            # reload, a fault in the boot itself) rebooted the generation that
+            # was running, cold: its live state is gone although the rollback
+            # did not complete, and the error says so (the verb attaches it to
+            # the answer, issue #2444). A refusal is a `SessionError`; any
+            # other fault is reported as a failure. Nothing was withdrawn: the
+            # reloaded generation is the one that was running.
             if self._generation != generation:
                 error.state_dropped = self._rollback_state_dropped(
-                    held, unread, set(), refused=True)
+                    held, unread, set(),
+                    outcome="refused" if isinstance(error, SessionError)
+                    else "failed")
             raise
         return result | {
             "rolledBack": True,
@@ -2470,23 +2474,24 @@ class Session:
     @staticmethod
     def _rollback_state_dropped(held: list[str], unread: str | None,
                                 withdrawn: set[str], *,
-                                refused: bool = False) -> dict:
+                                outcome: str | None = None) -> dict:
         """The rollback's `stateDropped` (issue #2424): the `components` and
         `note` members of the undo dossier's (`_undo_state_dropped`).
         `components` names every running component the rollback takes down
         with live state, or that the restored generation no longer has. A
         rollback re-admits through `respawn`, a cold start that carries none of
         the generation it leaves (the F4 rule in `swap`). `note` is absent when
-        the live state was read and nothing was lost. `refused` is a rollback
-        the swap refused after its teardown: the running generation came back
+        the live state was read and nothing was lost. `outcome` is set for a
+        rollback that did not complete after its teardown, `refused` (the swap
+        refused it) or `failed` (a fault): the running generation came back
         cold, so the state is gone all the same."""
         out = {"components": sorted(withdrawn | set(held))}
         if held:
             out["note"] = undo_cold_start_note(held, None, done=True,
                                                tool="revl_rollback")
-            if refused:
+            if outcome is not None:
                 out["note"] += (
-                    " The rollback itself was refused: the generation that "
+                    f" The rollback itself was {outcome}: the generation that "
                     "was running was restarted cold in place.")
         elif unread is not None:
             out["note"] = (

@@ -72,7 +72,7 @@ from ..diagnostics import report
 from ..errors import RevlError
 from . import effect_classes as _effect_classes
 from . import fillspec
-from .authoring_loop import blast_radius
+from .authoring_loop import blast_radius, unmet_requirements
 from .persist import (ORIGIN_DEPENDENCIES, ORIGIN_FILES, ORIGIN_FILES_CONTENT,
                       ORIGIN_MODULES, ORIGIN_SOURCE)
 
@@ -1005,10 +1005,14 @@ def admit(session, vs: dict, before: dict, applied: list, replacing: tuple,
     radius = blast_radius(running, ir)
     classes = _effect_classes.report(ir, running, against=True)
     if not commit:
+        # issue #2454: a requirement nothing provides would keep its component
+        # PENDING, and the commit refused; the proposal says so now
+        unmet = unmet_requirements(ir)
         return {"ok": True, "edited": True, "admitted": True, "swapped": False,
                 "speculative": True, "_proposal": vs, "applied": applied,
                 "touched": _touched(before, vs), "blastRadius": radius,
                 **_summary(ir), **classes,
+                **({"unmetRequirements": unmet} if unmet else {}),
                 "note": "proposed and verified: admission and every gate passed "
                         "against the running composition, which is unchanged. "
                         "Commit it, or discard it"}
