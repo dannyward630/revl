@@ -343,7 +343,12 @@ func Heartbeat() stc.Component {
 	return stc.Component{
 		Name:   "Heartbeat",
 		Inject: []stc.Key{_keyLog},
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			log, err := stc.Service[Log](ctx, _keyLog)
 			if err != nil {
 				return nil, err

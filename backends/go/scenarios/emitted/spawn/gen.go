@@ -192,7 +192,12 @@ func Worker(cfg WorkerConfig) stc.Component {
 		Name:    "Worker",
 		Inject:  []stc.Key{_keyProbe},
 		Provide: []stc.Key{_keyCounter},
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			probe, err := stc.Service[Probe](ctx, _keyProbe)
 			if err != nil {
 				return nil, err
@@ -235,7 +240,12 @@ func Supervisor() stc.Component {
 		Name:    "Supervisor",
 		Inject:  []stc.Key{_keyProbe},
 		Provide: []stc.Key{_keyCtl},
-		Apply: func(ctx *stc.Context) (stc.Inverse, error) {
+		Apply: func(ctx *stc.Context) (_revlApplyInv stc.Inverse, _revlApplyErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					_revlApplyInv, _revlApplyErr = nil, fmt.Errorf("panic: %v", r)
+				}
+			}()
 			probe, err := stc.Service[Probe](ctx, _keyProbe)
 			if err != nil {
 				return nil, err
