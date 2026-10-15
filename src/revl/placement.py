@@ -5356,6 +5356,11 @@ def run_placement(files, placement_path: str, once: bool = False,
     inventories: dict[str, dict] = {}
     halted: dict = {}
     threads: list[threading.Thread] = []
+    # issue #2445: the first `[name] FATAL <detail>` line each child printed,
+    # and the thread pumping each child's output (joined before a child that
+    # has exited is judged, so an `UP` still in the pipe is not missed).
+    fatals: dict[str, str] = {}
+    pumps: dict[str, threading.Thread] = {}
     _re_repoint = re.compile(r"^\[(?P<p>[^\]]+)\] REPOINTED (?P<k>\S+) ->")
 
     def pump(pname: str, proc: subprocess.Popen) -> None:
@@ -5369,6 +5374,8 @@ def run_placement(files, placement_path: str, once: bool = False,
                 down.add(pname)
             elif text == f"[{pname}] WAL COMMITTED":
                 wal_committed.add(pname)
+            elif text.startswith(f"[{pname}] FATAL "):
+                fatals.setdefault(pname, text[len(f"[{pname}] FATAL "):])
             elif text.startswith(f"[{pname}] {HALTED_LINE} "):
                 # item 443: the child's own in-flight inventory, printed when
                 # the latch tripped its seams. It is NOT a `DOWN` line and must
@@ -5400,6 +5407,63 @@ def run_placement(files, placement_path: str, once: bool = False,
         thread = threading.Thread(target=pump, args=(pname, proc), daemon=True)
         thread.start()
         threads.append(thread)
+        pumps[pname] = thread
+
+    def boot_failures() -> dict[str, str]:
+        """issue #2445: children that will never say `UP`, with the reason.
+
+        A child that printed a `FATAL` line, or that has exited without saying
+        `UP`, is not coming up, so waiting on it only spends the timeout. The
+        reason names the runner's own error and, once it has exited, its exit
+        code."""
+        failed: dict[str, str] = {}
+        for pname, (proc, _mode) in children.items():
+            if pname in up:
+                continue
+            code = proc.poll()
+            if code is not None:
+                # drain what the child printed before judging it: its `UP`
+                # (or its FATAL) may still be in the pipe
+                pumps[pname].join(timeout=2)
+                if pname in up:
+                    continue
+            detail = fatals.get(pname)
+            if detail is None and code is None:
+                continue
+            if detail is None:
+                failed[pname] = f"exited with code {code} before it reported up"
+            else:
+                failed[pname] = detail if code is None \
+                    else f"{detail} (exit code {code})"
+        return failed
+
+    def wait_for_up() -> bool:
+        """Wait for every child to say `UP`; end the wait at once when one of
+        them cannot (issue #2445). True only when all are up."""
+        _wait_for(lambda: len(up) == len(children) or bool(boot_failures()), 60)
+        return len(up) == len(children)
+
+    def report_boot_failures() -> bool:
+        """Name every child that failed to boot and what it said. True when
+        there was one, so the caller fails the placement. An operator halt is
+        not a boot failure: it killed the children, and its own report owns
+        that."""
+        if halted:
+            return False
+        # a runner prints its FATAL line and then exits: give it a moment to
+        # finish so the report can carry the exit code
+        for pname in list(fatals):
+            proc = children[pname][0] if pname in children else None
+            if proc is not None and pname not in up and proc.poll() is None:
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+        failed = boot_failures()
+        for pname, reason in failed.items():
+            print(f"error: process {pname} failed to boot: {reason}",
+                  file=sys.stderr, flush=True)
+        return bool(failed)
 
     def _wait_for(pred, timeout: float = 60.0) -> bool:
         deadline = time.time() + timeout
@@ -5884,9 +5948,11 @@ def run_placement(files, placement_path: str, once: bool = False,
     rc = 0
     try:
         if once:
-            _wait_for(lambda: len(up) == len(children), 60)
+            wait_for_up()
             commit_wals()
-            if len(up) != len(children):
+            if report_boot_failures():
+                rc = 1
+            elif len(up) != len(children):
                 missing = ", ".join(p for p in children if p not in up)
                 print(f"error: processes did not come up: {missing}", file=sys.stderr)
                 rc = 1
@@ -5894,12 +5960,16 @@ def run_placement(files, placement_path: str, once: bool = False,
                 report_network_latency()
             stop_all(children)
         elif _interactive():
-            if (net_seams or wal_run is not None) \
-                    and _wait_for(lambda: len(up) == len(children), 60):
+            # the wait is unconditional (issue #2445): a runner that cannot
+            # boot must fail the placement, not leave a REPL on a dead child
+            if wait_for_up():
                 commit_wals()
                 if net_seams:
                     report_network_latency()
-            swap_repl()
+            if report_boot_failures():
+                rc = 1
+            else:
+                swap_repl()
         else:
             # stdin is not a tty: it may be carrying a swap SCRIPT (one
             # `swap <component> --to <backend>` / `:keys` / `:q` per line),
@@ -5910,11 +5980,14 @@ def run_placement(files, placement_path: str, once: bool = False,
             # stdin. EOF — a closed pipe, `< /dev/null`, or the last line —
             # tears the placement down, the same stdin-closed contract as
             # single-process `revl run`.
-            _wait_for(lambda: len(up) == len(children), 60)
+            wait_for_up()
             commit_wals()
-            if net_seams:
-                report_network_latency()
-            swap_repl()
+            if report_boot_failures():
+                rc = 1
+            else:
+                if net_seams:
+                    report_network_latency()
+                swap_repl()
     except KeyboardInterrupt:
         pass
     finally:
