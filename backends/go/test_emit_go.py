@@ -1002,6 +1002,15 @@ def test_extern_go_body_hoists_quoted_import_path():
     assert '""encoding/json""' not in src  # not double-quoted
 
 
+def test_extern_go_body_hoists_aliased_import_and_builds():
+    src = emit.emit(_extern_ir(
+        '//revl:import tm "time"\nreturn tm.Now().String()', returns="Str"),
+        package="p")
+    assert '\ttm "time"' in src
+    assert "//revl:import" not in src
+    _go_build(src, "aliased-import")
+
+
 def test_revl_any_maps_to_go_any():
     src = emit.emit(_extern_ir("return s", returns="Any"), package="p")
     assert "func probe(s string) any {" in src
