@@ -875,12 +875,13 @@ def _compile(source: str | None, files: list[str] | None,
                                  report=compile_report)
     global _AUTHORED_HOST_BODIES
     _AUTHORED_HOST_BODIES = _authored_host_bodies(
-        ir, source, modules, report=compile_report)
+        ir, source, modules, files=files, report=compile_report)
     return ir
 
 
 def _authored_host_bodies(ir: dict, source: str | None,
                           modules: dict | None, *,
+                          files: list[str] | None = None,
                           report: dict | None = None) -> list:
     """The host bodies declared by candidate-authored sources in `ir`.
 
@@ -888,14 +889,27 @@ def _authored_host_bodies(ir: dict, source: str | None,
     The compile report keeps each host-body extern attached to its source so a
     provider body is not presented on the approval ticket as the candidate's.
     """
-    over_the_transport = source is not None or bool(modules)
-    if not over_the_transport or not AUTHORING.host_code or report is None:
+    if not AUTHORING.host_code or report is None:
         return []
 
     candidate_sources = set()
     if source is not None:
         candidate_sources.add(os.path.abspath("<candidate>.rvl"))
     candidate_sources.update(os.path.abspath(path) for path in (modules or {}))
+    # Files only count as candidate-authored when the compile treated them as
+    # agent text. Ordinary operator files can also be passed through `files`;
+    # the export area is the path-based authorship boundary for those sources.
+    candidate_sources.update(
+        os.path.abspath(path) for path in (files or ())
+        if _export_jail.in_export_area(path)
+    )
+    candidate_sources.update(
+        os.path.abspath(path)
+        for path in (report.get("dependencies") or {})
+        if _export_jail.in_export_area(path)
+    )
+    if not candidate_sources:
+        return []
     provider_sources = {
         os.path.abspath(path) for path in (AUTHORING.providers or {})
     }
@@ -1315,6 +1329,7 @@ def _tool_load(arguments: dict, compiled=None) -> dict:
     return _canonical.attach(
         _boot(ir, source, modules, arguments.get("config"),
               _load_records(arguments.get("record")), origin,
+              files=files,
               compile_report=compile_report), completed)
 
 
@@ -1357,10 +1372,12 @@ def _nothing_to_load(ignored: bool = False) -> dict:
 
 
 def _boot(ir: dict, source, modules, config, record: bool, origin: dict,
-          *, compile_report: dict | None = None) -> dict:
+          *, files: list[str] | None = None,
+          compile_report: dict | None = None) -> dict:
     """Boot a compiled composition: `Session.load`, then record what it
     authored. Shared by `revl_load` and a draft that has no holes left."""
-    authored = _authored_host_bodies(ir, source, modules, report=compile_report)
+    authored = _authored_host_bodies(
+        ir, source, modules, files=files, report=compile_report)
     try:
         state = SESSION.load(ir, config, record=record, origin=origin)
     except SessionError as error:
@@ -1394,7 +1411,8 @@ def _boot_draft(vs: dict, config, record, verify=None) -> dict:
         return _draft.still_a_draft(refused)
     modules = _edit.file_modules(vs) if vs.get("files") else vs.get("modules")
     booted = _boot(ir, vs.get("source"), modules, config, _load_records(record),
-                   _edit._origin_from(vs), compile_report=compile_report)
+                   _edit._origin_from(vs), files=vs.get("files"),
+                   compile_report=compile_report)
     if not booted.get("ok"):
         return _draft.still_a_draft(booted)
     return {**booted, "draft": False, "booted": True, "loaded": True}
@@ -1540,6 +1558,7 @@ def _swap_inline(arguments: dict, stored: dict, replacing: tuple, before) -> dic
     # generation anchors records to the files it actually compiled
     origin = _origin(stored, _dependency_buffers(compile_report))
     authored = _authored_host_bodies(full, source, modules,
+                                     files=files,
                                      report=compile_report)
     running = SESSION.ir
     # issue #2487: carried text may not move a surviving provider out of its

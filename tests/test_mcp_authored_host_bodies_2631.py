@@ -69,6 +69,35 @@ def test_candidate_host_body_metadata_excludes_operator_provider_bodies():
     assert authored == {"candidate_helper", "candidate_root"}
 
 
+def test_file_candidate_host_body_metadata_uses_compiled_source_paths(tmp_path):
+    """Exported candidate files count; ordinary operator files do not."""
+    export_dir = tmp_path / ".revl" / "export"
+    export_dir.mkdir(parents=True)
+    candidate_file = export_dir / "candidate-export-2631.rvl"
+    candidate_file.write_text(
+        'pub extern pure fn candidate_file(x: Str) -> Str = '
+        '@py { return x }\n',
+        encoding="utf-8",
+    )
+    operator_file = tmp_path / "operator-file-2631.rvl"
+    operator_file.write_text(
+        'pub extern pure fn operator_file(x: Str) -> Str = '
+        '@py { return x }\n',
+        encoding="utf-8",
+    )
+    with server._export_jail.cli_rule(trust_exported=True):
+        ir = server._compile(None, [str(candidate_file), str(operator_file)], None)
+
+    assert {entry["name"] for entry in ir["externs"] if entry.get("bodies")} == {
+        "candidate_file",
+        "operator_file",
+        "operator_helper",
+    }
+    assert {entry["extern"] for entry in server._AUTHORED_HOST_BODIES} == {
+        "candidate_file",
+    }
+
+
 def test_load_approval_ticket_names_only_candidate_host_bodies(monkeypatch):
     """The load path uses the same per-source report when it shapes a ticket."""
     from revl.mcp.approval import ApprovalRequired
