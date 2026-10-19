@@ -743,7 +743,7 @@ def _apply_edits(text: str, edits: list) -> tuple[str, list[dict]]:
 # ---------------------------------------------------------------- compile
 
 def compile_virtual(vs: dict, *, manifest: dict | None = None,
-                    replacing: tuple = ()) -> dict:
+                    replacing: tuple = (), report: dict | None = None) -> dict:
     """Compile a working source set through the same entry points a full swap
     uses, so the admission gate is literally identical.
 
@@ -760,29 +760,31 @@ def compile_virtual(vs: dict, *, manifest: dict | None = None,
     A refused compile records nothing — the exception leaves `vs` untouched."""
     from .server import AUTHORING  # noqa: PLC0415 — lazy, avoids an import cycle
 
-    report: dict = {}
+    compile_report: dict = {}
     if vs.get("source") is not None:
         document = compile_source(vs["source"], "<candidate>.rvl", manifest=manifest,
                                   replacing=replacing, modules=vs.get("modules") or None,
-                                  profile=AUTHORING.profile(), report=report)
+                                  profile=AUTHORING.profile(), report=compile_report)
     elif vs.get("files"):
         from .server import compile_under_authoring  # noqa: PLC0415 — cycle
 
         document = compile_under_authoring(None, list(vs["files"]),
                                            manifest=manifest,
                                            modules=file_modules(vs) or None,
-                                           replacing=replacing, report=report)
+                                           replacing=replacing, report=compile_report)
     else:
         raise EditError("the working source set has no source to compile")
     from .server import _dependency_buffers  # noqa: PLC0415 — cycle
 
-    dependencies = _dependency_buffers(report)
+    dependencies = _dependency_buffers(compile_report)
     if dependencies:
         vs[ORIGIN_DEPENDENCIES] = dependencies
-    elif vs.get("source") is not None or report.get("dependencies") is not None:
+    elif vs.get("source") is not None or compile_report.get("dependencies") is not None:
         # a compile that read no dependency file leaves none behind, so a
         # `use`-reached truc that stops being reached stops being a buffer
         vs[ORIGIN_DEPENDENCIES] = {}
+    if report is not None:
+        report.update(compile_report)
     return document
 
 

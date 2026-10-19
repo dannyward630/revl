@@ -869,20 +869,46 @@ def _compile(source: str | None, files: list[str] | None,
     `modules` is POSITIONAL and has no default: a verb passes the whole
     candidate, `*_candidate_of(arguments)`, or it does not compile. The
     keyword-with-default it used to be is how three verbs dropped it."""
+    compile_report: dict = {}
     ir = compile_under_authoring(source, files, manifest=manifest,
-                                 modules=modules, replacing=replacing)
+                                 modules=modules, replacing=replacing,
+                                 report=compile_report)
     global _AUTHORED_HOST_BODIES
-    _AUTHORED_HOST_BODIES = _authored_host_bodies(ir, source, modules)
+    _AUTHORED_HOST_BODIES = _authored_host_bodies(
+        ir, source, modules, report=compile_report)
     return ir
 
 
 def _authored_host_bodies(ir: dict, source: str | None,
-                          modules: dict | None) -> list:
-    """The agent-authored host bodies `ir` carries: empty unless the candidate
-    came over the transport under an open authoring trust."""
+                          modules: dict | None, *,
+                          report: dict | None = None) -> list:
+    """The host bodies declared by candidate-authored sources in `ir`.
+
+    The merged composition also includes operator-sanctioned provider modules.
+    The compile report keeps each host-body extern attached to its source so a
+    provider body is not presented on the approval ticket as the candidate's.
+    """
     over_the_transport = source is not None or bool(modules)
-    return (_host_bodies(ir) if over_the_transport and AUTHORING.host_code
-            else [])
+    if not over_the_transport or not AUTHORING.host_code or report is None:
+        return []
+
+    candidate_sources = set()
+    if source is not None:
+        candidate_sources.add(os.path.abspath("<candidate>.rvl"))
+    candidate_sources.update(os.path.abspath(path) for path in (modules or {}))
+    provider_sources = {
+        os.path.abspath(path) for path in (AUTHORING.providers or {})
+    }
+    candidate_sources.difference_update(provider_sources)
+
+    authored_externs = {
+        name
+        for path, names in report.get("host_extern_sources", {}).items()
+        if path in candidate_sources
+        for name in names
+    }
+    return [body for body in _host_bodies(ir)
+            if body.get("extern") in authored_externs]
 
 
 def _summary(ir: dict) -> dict:
@@ -1288,7 +1314,8 @@ def _tool_load(arguments: dict, compiled=None) -> dict:
             return _refused_by_lease(refusal)
     return _canonical.attach(
         _boot(ir, source, modules, arguments.get("config"),
-              _load_records(arguments.get("record")), origin), completed)
+              _load_records(arguments.get("record")), origin,
+              compile_report=compile_report), completed)
 
 
 def _load_records(requested) -> bool:
@@ -1329,10 +1356,11 @@ def _nothing_to_load(ignored: bool = False) -> dict:
         next=_remedy.load_next())
 
 
-def _boot(ir: dict, source, modules, config, record: bool, origin: dict) -> dict:
+def _boot(ir: dict, source, modules, config, record: bool, origin: dict,
+          *, compile_report: dict | None = None) -> dict:
     """Boot a compiled composition: `Session.load`, then record what it
     authored. Shared by `revl_load` and a draft that has no holes left."""
-    authored = _authored_host_bodies(ir, source, modules)
+    authored = _authored_host_bodies(ir, source, modules, report=compile_report)
     try:
         state = SESSION.load(ir, config, record=record, origin=origin)
     except SessionError as error:
@@ -1356,8 +1384,9 @@ def _boot_draft(vs: dict, config, record, verify=None) -> dict:
     refusal = _leases.check(SESSION, "load", candidate)
     if refusal is not None:
         return _draft.still_a_draft(_refused_by_lease(refusal))
+    compile_report: dict = {}
     try:
-        ir = _edit.compile_virtual(vs)
+        ir = _edit.compile_virtual(vs, report=compile_report)
     except RevlError as error:
         return _draft.still_a_draft(report(error))
     refused = verify(candidate) if verify is not None else None
@@ -1365,7 +1394,7 @@ def _boot_draft(vs: dict, config, record, verify=None) -> dict:
         return _draft.still_a_draft(refused)
     modules = _edit.file_modules(vs) if vs.get("files") else vs.get("modules")
     booted = _boot(ir, vs.get("source"), modules, config, _load_records(record),
-                   _edit._origin_from(vs))
+                   _edit._origin_from(vs), compile_report=compile_report)
     if not booted.get("ok"):
         return _draft.still_a_draft(booted)
     return {**booted, "draft": False, "booted": True, "loaded": True}
@@ -1510,7 +1539,8 @@ def _swap_inline(arguments: dict, stored: dict, replacing: tuple, before) -> dic
     # issue #1779: and what this compile READ rides with it, so the swapped-in
     # generation anchors records to the files it actually compiled
     origin = _origin(stored, _dependency_buffers(compile_report))
-    authored = _authored_host_bodies(full, source, modules)
+    authored = _authored_host_bodies(full, source, modules,
+                                     report=compile_report)
     running = SESSION.ir
     # issue #2487: carried text may not move a surviving provider out of its
     # realm by leaving its clause out. A swap of jailed `files` is exempt
