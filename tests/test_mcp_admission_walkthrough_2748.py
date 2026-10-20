@@ -73,8 +73,11 @@ def test_readme_quotes_the_scoped_committed_measurement():
         rf"median of\s+\*\*{re.escape(match.group(1))}\*\*", readme)
     assert "Python gate" in readme
     assert "in-process" in readme
-    assert "not MCP transport latency" in readme
-    assert "20 ms ceiling is only a regression guard" in readme
+    flat = " ".join(readme.split())
+    assert "not MCP transport latency" in flat
+    assert "tests/test_admission_latency.py" in flat
+    assert (ROOT / "tests/test_admission_latency.py").exists()
+    assert "20 ms ceiling, which is only a regression guard" in flat
 
 
 def test_walkthrough_matches_mcp_refusal_and_admission(fresh_server):

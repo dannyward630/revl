@@ -15,7 +15,7 @@ component StoreImpl provides store: Store {
 
 The first candidate calls `store.get`, but does not declare that dependency:
 
-```revl sketch
+```revl reject G1
 service Store { fn get(key: Str) -> Int }
 service Worker { fn run() -> Int }
 component WorkerImpl provides worker: Worker {
@@ -57,8 +57,9 @@ revl_admit({ source: correctedCandidate, manifest: runningManifest })
 → { "ok": true, "admitted": true, ... }
 ```
 
-`revl_check` establishes that the candidate satisfies the compiler's guarantees.
-`revl_admit` also links it against the current composition, where `StoreImpl`
-provides the required `store` key. The manifest input is required by the
-[`revl_admit` contract](mcp-reference.md#revl_admit); this example makes no claim
-about MCP transport latency.
+`revl_check` shows that the candidate passes the checker on its own. It does not
+resolve `requires` against a provider. `revl_admit` links it against the current
+composition, where `StoreImpl` provides the required `store` key. The
+manifest input is required by the
+[`revl_admit` contract](mcp-reference.md#revl_admit); this example makes no
+claim about MCP transport latency.

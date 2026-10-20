@@ -198,8 +198,9 @@ method body rather than asserted by an author, so a tool cannot call itself
 read-only when it emits. One tracked run of the Python gate measured the
 in-process `compile_source(..., manifest=running)` round-trip at a median of
 **0.165 ms** for a small candidate against a two-component running composition
-on an Apple M1 Max / Python 3.14.3. This is not MCP transport latency; the test's
-20 ms ceiling is only a regression guard, not a performance claim. See the
+on an Apple M1 Max / Python 3.14.3. This is not MCP transport latency.
+`tests/test_admission_latency.py` holds a 20 ms ceiling, which is only a
+regression guard, not a performance claim. See the
 [measurement](bench/results/admission-latency.md) and a
 [worked MCP admission example](docs/mcp-admission-walkthrough.md).
 [docs/mcp-bridge.md](docs/mcp-bridge.md) has the shapes;
