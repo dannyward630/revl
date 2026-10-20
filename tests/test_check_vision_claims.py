@@ -346,7 +346,7 @@ def test_the_substrate_boundary_page_is_green_and_path_drift_is_caught(real):
     assert findings == [], findings
 
     broken = source.replace(
-        "`docs/witnessed-fs.md`", "`docs/witnessed-fs-missing.md`", 1)
+        "`stdlib/fs.rvl`", "`docs/witnessed-fs-missing.md`", 1)
     assert broken != source
     _, findings = gate.run(broken, real, ["path"], doc_rel)
     assert len(findings) == 1, findings
