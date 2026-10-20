@@ -3019,9 +3019,15 @@ def _approval_required(exc: ApprovalRequired,
     COPY, after the hash the outstanding-ticket table is keyed by), so
     approve/consume is byte-identical.
 
-    `host_bodies` is the candidate's own, from a verb that has not recorded
-    them: `revl_load` and `revl_swap`, which record them only once the load or
-    swap succeeds (issues #1444, #1446)."""
+    `host_bodies` is the candidate's own. Load and swap pass it directly,
+    because they record it only after success (issues #1444, #1446); edit
+    attaches it to the exception for this shared handler to recover."""
+    if host_bodies is None:
+        # Some callers (notably `revl_edit`) cannot shape the approval result
+        # at the point where the candidate is known. They attach the exact
+        # candidate provenance to the exception so the shared handler can
+        # disclose it without falling back to the currently running bodies.
+        host_bodies = getattr(exc, "host_bodies", None)
     ticket = exc.ticket
     fields = _ticket_host_code(exc, host_bodies)
     if fields:
