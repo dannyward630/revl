@@ -118,6 +118,7 @@ regenerated rather than edited.
 | interchange-format.md | needs-work | 11 |  |
 | interop-bridge.md | needs-work | 51 |  |
 | lifecycle-contract.md | needs-work | 0 |  |
+| mcp-admission-walkthrough.md | needs-work | 1 |  |
 | mcp-bridge.md | needs-work | 75 |  |
 | mcp-http-transport.md | current | 0 |  |
 | mcp-proxy.md | current | 0 |  |
