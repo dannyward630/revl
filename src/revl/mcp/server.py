@@ -959,8 +959,7 @@ def _authored_host_bodies(ir: dict, source: str | None,
     # (#2672). There is no transport source or export path to attribute
     # narrowly, so use the source map returned by that exact compile.
     if (include_trusted_files and report.get("authored")
-            and source is None and not modules
-            and not candidate_sources):
+            and source is None and not modules):
         candidate_sources.update(report.get("host_extern_sources", {}))
     if not candidate_sources:
         return []
@@ -2985,6 +2984,9 @@ def _tool_fork_confirm(arguments: dict) -> dict:
     if not fork_hash:
         return _session_error("provide `hash` — the fork hash revl_fork returned, "
                               "binding exactly the rewound span and residue")
+    parent_origin = getattr(SESSION, "origin", None) or {}
+    authored_host_bodies = list(
+        parent_origin.get(_ORIGIN_AUTHORED_HOST_BODIES) or [])
     try:
         result = SESSION.fork_confirm(fork_hash)
     except SessionError as error:
@@ -2996,6 +2998,20 @@ def _tool_fork_confirm(arguments: dict) -> dict:
     # every subsequent verb drives the branch, and never serialize the live object
     branch = result.pop("branchSession", None)
     if branch is not None:
+        # Session.fork_confirm restores a portable snapshot, which deliberately
+        # omits this in-memory disclosure metadata. The fork is still the same
+        # admitted generation, so carry its provenance onto the branch and its
+        # retained generation record. `Session.apply` records its resulting IR
+        # with this origin, allowing later call/act tickets to keep naming the
+        # authored bodies after a plan-artifact apply.
+        branch_origin = getattr(branch, "origin", None)
+        if isinstance(branch_origin, dict):
+            _with_authored_host_bodies(branch_origin, authored_host_bodies)
+        for entry in getattr(branch, "_history", ()):
+            generation_origin = entry.get("origin")
+            if isinstance(generation_origin, dict):
+                _with_authored_host_bodies(generation_origin,
+                                           authored_host_bodies)
         SESSION = branch
     return {"ok": True, **result}
 

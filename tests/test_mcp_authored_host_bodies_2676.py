@@ -291,3 +291,77 @@ def test_portable_snapshots_do_not_serialize_the_in_memory_provenance():
           "backends": ["py"]}],
     )
     assert _materialize(origin) == {"source": _CANDIDATE}
+
+
+@pytest.mark.parametrize("host_code", [False, True], ids=["untrusted", "trusted"])
+def test_files_only_load_ticket_matches_host_code_trust(
+        monkeypatch, tmp_path, host_code):
+    """A files-only host body outside the export area follows the trust mode."""
+    from revl.mcp.approval import ApprovalRequired
+
+    path = tmp_path / "operator-source-2676.rvl"
+    path.write_text(
+        "pub extern pure fn trusted_file_2676(x: Str) -> Str = "
+        "@py { return x }\n",
+        encoding="utf-8",
+    )
+    files = [str(path)]
+    assert not server._export_jail.in_export_area(str(path))
+    server.set_authoring_trust(host_code=host_code, roots=(str(tmp_path),))
+    report = {}
+    ir = server.compile_under_authoring(None, files, report=report)
+
+    def load_requires_approval(*_args, **_kwargs):
+        raise ApprovalRequired({"hash": "sha256:load-2676", "capabilities": []})
+
+    monkeypatch.setattr(server.SESSION, "load", load_requires_approval)
+    result = server._boot(
+        ir, None, None, {}, True, {"files": files},
+        files=files, compile_report=report)
+
+    assert result["approvalRequired"] is True
+    names = {entry["extern"] for entry in
+             result["ticket"].get("unreviewedHostCode", [])}
+    assert names == ({"trusted_file_2676"} if host_code else set())
+
+
+def test_fork_and_apply_keep_live_authored_host_bodies(monkeypatch):
+    """Fork restore and apply-generation history retain disclosure metadata."""
+    from revl.mcp.approval import ApprovalRequired
+    from revl.mcp.session import Session
+
+    ir, _modules, _report, authored = _compiled_candidate()
+    parent = Session()
+    parent.origin = server._with_authored_host_bodies(
+        {"source": _CANDIDATE}, authored)
+
+    branch = Session()
+    branch.ir = ir
+    branch.origin = {"source": _CANDIDATE}
+    branch._history = [{"generation": 1, "origin": branch.origin}]
+    branch._generation = 1
+    monkeypatch.setattr(parent, "fork_confirm", lambda _hash: {
+        "forked": True, "branchSession": branch,
+    })
+    monkeypatch.setattr(server, "SESSION", parent)
+
+    forked = server._run_handler("revl_fork_confirm", {"hash": "sha256:fork"})
+    assert forked["forked"] is True
+    assert server.SESSION is branch
+    expected = {"candidate_helper", "candidate_root"}
+    assert _body_names(branch.origin[server._ORIGIN_AUTHORED_HOST_BODIES]) == expected
+
+    # Session.apply records a non-readmittable generation with the existing
+    # origin. Exercise that history boundary without needing a runtime backend.
+    branch._generation = 2
+    branch._record_generation(readmittable=False)
+    assert _body_names(branch._history[-1]["origin"][
+        server._ORIGIN_AUTHORED_HOST_BODIES]) == expected
+
+    def refused(*_args, **_kwargs):
+        raise ApprovalRequired({"hash": "sha256:branch-call", "capabilities": []})
+
+    monkeypatch.setattr(branch, "call", refused)
+    call_result = server._run_handler(
+        "revl_call", {"key": "s", "method": "f", "args": ["x"]})
+    assert _body_names(call_result["ticket"]["unreviewedHostCode"]) == expected
