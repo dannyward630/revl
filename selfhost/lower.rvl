@@ -285,7 +285,8 @@ use "./types.rvl" { WfR, check_type_wellformed }
 // `result` and `_` elsewhere ("" for every other declaration; issue #1859).
 type FnD = { name: Str, isEmExtern: Bool, isAsyncExtern: Bool,
              callees: List[Str], asyncSlots: List[Int], asyncParams: List[Str],
-             body: List[Stmt], cachePure: Bool, line: Int, caps: List[Str],
+             params: List[ParamN], body: List[Stmt], cachePure: Bool,
+             line: Int, caps: List[Str],
              inv: Str }
 
 // A service method signature: enough to be an upper bound. `caps` is the
@@ -1274,16 +1275,18 @@ fn mk_step(p: Prog, i: Int) -> PStep { return { pg: p, i: i } }
 // every construction from mutable state goes through one of these, exactly as
 // checker.rvl does.
 fn mk_fnd(nm: Str, em: Bool, asy: Bool, cs: List[Str], slots: List[Int],
-          aps: List[Str], bd: List[Stmt], ln: Int, cps: List[Str]) -> FnD {
+          aps: List[Str], ps: List[ParamN], bd: List[Stmt], ln: Int,
+          cps: List[Str]) -> FnD {
   return { name: nm, isEmExtern: em, isAsyncExtern: asy, callees: cs,
-           asyncSlots: slots, asyncParams: aps, body: bd, cachePure: false,
+           asyncSlots: slots, asyncParams: aps, params: ps, body: bd, cachePure: false,
            line: ln, caps: cps, inv: "" }
 }
 
 fn fnd_with_inv(f: FnD, inv: Str) -> FnD {
   return { name: f.name, isEmExtern: f.isEmExtern, isAsyncExtern: f.isAsyncExtern,
            callees: f.callees, asyncSlots: f.asyncSlots,
-           asyncParams: f.asyncParams, body: f.body, cachePure: f.cachePure,
+           asyncParams: f.asyncParams, params: f.params, body: f.body,
+           cachePure: f.cachePure,
            line: f.line, caps: f.caps, inv: inv }
 }
 
@@ -2705,7 +2708,7 @@ fn p_extern(ts: List[Token], i: Int, pg: Prog) -> PStep {
   // this is the declaration's own set for every extern that can seed.
   return mk_step(push_fn(pg, fnd_with_inv(mk_fnd(nm, isEm || isWit, isAsync, [],
                                     async_slots_of(ps.ps),
-                                    async_params_of(ps.ps), [], tkc(ts, i).line,
+                                    async_params_of(ps.ps), ps.ps, [], tkc(ts, i).line,
                                     isEm || isWit ? caps : []), inv)), k)
 }
 
@@ -2765,7 +2768,7 @@ fn p_fn(ts: List[Token], i: Int, pg: Prog) -> PStep {
                               callees: body_callees(body, 0, []),
                               asyncSlots: async_slots_of(ps.ps),
                               asyncParams: async_params_of(ps.ps),
-                              body: body, cachePure: cachePure,
+                              params: ps.ps, body: body, cachePure: cachePure,
                               line: tkc(ts, i).line, caps: [], inv: "" }), bend)
 }
 
@@ -4797,16 +4800,17 @@ fn release_msg_at(ss: List[Stmt], i: Int, cx: Ctx, seam: Bool) -> Str {
 // write on one is held to its table inverse at the same statement (issue
 // #1945). The reference judges both in `_ownership_walk_method`, the release
 // rule first and the write inverse after, in that order.
-fn method_release_msg(ss: List[Stmt], i: Int, cx: Ctx, maps: List[Str]) -> Str {
+fn method_release_msg(ss: List[Stmt], i: Int, cx: Ctx, maps: List[Str],
+                      fns: List[FnD], ts: List[Token]) -> Str {
   if (i >= ss.length()) { return "" }
   // only the UNBOUND form: a host acquisition bound in a method is the
   // reference's "only `spawn` may be acquired" refusal, raised earlier
   let m = ss[i - 1].bind == "" ? release_msg_at(ss, i, cx, true) : ""
   if (m != "") { return m }
   let w = ss[i].kind == "undo" && ss[i - 1].kind == "effect"
-    ? write_inverse_msg(ss, i, maps) : ""
+    ? write_inverse_msg(ss, i, maps, fns, ts) : ""
   if (w != "") { return w }
-  return method_release_msg(ss, i + 1, cx, maps)
+  return method_release_msg(ss, i + 1, cx, maps, fns, ts)
 }
 
 // issue #1945: the component's host `Map` handles, each an activation-body
@@ -4836,9 +4840,232 @@ fn host_write_verb(e: Expr, names: List[Str]) -> Str {
   }
 }
 
+fn call_args(e: Expr) -> List[Expr] {
+  return match e { Call(c) => c.args, _ => [] }
+}
+
+fn second_arg(e: Expr) -> Expr {
+  let args = call_args(e)
+  return args.length() > 1 ? args[1] : NullLit
+}
+
+fn method_target(e: Expr, name: Str) -> Expr {
+  return match e {
+    Call(c) => match c.target {
+      Field(f) => f.name == name ? f.target : NullLit,
+      _ => NullLit,
+    },
+    _ => NullLit,
+  }
+}
+
+fn empty_list_default_read(e: Expr, maps: List[Str]) -> Bool {
+  return match e {
+    Bin(b) => b.op == "??" && read_recv(b.l, maps) != ""
+      && !read_defaulted(b.l)
+      && match b.r { Lst(l) => l.items.length() == 0, _ => false, },
+    _ => false,
+  }
+}
+
+fn is_none_value(e: Expr) -> Bool {
+  return match e {
+    NullLit => true,
+    Var(n) => n == "None",
+    _ => false,
+  }
+}
+
+fn presence_recv(e: Expr, maps: List[Str]) -> Str {
+  return match e {
+    Bin(b) => b.op == "!=" && is_none_value(b.r) ? read_recv(b.l, maps)
+      : (b.op == "!=" && is_none_value(b.l) ? read_recv(b.r, maps) : ""),
+    _ => "",
+  }
+}
+
+fn presence_key(e: Expr, maps: List[Str]) -> Expr {
+  return match e {
+    Bin(b) => b.op == "!=" && is_none_value(b.r) ? read_key(b.l)
+      : (b.op == "!=" && is_none_value(b.l) ? read_key(b.r) : NullLit),
+    _ => NullLit,
+  }
+}
+
+// The most recent method-local binding of `name` that still carries a raw
+// `Map.get(key) != None` presence check. A later binding of the same name
+// replaces it, including a binding that no longer carries that check.
+fn presence_binding_index(ss: List[Stmt], name: Str, maps: List[Str],
+                          i: Int) -> Int {
+  if (i < 0) { return 0 - 1 }
+  let s = ss[i]
+  if (s.kind == "expr" && s.bind == name) {
+    return presence_recv(s.e, maps) != "" ? i : 0 - 1
+  }
+  return presence_binding_index(ss, name, maps, i - 1)
+}
+
+fn simple_computed_key(e: Expr) -> Bool {
+  return match e {
+    Var(_) => true,
+    StrLit(_) => true,
+    IntLit(_) => true,
+    BoolLit(_) => true,
+    _ => false,
+  }
+}
+
+fn first_token_at_or_after_line(ts: List[Token], line: Int,
+                                lo: Int, hi: Int) -> Int {
+  if (lo >= hi) { return lo }
+  let mid = lo + (hi - lo).div_trunc(2)
+  return tkc(ts, mid).line < line
+    ? first_token_at_or_after_line(ts, line, mid + 1, hi)
+    : first_token_at_or_after_line(ts, line, lo, mid)
+}
+
+fn source_token_count(ts: List[Token]) -> Int {
+  return ts.length() > 0 && atk(ts, ts.length() - 1, "eof")
+    ? ts.length() - 1 : ts.length()
+}
+
+fn assignment_name_between(ts: List[Token], name: Str, from: Int,
+                           to: Int) -> Bool {
+  let end = source_token_count(ts)
+  if (from > to || end == 0) { return false }
+  var i = first_token_at_or_after_line(ts, from, 0, end)
+  while (i < end && tkc(ts, i).line <= to) {
+    let t = tkc(ts, i)
+    let prev = tkc(ts, i - 1)
+    let op = tkc(ts, i + 1).kind
+    let assignment_op = op == "=" || (is_compound_op(ts, op)
+      && atk(ts, i + 2, "="))
+    // A name followed by `=` inside a call can be a named argument. Only count
+    // a statement head (or a semicolon-delimited statement) as a reassignment.
+    let statement_head = i == 0 || atk(ts, i - 1, ";")
+      || atk(ts, i - 1, "{") || atk(ts, i - 1, "}")
+      || (prev.line < t.line && prev.text != "," && prev.text != "("
+          && prev.text != "[" && prev.text != "{" && prev.text != ":"
+          && prev.text != "=" && prev.text != "+" && prev.text != "-"
+          && prev.text != "*" && prev.text != "/" && prev.text != "%"
+          && prev.text != "|" && prev.text != "&" && prev.text != "||"
+          && prev.text != "&&" && prev.text != "??" && prev.text != "=>"
+          && prev.text != "->" && prev.text != ".")
+    let declaration = atw(ts, i - 1, "let") || atw(ts, i - 1, "var")
+    if (t.kind == "ident" && t.text == name && assignment_op
+        && statement_head && !declaration) { return true }
+    i += 1
+  }
+  return false
+}
+
+fn computed_key_name(e: Expr) -> Str {
+  return match e { Var(n) => n, _ => "" }
+}
+
+fn is_int_literal(e: Expr, value: Str) -> Bool {
+  return match e { IntLit(n) => n == value, _ => false, }
+}
+
+fn length_minus_one(e: Expr, parameter: Str) -> Bool {
+  return match e {
+    Bin(b) => b.op == "-" && call_recv(b.l) == parameter
+      && call_verb(b.l) == "length" && call_args(b.l).length() == 0
+      && is_int_literal(b.r, "1"),
+    _ => false,
+  }
+}
+
+fn is_drop_last_body(e: Expr, parameter: Str) -> Bool {
+  let args = call_args(e)
+  return call_recv(e) == parameter && call_verb(e) == "slice"
+    && args.length() == 2 && is_int_literal(args[0], "0")
+    && length_minus_one(args[1], parameter)
+}
+
+fn fnd_is_drop_last(fns: List[FnD], name: Str, i: Int) -> Bool {
+  if (i >= fns.length()) { return false }
+  let f = fns[i]
+  if (f.name != name) { return fnd_is_drop_last(fns, name, i + 1) }
+  if (f.params.length() != 1 || f.body.length() != 1
+      || f.body[0].kind != "return") { return false }
+  return is_drop_last_body(f.body[0].e, f.params[0].name)
+}
+
+fn computed_append_shape(und: Expr, recv: Str,
+                         maps: List[Str]) -> List[Expr] {
+  return match und {
+    If(x) => host_write_verb(x.then_, maps) == "insert"
+      && host_write_verb(x.els, maps) == "remove"
+      && call_recv(x.then_) == recv && call_recv(x.els) == recv
+        ? [x.cond, x.then_, x.els] : [],
+    _ => [],
+  }
+}
+
+// issue #2640: the bounded computed inverse for an append to a stored List.
+// `[handled, message]`: a non-candidate falls through to #1945; a candidate is
+// admitted only when its presence check, reads, keys and pure drop-last helper
+// prove the append reversible. A candidate that misses any proof is named.
+fn computed_append_verdict(ss: List[Stmt], i: Int, maps: List[Str], recv: Str,
+                           key: Expr, acq: Expr, und: Expr,
+                           fns: List[FnD], ts: List[Token]) -> List[Str] {
+  let sh = computed_append_shape(und, recv, maps)
+  if (sh.length() == 0) { return ["0", ""] }
+  let condName = match sh[0] { Var(n) => n, _ => "" }
+  let ins = sh[1]
+  let rem = sh[2]
+  let effectArgs = call_args(acq)
+  let insertArgs = call_args(ins)
+  let removeArgs = call_args(rem)
+  let effectValue = second_arg(acq)
+  let pushTarget = method_target(effectValue, "push")
+  let pushArgs = call_args(effectValue)
+  let drop = second_arg(ins)
+  let dropName = match drop { Call(c) => match c.target { Var(n) => n, _ => "", }, _ => "" }
+  let dropArgs = call_args(drop)
+  let dropRead = first_arg(drop)
+  let bound = condName != "" ? presence_binding_index(ss, condName, maps, i - 2) : 0 - 1
+  let boundExpr = bound >= 0 ? ss[bound].e : NullLit
+  let boundLine = bound >= 0 ? ss[bound].line : 0
+  let effectLine = ss[i - 1].line
+  let keyName = computed_key_name(key)
+  let presenceKey = bound >= 0 ? presence_key(boundExpr, maps) : NullLit
+  let pushKey = read_key(pushTarget)
+  let dropKey = read_key(dropRead)
+  let insertKey = insertArgs.length() > 0 ? insertArgs[0] : NullLit
+  let removeKey = removeArgs.length() > 0 ? removeArgs[0] : NullLit
+  let stable = bound >= 0 && presence_recv(boundExpr, maps) == recv
+    && simple_computed_key(presenceKey)
+    && key_expr_same(presenceKey, key)
+    && !written_between(ss, bound + 1, i - 1, recv, key, maps)
+    && !assignment_name_between(ts, condName, boundLine, effectLine)
+    && !assignment_name_between(ts, recv, boundLine, effectLine)
+    && (keyName == "" || !assignment_name_between(ts, keyName,
+                                                   boundLine, effectLine))
+  let valid = simple_computed_key(key) && stable
+    && effectArgs.length() == 2 && call_verb(effectValue) == "push"
+    && pushArgs.length() == 1 && empty_list_default_read(pushTarget, maps)
+    && read_recv(pushTarget, maps) == recv
+    && simple_computed_key(pushKey) && key_expr_same(pushKey, key)
+    && insertArgs.length() == 2 && simple_computed_key(insertKey)
+    && key_expr_same(insertKey, key)
+    && removeArgs.length() == 1 && simple_computed_key(removeKey)
+    && key_expr_same(removeKey, key)
+    && empty_list_default_read(dropRead, maps)
+    && read_recv(dropRead, maps) == recv
+    && simple_computed_key(dropKey) && key_expr_same(dropKey, key)
+    && dropArgs.length() == 1 && fnd_is_drop_last(fns, dropName, 0)
+  if (valid) { return ["1", ""] }
+  return ["1", "the `undo` of `effect ".concat(recv)
+    .concat(".insert(...)` is not a proven computed append inverse on the same ")
+    .concat("handle and key `").concat(key_spelling(key)).concat("`")]
+}
+
 // The reference's `_method_effect_inverse` refusal: a host Map write's `undo`
 // is its table inverse on the same handle with the same key expression.
-fn write_inverse_msg(ss: List[Stmt], i: Int, maps: List[Str]) -> Str {
+fn write_inverse_msg(ss: List[Stmt], i: Int, maps: List[Str],
+                     fns: List[FnD], ts: List[Token]) -> Str {
   let acq = ss[i - 1].e
   let und = ss[i].e
   let verb = host_write_verb(acq, maps)
@@ -4854,6 +5081,8 @@ fn write_inverse_msg(ss: List[Stmt], i: Int, maps: List[Str]) -> Str {
   // answers whether the `undo` took that shape at all and, when it did, the
   // message it is refused with if it fell short.
   if (verb == "insert") {
+    let cv = computed_append_verdict(ss, i, maps, recv, key, acq, und, fns, ts)
+    if (cv[0] == "1") { return cv[1] }
     let rv = restore_verdict(ss, i, maps, recv, key, und, verb)
     if (rv[0] == "1") { return rv[1] }
   }
@@ -8745,7 +8974,8 @@ fn mth_rebind_in(pm: ProvM, scope: List[Str], marks: List[Int], i: Int) -> Verd 
 // statement's line (`body_line`), every whole-component verdict — signature
 // parity, the aggregate G4/A1 over a walked body, the setup async-reach — the
 // component's declaration line, matching the reference.
-fn check_component(comp: CompD, cx: Ctx, gtys: List[Bind]) -> Verd {
+fn check_component(comp: CompD, cx: Ctx, gtys: List[Bind],
+                   fns: List[FnD], ts: List[Token]) -> Verd {
   // setup gets G4/A1/G1 too: an undeclared access or unmarked emission in
   // setup is refused exactly as in a provide body, bare values included (see
   // `var_check`). There is no longer a per-body-kind context: the two bodies
@@ -8854,7 +9084,8 @@ fn check_component(comp: CompD, cx: Ctx, gtys: List[Bind]) -> Verd {
       // method. The reference judges it in `_ownership_walk_method`, after the
       // whole body is lowered and the missing-return rule has run, at the
       // method's line.
-      let mrel = method_release_msg(pm.body, 1, cx, map_handles(comp.setup, 0, []))
+      let mrel = method_release_msg(pm.body, 1, cx,
+                                    map_handles(comp.setup, 0, []), fns, ts)
       if (mrel != "") { return mk_verd(tagged("G4", mrel), pm.line) }
       // rule C1 on the component lowering path (`_assert_colour_is_positional`,
       // restated because stratum 3 never runs the checker over arrows): a
@@ -19691,7 +19922,8 @@ fn collect_nonlink(ts: List[Token], pg: Prog, hands: List[MHand],
         // the earlier line of the two is the component's
         let sv = effect_stmt_or(effect_stmt_verd(ts, comp.name, wit),
                                 verified_method_verd(ts, comp.name, wit), comp.line)
-        let v = effect_stmt_or(sv, check_component(comp, cx, gtys), comp.line)
+        let v = effect_stmt_or(sv, check_component(comp, cx, gtys, pg.fns, ts),
+                               comp.line)
         if (v.v != "") {
           refs = refs.push(v)
           poisoned = poisoned.push(comp.name)
