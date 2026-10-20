@@ -882,14 +882,14 @@ def _compile(source: str | None, files: list[str] | None,
 def _authored_host_bodies(ir: dict, source: str | None,
                           modules: dict | None, *,
                           files: list[str] | None = None,
-                          report: dict | None = None) -> list:
+                          report: dict) -> list:
     """The host bodies declared by candidate-authored sources in `ir`.
 
     The merged composition also includes operator-sanctioned provider modules.
     The compile report keeps each host-body extern attached to its source so a
     provider body is not presented on the approval ticket as the candidate's.
     """
-    if not AUTHORING.host_code or report is None:
+    if not AUTHORING.host_code:
         return []
 
     candidate_sources = set()
@@ -899,15 +899,9 @@ def _authored_host_bodies(ir: dict, source: str | None,
     # Files only count as candidate-authored when the compile treated them as
     # agent text. Ordinary operator files can also be passed through `files`;
     # the export area is the path-based authorship boundary for those sources.
-    candidate_sources.update(
-        os.path.abspath(path) for path in (files or ())
-        if _export_jail.in_export_area(path)
-    )
-    candidate_sources.update(
-        os.path.abspath(path)
-        for path in (report.get("dependencies") or {})
-        if _export_jail.in_export_area(path)
-    )
+    named_export, reached_export = _export_area_parts(files, report)
+    candidate_sources.update(os.path.abspath(path) for path in named_export)
+    candidate_sources.update(os.path.abspath(path) for path in reached_export)
     if not candidate_sources:
         return []
     provider_sources = {
@@ -1381,7 +1375,7 @@ def _nothing_to_load(ignored: bool = False) -> dict:
 
 def _boot(ir: dict, source, modules, config, record: bool, origin: dict,
           *, files: list[str] | None = None,
-          compile_report: dict | None = None) -> dict:
+          compile_report: dict) -> dict:
     """Boot a compiled composition: `Session.load`, then record what it
     authored. Shared by `revl_load` and a draft that has no holes left."""
     authored = _authored_host_bodies(

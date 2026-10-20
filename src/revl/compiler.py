@@ -1016,6 +1016,8 @@ def compile_source(source: str, filename: str = "<string>",
     ["dependencies"]` maps each user-origin module the compile loaded from the
     disk to the exact text it compiled for it. `report["host_extern_sources"]`
     maps each compiled source path to the host-body extern names it declared.
+    Extern names are unique after lowering, so each name has one declaration
+    source in this map.
     """
     if manifest is None and not modules:
         rule = _export_rule()
@@ -1227,7 +1229,8 @@ def compile_files(paths: list[str], manifest: dict | None = None,
     `compile_source`: it carries `report["dependencies"]`, every user-origin
     module the loader read from the disk mapped to the text compiled for it,
     and `report["host_extern_sources"]`, the host-body extern names declared
-    by each compiled source path. It is never part of the returned document.
+    by each compiled source path. Extern names are unique after lowering, so a
+    name has one declaration source. It is never part of the returned document.
 
     Under the export rule (`_export_rule`, issue #2547), on unless the MCP
     server turned it off, an operator compile that names or reaches a file

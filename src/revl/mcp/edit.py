@@ -762,7 +762,9 @@ def compile_virtual(vs: dict, *, manifest: dict | None = None,
     `report` (issue #1779's out-parameter, as `compile_under_authoring` takes
     it) lets a caller read what the compile read: `_swap_server_side` asks it
     which `use`-reached files sit inside an export area, since those are the
-    agent's text even when no listed file is (#2423)."""
+    agent's text even when no listed file is (#2423). `_boot_draft` also passes
+    it to the ticket builder so draft host bodies retain their source
+    attribution (#2631)."""
     from .server import AUTHORING  # noqa: PLC0415 — lazy, avoids an import cycle
 
     compile_report: dict = {}
