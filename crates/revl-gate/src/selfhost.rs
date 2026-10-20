@@ -476,6 +476,7 @@ pub struct CfgOwner {
     owner: String,
     flds: Vec<CfgFld>,
     erase: bool,
+    next_i: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -18515,7 +18516,7 @@ fn cfg_comp_owner(ts: Vec<Token>, i: i64) -> CfgOwner {
     let end = close_brace(&ts, j.clone());
     let lo = (j).checked_add(1i64).expect("revl: Int overflow");
     let hi = if (end == (0i64).checked_sub(1i64).expect("revl: Int overflow")) { (j).checked_add(1i64).expect("revl: Int overflow") } else { (end).checked_sub(1i64).expect("revl: Int overflow") };
-    return CfgOwner { owner: (String::from("component `").revl_concat(&nm)).revl_concat("`"), flds: cfg_fields_in(ts.clone(), lo, hi), erase: true };
+    return CfgOwner { owner: (String::from("component `").revl_concat(&nm)).revl_concat("`"), flds: cfg_fields_in(ts.clone(), lo, hi), erase: true, next_i: if (end == (0i64).checked_sub(1i64).expect("revl: Int overflow")) { ts.revl_length() } else { end } };
 }
 
 fn cfg_extern_owner(ts: Vec<Token>, i: i64, endi: i64) -> CfgOwner {
@@ -18524,57 +18525,91 @@ fn cfg_extern_owner(ts: Vec<Token>, i: i64, endi: i64) -> CfgOwner {
         j = (j).checked_add(1i64).expect("revl: Int overflow");
     }
     let nm = if atw(&ts, j.clone(), "fn") { tkc(&ts, (j).checked_add(1i64).expect("revl: Int overflow")).text } else { String::from("") };
-    return CfgOwner { owner: (String::from("extern `").revl_concat(&nm)).revl_concat("`"), flds: cfg_fields_in(ts.clone(), i, endi), erase: false };
+    return CfgOwner { owner: (String::from("extern `").revl_concat(&nm)).revl_concat("`"), flds: cfg_fields_in(ts.clone(), i, endi), erase: false, next_i: endi };
+}
+
+fn cfg_fn_end(ts: Vec<Token>, i: i64) -> i64 {
+    let ps = fn_params_at(ts.clone(), fn_params_i(&ts, i));
+    let body = cache_clause_end(&ts, ret_at(ts.clone(), ps.i));
+    if (!atk(&ts, body, "{")) {
+        return skip_line(&ts, i);
+    }
+    let end = close_brace(&ts, body);
+    return if (end == (0i64).checked_sub(1i64).expect("revl: Int overflow")) { skip_line(&ts, i) } else { end };
+}
+
+fn cfg_service_end(ts: &[Token], i: i64) -> i64 {
+    if (!atk(ts, (i).checked_add(2i64).expect("revl: Int overflow"), "{")) {
+        return skip_line(ts, i);
+    }
+    let end = close_brace(ts, (i).checked_add(2i64).expect("revl: Int overflow"));
+    return if (end == (0i64).checked_sub(1i64).expect("revl: Int overflow")) { ts.revl_length() } else { end };
 }
 
 fn cfg_owners_walk(ts: Vec<Token>, i: i64, a: CfgAcc) -> CfgAcc {
-    if ((i >= ts.revl_length()) || atk(&ts, i, "eof")) {
-        return a;
-    }
-    let t = tkc(&ts, i);
-    if at_boot(&ts, i) {
-        return cfg_owners_walk(ts.clone(), (i).checked_add(1i64).expect("revl: Int overflow"), a.clone());
-    }
-    if at_event(&ts, i) {
-        return cfg_owners_walk(ts.clone(), event_decl_end(&ts, i), a.clone());
-    }
-    if (t.kind != "kw") {
-        return cfg_owners_walk(ts.clone(), skip_line(&ts, i), a.clone());
-    }
-    if at_pub_prefix(&ts, i) {
-        return cfg_owners_walk(ts.clone(), (i).checked_add(1i64).expect("revl: Int overflow"), a.clone());
-    }
-    if (t.text == "use") {
-        return cfg_owners_walk(ts.clone(), skip_line(&ts, i), a.clone());
-    }
-    if (t.text == "test") {
-        let e = test_block_end(&ts, i);
-        if (e != (0i64).checked_sub(1i64).expect("revl: Int overflow")) {
-            return cfg_owners_walk(ts.clone(), e, a.clone());
+    let mut j = i;
+    let mut acc = a;
+    while ((j < ts.revl_length()) && (!atk(&ts, j, "eof"))) {
+        let t = tkc(&ts, j);
+        let mut next = (j).checked_add(1i64).expect("revl: Int overflow");
+        if at_boot(&ts, j) {
+            next = (j).checked_add(1i64).expect("revl: Int overflow");
+        } else {
+            if at_event(&ts, j) {
+                next = event_decl_end(&ts, j);
+            } else {
+                if (t.kind != "kw") {
+                    next = skip_line(&ts, j);
+                } else {
+                    if at_pub_prefix(&ts, j) {
+                        next = (j).checked_add(1i64).expect("revl: Int overflow");
+                    } else {
+                        if (t.text == "use") {
+                            next = skip_line(&ts, j);
+                        } else {
+                            if (t.text == "test") {
+                                let e = test_block_end(&ts, j);
+                                next = if (e != (0i64).checked_sub(1i64).expect("revl: Int overflow")) { e } else { skip_line(&ts, j) };
+                            } else {
+                                if (t.text == "type") {
+                                    next = cfg_one_type(ts.clone(), j).i;
+                                } else {
+                                    if (t.text == "extern") {
+                                        let parsed = p_extern(ts.clone(), j, empty_prog());
+                                        let own = cfg_extern_owner(ts.clone(), j, parsed.i);
+                                        if (own.flds.revl_length() > 0i64) {
+                                            acc = CfgAcc { comps: acc.comps.clone(), exts: acc.exts.revl_push(own.clone()) };
+                                        }
+                                        next = if (parsed.i > j) { parsed.i } else { skip_line(&ts, j) };
+                                    } else {
+                                        if (t.text == "fn") {
+                                            next = cfg_fn_end(ts.clone(), j);
+                                        } else {
+                                            if (t.text == "service") {
+                                                next = cfg_service_end(&ts, j);
+                                            } else {
+                                                if (t.text == "component") {
+                                                    let own = cfg_comp_owner(ts.clone(), j);
+                                                    if (own.flds.revl_length() > 0i64) {
+                                                        acc = CfgAcc { comps: acc.comps.revl_push(own.clone()), exts: acc.exts.clone() };
+                                                    }
+                                                    next = own.next_i;
+                                                } else {
+                                                    next = skip_line(&ts, j);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
-        return cfg_owners_walk(ts.clone(), skip_line(&ts, i), a.clone());
+        j = if (next > j) { next } else { (j).checked_add(1i64).expect("revl: Int overflow") };
     }
-    if (t.text == "type") {
-        return cfg_owners_walk(ts.clone(), cfg_one_type(ts.clone(), i).i, a.clone());
-    }
-    if (t.text == "extern") {
-        let step = p_extern(ts.clone(), i, empty_prog());
-        let own = cfg_extern_owner(ts.clone(), i, step.i);
-        let a2 = if (own.flds.revl_length() > 0i64) { CfgAcc { comps: a.comps.clone(), exts: a.exts.revl_push(own.clone()) } } else { a.clone() };
-        return cfg_owners_walk(ts.clone(), if (step.i > i) { step.i } else { skip_line(&ts, i) }, a2.clone());
-    }
-    if (t.text == "fn") {
-        return cfg_owners_walk(ts.clone(), p_fn(ts.clone(), i, empty_prog()).i, a.clone());
-    }
-    if (t.text == "service") {
-        return cfg_owners_walk(ts.clone(), p_service(ts.clone(), i, empty_prog()).i, a.clone());
-    }
-    if (t.text == "component") {
-        let own = cfg_comp_owner(ts.clone(), i);
-        let a2 = if (own.flds.revl_length() > 0i64) { CfgAcc { comps: a.comps.revl_push(own.clone()), exts: a.exts.clone() } } else { a.clone() };
-        return cfg_owners_walk(ts.clone(), p_component(ts.clone(), i, empty_prog()).i, a2.clone());
-    }
-    return cfg_owners_walk(ts.clone(), skip_line(&ts, i), a.clone());
+    return acc;
 }
 
 fn cfg_owner_concat(xs: Vec<CfgOwner>, ys: Vec<CfgOwner>) -> Vec<CfgOwner> {

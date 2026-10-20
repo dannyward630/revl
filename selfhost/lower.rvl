@@ -11926,7 +11926,7 @@ type CfgFld   = { fname: Str, fty: Str, line: Int }
 // spelling, and the difference is visible in the diagnostic: a component's names
 // the ERASED type, an extern's names the alias and finds it OPAQUE, because the
 // alias declaration itself was dropped from the type table.
-type CfgOwner = { owner: Str, flds: List[CfgFld], erase: Bool }
+type CfgOwner = { owner: Str, flds: List[CfgFld], erase: Bool, next_i: Int }
 type CfgAcc   = { comps: List[CfgOwner], exts: List[CfgOwner] }
 
 fn cfg_data_scalar(h: Str) -> Bool {
@@ -12517,7 +12517,8 @@ fn cfg_comp_owner(ts: List[Token], i: Int) -> CfgOwner {
   let lo = j + 1
   let hi = end == 0 - 1 ? j + 1 : end - 1
   return { owner: "component `".concat(nm).concat("`"),
-           flds: cfg_fields_in(ts, lo, hi), erase: true }
+           flds: cfg_fields_in(ts, lo, hi), erase: true,
+           next_i: end == 0 - 1 ? ts.length() : end }
 }
 
 fn cfg_extern_owner(ts: List[Token], i: Int, endi: Int) -> CfgOwner {
@@ -12526,43 +12527,68 @@ fn cfg_extern_owner(ts: List[Token], i: Int, endi: Int) -> CfgOwner {
          || atw(ts, j, "async")) { j += 1 }
   let nm = atw(ts, j, "fn") ? tkc(ts, j + 1).text : ""
   return { owner: "extern `".concat(nm).concat("`"),
-           flds: cfg_fields_in(ts, i, endi), erase: false }
+           flds: cfg_fields_in(ts, i, endi), erase: false, next_i: endi }
 }
 
+fn cfg_fn_end(ts: List[Token], i: Int) -> Int {
+  let ps = fn_params_at(ts, fn_params_i(ts, i))
+  let body = cache_clause_end(ts, ret_at(ts, ps.i))
+  if (!atk(ts, body, "{")) { return skip_line(ts, i) }
+  let end = close_brace(ts, body)
+  return end == 0 - 1 ? skip_line(ts, i) : end
+}
+
+fn cfg_service_end(ts: List[Token], i: Int) -> Int {
+  if (!atk(ts, i + 2, "{")) { return skip_line(ts, i) }
+  let end = close_brace(ts, i + 2)
+  return end == 0 - 1 ? ts.length() : end
+}
+
+// Walk top-level declarations iteratively so large modules do not clone the full token list per token.
 fn cfg_owners_walk(ts: List[Token], i: Int, a: CfgAcc) -> CfgAcc {
-  if (i >= ts.length() || atk(ts, i, "eof")) { return a }
-  let t = tkc(ts, i)
-  if (at_boot(ts, i)) { return cfg_owners_walk(ts, i + 1, a) }
-  if (at_event(ts, i)) { return cfg_owners_walk(ts, event_decl_end(ts, i), a) }
-  if (t.kind != "kw") { return cfg_owners_walk(ts, skip_line(ts, i), a) }
-  if (at_pub_prefix(ts, i)) { return cfg_owners_walk(ts, i + 1, a) }
-  if (t.text == "use") { return cfg_owners_walk(ts, skip_line(ts, i), a) }
-  if (t.text == "test") {
-    let e = test_block_end(ts, i)
-    if (e != 0 - 1) { return cfg_owners_walk(ts, e, a) }
-    return cfg_owners_walk(ts, skip_line(ts, i), a)
+  var j = i
+  var acc = a
+  while (j < ts.length() && !atk(ts, j, "eof")) {
+    let t = tkc(ts, j)
+    var next = j + 1
+    if (at_boot(ts, j)) {
+      next = j + 1
+    } else if (at_event(ts, j)) {
+      next = event_decl_end(ts, j)
+    } else if (t.kind != "kw") {
+      next = skip_line(ts, j)
+    } else if (at_pub_prefix(ts, j)) {
+      next = j + 1
+    } else if (t.text == "use") {
+      next = skip_line(ts, j)
+    } else if (t.text == "test") {
+      let e = test_block_end(ts, j)
+      next = e != 0 - 1 ? e : skip_line(ts, j)
+    } else if (t.text == "type") {
+      next = cfg_one_type(ts, j).i
+    } else if (t.text == "extern") {
+      let parsed = p_extern(ts, j, empty_prog())
+      let own = cfg_extern_owner(ts, j, parsed.i)
+      if (own.flds.length() > 0) {
+        acc = { comps: acc.comps, exts: acc.exts.push(own) }
+      }
+      next = parsed.i > j ? parsed.i : skip_line(ts, j)
+    } else if (t.text == "fn") {
+      next = cfg_fn_end(ts, j)
+    } else if (t.text == "service") {
+      next = cfg_service_end(ts, j)
+    } else if (t.text == "component") {
+      let own = cfg_comp_owner(ts, j)
+      if (own.flds.length() > 0) {
+        acc = { comps: acc.comps.push(own), exts: acc.exts }
+      }
+      next = own.next_i
+    } else {
+      next = skip_line(ts, j)
+    }
+    j = next > j ? next : j + 1
   }
-  if (t.text == "type") { return cfg_owners_walk(ts, cfg_one_type(ts, i).i, a) }
-  if (t.text == "extern") {
-    let step = p_extern(ts, i, empty_prog())
-    let own = cfg_extern_owner(ts, i, step.i)
-    let a2 = own.flds.length() > 0
-      ? { comps: a.comps, exts: a.exts.push(own) } : a
-    return cfg_owners_walk(ts, step.i > i ? step.i : skip_line(ts, i), a2)
-  }
-  if (t.text == "fn") {
-    return cfg_owners_walk(ts, p_fn(ts, i, empty_prog()).i, a)
-  }
-  if (t.text == "service") {
-    return cfg_owners_walk(ts, p_service(ts, i, empty_prog()).i, a)
-  }
-  if (t.text == "component") {
-    let own = cfg_comp_owner(ts, i)
-    let a2 = own.flds.length() > 0
-      ? { comps: a.comps.push(own), exts: a.exts } : a
-    return cfg_owners_walk(ts, p_component(ts, i, empty_prog()).i, a2)
-  }
-  return cfg_owners_walk(ts, skip_line(ts, i), a)
+  return acc
 }
 
 fn cfg_owner_concat(xs: List[CfgOwner], ys: List[CfgOwner]) -> List[CfgOwner] {
