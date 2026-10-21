@@ -9819,6 +9819,14 @@ fn p_stmt_run(ts: Vec<Token>, lo: i64, hi: i64) -> SRun {
         }
         return mk_srun(out.clone(), r.i);
     }
+    if ((t.kind == "ident") && atk(&ts, (lo).checked_add(1i64).expect("revl: Int overflow"), "=")) {
+        let r = expr_at(ts.clone(), (lo).checked_add(2i64).expect("revl: Int overflow"));
+        if is_bad(r.e.clone()) {
+            return mk_srun(vec![mkstmt(String::from("skip"), r.e.clone())], hi);
+        }
+        let e = Expr::Bin(Box::new(BinN { op: String::from("="), l: Expr::Var(t.text.clone()), r: r.e.clone(), paren: false }));
+        return mk_srun(vec![mkstmt(String::from("expr"), e.clone())], r.i);
+    }
     if ((t.kind == "kw") && (t.text == "return")) {
         if ((lo).checked_add(1i64).expect("revl: Int overflow") >= hi) {
             return mk_srun(vec![mkstmt(String::from("skip"), int_lit0())], hi);
@@ -12147,19 +12155,19 @@ fn release_msg_at(ss: &[Stmt], i: i64, cx: Ctx__m2, seam: bool) -> String {
     return host_release_msg(&bind, &hf, &release);
 }
 
-fn method_release_msg(ss: &[Stmt], i: i64, cx: Ctx__m2, maps: &[String], fns: &[FnD], ts: &[Token]) -> String {
+fn method_release_verdict(ss: &[Stmt], i: i64, cx: Ctx__m2, maps: &[String], fns: &[FnD], ts: &[Token]) -> Verd {
     if (i >= ss.revl_length()) {
-        return String::from("");
+        return no_verd();
     }
     let m = if ((ss)[((i).checked_sub(1i64).expect("revl: Int overflow")) as usize].bind == "") { release_msg_at(ss, i, cx.clone(), true) } else { String::from("") };
     if (m != "") {
-        return m;
+        return mk_verd(tagged("G4", &m), (ss)[((i).checked_sub(1i64).expect("revl: Int overflow")) as usize].line.clone());
     }
     let w = if (((ss)[(i) as usize].kind == "undo") && ((ss)[((i).checked_sub(1i64).expect("revl: Int overflow")) as usize].kind == "effect")) { write_inverse_msg(ss, i, maps, fns, ts) } else { String::from("") };
     if (w != "") {
-        return w;
+        return mk_verd(tagged("G4", &w), (ss)[((i).checked_sub(1i64).expect("revl: Int overflow")) as usize].line.clone());
     }
-    return method_release_msg(ss, (i).checked_add(1i64).expect("revl: Int overflow"), cx.clone(), maps, fns, ts);
+    return method_release_verdict(ss, (i).checked_add(1i64).expect("revl: Int overflow"), cx.clone(), maps, fns, ts);
 }
 
 fn map_handles(ss: Vec<Stmt>, i: i64, acc: Vec<String>) -> Vec<String> {
@@ -12226,16 +12234,43 @@ fn is_none_value(e: Expr) -> bool {
 
 fn presence_recv(e: Expr, maps: &[String]) -> String {
     return match e {
-    Expr::Bin(b) => { let b = *b; if ((b.op == "!=") && is_none_value(b.r.clone())) { read_recv(b.l.clone(), maps) } else { if ((b.op == "!=") && is_none_value(b.l.clone())) { read_recv(b.r.clone(), maps) } else { String::from("") } } },
+    Expr::Bin(b) => { let b = *b; if (((b.op == "!=") && is_none_value(b.r.clone())) && (!read_defaulted(b.l.clone()))) { read_recv(b.l.clone(), maps) } else { if (((b.op == "!=") && is_none_value(b.l.clone())) && (!read_defaulted(b.r.clone()))) { read_recv(b.r.clone(), maps) } else { String::from("") } } },
     _ => String::from(""),
 };
 }
 
 fn presence_key(e: Expr, maps: &[String]) -> Expr {
     return match e {
-    Expr::Bin(b) => { let b = *b; if ((b.op == "!=") && is_none_value(b.r.clone())) { read_key(b.l.clone()) } else { if ((b.op == "!=") && is_none_value(b.l.clone())) { read_key(b.r.clone()) } else { Expr::NullLit } } },
+    Expr::Bin(b) => { let b = *b; if (((b.op == "!=") && is_none_value(b.r.clone())) && (!read_defaulted(b.l.clone()))) { read_key(b.l.clone()) } else { if (((b.op == "!=") && is_none_value(b.l.clone())) && (!read_defaulted(b.r.clone()))) { read_key(b.r.clone()) } else { Expr::NullLit } } },
     _ => Expr::NullLit,
 };
+}
+
+fn assigned_var_name(e: Expr) -> String {
+    return match e {
+    Expr::Bin(b) => { let b = *b; if (b.op == "=") { match b.l.clone() {
+    Expr::Var(n) => n,
+    _ => String::from(""),
+} } else { String::from("") } },
+    _ => String::from(""),
+};
+}
+
+fn assigned_value(e: Expr) -> Expr {
+    return match e {
+    Expr::Bin(b) => { let b = *b; b.r },
+    _ => Expr::NullLit,
+};
+}
+
+fn presence_binding_value(s: Stmt, name: &str) -> Expr {
+    if ((s.kind == "expr") && (s.bind == name)) {
+        return s.e;
+    }
+    if ((s.kind == "expr") && (assigned_var_name(s.e.clone()) == name)) {
+        return assigned_value(s.e.clone());
+    }
+    return Expr::NullLit;
 }
 
 fn presence_binding_index(ss: &[Stmt], name: &str, maps: &[String], i: i64) -> i64 {
@@ -12245,6 +12280,9 @@ fn presence_binding_index(ss: &[Stmt], name: &str, maps: &[String], i: i64) -> i
     let s = (ss)[(i) as usize].clone();
     if ((s.kind == "expr") && (s.bind == name)) {
         return if (presence_recv(s.e.clone(), maps) != "") { i } else { (0i64).checked_sub(1i64).expect("revl: Int overflow") };
+    }
+    if ((s.kind == "expr") && (assigned_var_name(s.e.clone()) == name)) {
+        return if (presence_recv(assigned_value(s.e.clone()), maps) != "") { i } else { (0i64).checked_sub(1i64).expect("revl: Int overflow") };
     }
     return presence_binding_index(ss, name, maps, (i).checked_sub(1i64).expect("revl: Int overflow"));
 }
@@ -12367,7 +12405,7 @@ fn computed_append_verdict(ss: &[Stmt], i: i64, maps: &[String], recv: &str, key
     let dropArgs = call_args(drop.clone());
     let dropRead = first_arg(drop.clone());
     let bound = if (condName != "") { presence_binding_index(ss, &condName, maps, (i).checked_sub(2i64).expect("revl: Int overflow")) } else { (0i64).checked_sub(1i64).expect("revl: Int overflow") };
-    let boundExpr = if (bound >= 0i64) { (ss)[(bound) as usize].e.clone() } else { Expr::NullLit };
+    let boundExpr = if (bound >= 0i64) { presence_binding_value((ss)[(bound) as usize].clone(), &condName) } else { Expr::NullLit };
     let boundLine = if (bound >= 0i64) { (ss)[(bound) as usize].line.clone() } else { 0i64 };
     let effectLine = (ss)[((i).checked_sub(1i64).expect("revl: Int overflow")) as usize].line.clone();
     let keyName = computed_key_name(key.clone());
@@ -12376,7 +12414,7 @@ fn computed_append_verdict(ss: &[Stmt], i: i64, maps: &[String], recv: &str, key
     let dropKey = read_key(dropRead.clone());
     let insertKey = if (insertArgs.revl_length() > 0i64) { (insertArgs)[(0i64) as usize].clone() } else { Expr::NullLit };
     let removeKey = if (removeArgs.revl_length() > 0i64) { (removeArgs)[(0i64) as usize].clone() } else { Expr::NullLit };
-    let stable = ((((((((bound >= 0i64) && (presence_recv(boundExpr.clone(), maps) == recv)) && simple_computed_key(presenceKey.clone())) && key_expr_same(presenceKey.clone(), key.clone())) && (!written_between(ss, (bound).checked_add(1i64).expect("revl: Int overflow"), (i).checked_sub(1i64).expect("revl: Int overflow"), recv, key.clone(), maps))) && (!assignment_name_between(ts, &condName, boundLine.clone(), effectLine))) && (!assignment_name_between(ts, recv, boundLine.clone(), effectLine))) && ((keyName == "") || (!assignment_name_between(ts, &keyName, boundLine.clone(), effectLine))));
+    let stable = (((((((bound >= 0i64) && (presence_recv(boundExpr.clone(), maps) == recv)) && simple_computed_key(presenceKey.clone())) && key_expr_same(presenceKey.clone(), key.clone())) && (!written_between(ss, (bound).checked_add(1i64).expect("revl: Int overflow"), (i).checked_sub(1i64).expect("revl: Int overflow"), recv, key.clone(), maps))) && (!assignment_name_between(ts, recv, boundLine.clone(), effectLine))) && ((keyName == "") || (!assignment_name_between(ts, &keyName, boundLine.clone(), effectLine))));
     let valid = ((((((((((((((((((((simple_computed_key(key.clone()) && stable) && (effectArgs.revl_length() == 2i64)) && (call_verb(effectValue.clone()) == "push")) && (pushArgs.revl_length() == 1i64)) && empty_list_default_read(pushTarget.clone(), maps)) && (read_recv(pushTarget.clone(), maps) == recv)) && simple_computed_key(pushKey.clone())) && key_expr_same(pushKey.clone(), key.clone())) && (insertArgs.revl_length() == 2i64)) && simple_computed_key(insertKey.clone())) && key_expr_same(insertKey.clone(), key.clone())) && (removeArgs.revl_length() == 1i64)) && simple_computed_key(removeKey.clone())) && key_expr_same(removeKey.clone(), key.clone())) && empty_list_default_read(dropRead.clone(), maps)) && (read_recv(dropRead.clone(), maps) == recv)) && simple_computed_key(dropKey.clone())) && key_expr_same(dropKey.clone(), key.clone())) && (dropArgs.revl_length() == 1i64)) && fnd_is_drop_last(fns, &dropName, 0i64));
     if valid {
         return vec![String::from("1"), String::from("")];
@@ -15573,9 +15611,9 @@ fn check_component(comp: CompD, cx: Ctx__m2, gtys: &[Bind], fns: &[FnD], ts: &[T
             if (mrv.v != "") {
                 return mrv;
             }
-            let mrel = method_release_msg(&pm.body, 1i64, cx.clone(), &map_handles(comp.setup.clone(), 0i64, vec![]), fns, ts);
-            if (mrel != "") {
-                return mk_verd(tagged("G4", &mrel), pm.line);
+            let mrel = method_release_verdict(&pm.body, 1i64, cx.clone(), &map_handles(comp.setup.clone(), 0i64, vec![]), fns, ts);
+            if (mrel.v != "") {
+                return mrel;
             }
             let mSda = self_async_body(&pm.body, 0i64);
             if (mSda != "") {
@@ -18532,15 +18570,15 @@ fn cfg_fn_end(ts: Vec<Token>, i: i64) -> i64 {
     let ps = fn_params_at(ts.clone(), fn_params_i(&ts, i));
     let body = cache_clause_end(&ts, ret_at(ts.clone(), ps.i));
     if (!atk(&ts, body, "{")) {
-        return skip_line(&ts, i);
+        return body;
     }
     let end = close_brace(&ts, body);
-    return if (end == (0i64).checked_sub(1i64).expect("revl: Int overflow")) { skip_line(&ts, i) } else { end };
+    return if (end == (0i64).checked_sub(1i64).expect("revl: Int overflow")) { ts.revl_length() } else { end };
 }
 
 fn cfg_service_end(ts: &[Token], i: i64) -> i64 {
     if (!atk(ts, (i).checked_add(2i64).expect("revl: Int overflow"), "{")) {
-        return skip_line(ts, i);
+        return (i).checked_add(2i64).expect("revl: Int overflow");
     }
     let end = close_brace(ts, (i).checked_add(2i64).expect("revl: Int overflow"));
     return if (end == (0i64).checked_sub(1i64).expect("revl: Int overflow")) { ts.revl_length() } else { end };

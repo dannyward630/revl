@@ -1705,6 +1705,16 @@ fn p_stmt_run(ts: List[Token], lo: Int, hi: Int) -> SRun {
     }
     return mk_srun(out, r.i)
   }
+  // A plain local assignment is an expression statement in the reference's
+  // method IR, but its target still replaces an earlier local value. Keep the
+  // assignment shape in the expression tree so presence proofs see both a
+  // proof-setting assignment and a later invalidating write.
+  if (t.kind == "ident" && atk(ts, lo + 1, "=")) {
+    let r = expr_at(ts, lo + 2)
+    if (is_bad(r.e)) { return mk_srun([mkstmt("skip", r.e)], hi) }
+    let e = Bin({ op: "=", l: Var(t.text), r: r.e, paren: false })
+    return mk_srun([mkstmt("expr", e)], r.i)
+  }
   if (t.kind == "kw" && t.text == "return") {
     // A BARE `return` writes no value, and the component-body twin of T2b's
     // rule applies: it is a `return` for a totality question and NOT an
@@ -4800,17 +4810,17 @@ fn release_msg_at(ss: List[Stmt], i: Int, cx: Ctx, seam: Bool) -> Str {
 // write on one is held to its table inverse at the same statement (issue
 // #1945). The reference judges both in `_ownership_walk_method`, the release
 // rule first and the write inverse after, in that order.
-fn method_release_msg(ss: List[Stmt], i: Int, cx: Ctx, maps: List[Str],
-                      fns: List[FnD], ts: List[Token]) -> Str {
-  if (i >= ss.length()) { return "" }
+fn method_release_verdict(ss: List[Stmt], i: Int, cx: Ctx, maps: List[Str],
+                          fns: List[FnD], ts: List[Token]) -> Verd {
+  if (i >= ss.length()) { return no_verd() }
   // only the UNBOUND form: a host acquisition bound in a method is the
   // reference's "only `spawn` may be acquired" refusal, raised earlier
   let m = ss[i - 1].bind == "" ? release_msg_at(ss, i, cx, true) : ""
-  if (m != "") { return m }
+  if (m != "") { return mk_verd(tagged("G4", m), ss[i - 1].line) }
   let w = ss[i].kind == "undo" && ss[i - 1].kind == "effect"
     ? write_inverse_msg(ss, i, maps, fns, ts) : ""
-  if (w != "") { return w }
-  return method_release_msg(ss, i + 1, cx, maps, fns, ts)
+  if (w != "") { return mk_verd(tagged("G4", w), ss[i - 1].line) }
+  return method_release_verdict(ss, i + 1, cx, maps, fns, ts)
 }
 
 // issue #1945: the component's host `Map` handles, each an activation-body
@@ -4878,18 +4888,41 @@ fn is_none_value(e: Expr) -> Bool {
 
 fn presence_recv(e: Expr, maps: List[Str]) -> Str {
   return match e {
-    Bin(b) => b.op == "!=" && is_none_value(b.r) ? read_recv(b.l, maps)
-      : (b.op == "!=" && is_none_value(b.l) ? read_recv(b.r, maps) : ""),
+    Bin(b) => b.op == "!=" && is_none_value(b.r) && !read_defaulted(b.l)
+      ? read_recv(b.l, maps)
+      : (b.op == "!=" && is_none_value(b.l) && !read_defaulted(b.r)
+        ? read_recv(b.r, maps) : ""),
     _ => "",
   }
 }
 
 fn presence_key(e: Expr, maps: List[Str]) -> Expr {
   return match e {
-    Bin(b) => b.op == "!=" && is_none_value(b.r) ? read_key(b.l)
-      : (b.op == "!=" && is_none_value(b.l) ? read_key(b.r) : NullLit),
+    Bin(b) => b.op == "!=" && is_none_value(b.r) && !read_defaulted(b.l)
+      ? read_key(b.l)
+      : (b.op == "!=" && is_none_value(b.l) && !read_defaulted(b.r)
+        ? read_key(b.r) : NullLit),
     _ => NullLit,
   }
+}
+
+fn assigned_var_name(e: Expr) -> Str {
+  return match e {
+    Bin(b) => b.op == "=" ? match b.l { Var(n) => n, _ => "" } : "",
+    _ => "",
+  }
+}
+
+fn assigned_value(e: Expr) -> Expr {
+  return match e { Bin(b) => b.r, _ => NullLit }
+}
+
+fn presence_binding_value(s: Stmt, name: Str) -> Expr {
+  if (s.kind == "expr" && s.bind == name) { return s.e }
+  if (s.kind == "expr" && assigned_var_name(s.e) == name) {
+    return assigned_value(s.e)
+  }
+  return NullLit
 }
 
 // The most recent method-local binding of `name` that still carries a raw
@@ -4901,6 +4934,9 @@ fn presence_binding_index(ss: List[Stmt], name: Str, maps: List[Str],
   let s = ss[i]
   if (s.kind == "expr" && s.bind == name) {
     return presence_recv(s.e, maps) != "" ? i : 0 - 1
+  }
+  if (s.kind == "expr" && assigned_var_name(s.e) == name) {
+    return presence_recv(assigned_value(s.e), maps) != "" ? i : 0 - 1
   }
   return presence_binding_index(ss, name, maps, i - 1)
 }
@@ -5026,7 +5062,8 @@ fn computed_append_verdict(ss: List[Stmt], i: Int, maps: List[Str], recv: Str,
   let dropArgs = call_args(drop)
   let dropRead = first_arg(drop)
   let bound = condName != "" ? presence_binding_index(ss, condName, maps, i - 2) : 0 - 1
-  let boundExpr = bound >= 0 ? ss[bound].e : NullLit
+  let boundExpr = bound >= 0 ? presence_binding_value(ss[bound], condName)
+                             : NullLit
   let boundLine = bound >= 0 ? ss[bound].line : 0
   let effectLine = ss[i - 1].line
   let keyName = computed_key_name(key)
@@ -5039,7 +5076,6 @@ fn computed_append_verdict(ss: List[Stmt], i: Int, maps: List[Str], recv: Str,
     && simple_computed_key(presenceKey)
     && key_expr_same(presenceKey, key)
     && !written_between(ss, bound + 1, i - 1, recv, key, maps)
-    && !assignment_name_between(ts, condName, boundLine, effectLine)
     && !assignment_name_between(ts, recv, boundLine, effectLine)
     && (keyName == "" || !assignment_name_between(ts, keyName,
                                                    boundLine, effectLine))
@@ -9084,9 +9120,9 @@ fn check_component(comp: CompD, cx: Ctx, gtys: List[Bind],
       // method. The reference judges it in `_ownership_walk_method`, after the
       // whole body is lowered and the missing-return rule has run, at the
       // method's line.
-      let mrel = method_release_msg(pm.body, 1, cx,
-                                    map_handles(comp.setup, 0, []), fns, ts)
-      if (mrel != "") { return mk_verd(tagged("G4", mrel), pm.line) }
+      let mrel = method_release_verdict(pm.body, 1, cx,
+                                        map_handles(comp.setup, 0, []), fns, ts)
+      if (mrel.v != "") { return mrel }
       // rule C1 on the component lowering path (`_assert_colour_is_positional`,
       // restated because stratum 3 never runs the checker over arrows): a
       // provide-method arrow may not name its own async colour either.
@@ -12533,13 +12569,19 @@ fn cfg_extern_owner(ts: List[Token], i: Int, endi: Int) -> CfgOwner {
 fn cfg_fn_end(ts: List[Token], i: Int) -> Int {
   let ps = fn_params_at(ts, fn_params_i(ts, i))
   let body = cache_clause_end(ts, ret_at(ts, ps.i))
-  if (!atk(ts, body, "{")) { return skip_line(ts, i) }
+  // Match p_fn's cursor when the body is an expression: it returns at the
+  // token where a block was expected, so the outer declaration walk can keep
+  // scanning without skipping a later declaration on that line.
+  if (!atk(ts, body, "{")) { return body }
   let end = close_brace(ts, body)
-  return end == 0 - 1 ? skip_line(ts, i) : end
+  return end == 0 - 1 ? ts.length() : end
 }
 
 fn cfg_service_end(ts: List[Token], i: Int) -> Int {
-  if (!atk(ts, i + 2, "{")) { return skip_line(ts, i) }
+  // p_service returns at i + 2 when its opening brace is absent. Preserve
+  // that cursor so a declaration immediately following the malformed header
+  // is not swallowed by a line-based skip.
+  if (!atk(ts, i + 2, "{")) { return i + 2 }
   let end = close_brace(ts, i + 2)
   return end == 0 - 1 ? ts.length() : end
 }
