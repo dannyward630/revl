@@ -88,6 +88,23 @@ transport-safety verdict is (`tests/test_distribute.py`).
 
 ## The honest scope - what this does *not* claim
 
+`revl_act` accepts only declared arguments, and its effect gate acts on the
+checked operation rather than the model's reasoning. Whether reasoning is
+visible to the host, hidden in unreadable tokens, or unreadable at all does not
+change that decision. This does not block information in an allowed argument
+or establish that an explanation is true. `tests/test_tool_loop_act_1708.py`
+shows that an undeclared `reasoning` argument is refused by name while the
+bare call keeps its effect class and outcome.
+
+Admission applies before a candidate is activated, but revl does not re-admit
+prompt, memory, or skill text whenever a harness rewrites it in place. A
+checked revertible effect must have a well-shaped inverse; the checker does
+not prove that every inverse is semantically correct. `tests/test_admit_approval_gate.py`
+exercises the admission boundary, and `tests/test_verified_effect.py` tests
+selected inverse round trips and names their limit. Prompt text and memory
+content remain outside revl's checks; versioning and reviewing those artifacts
+belong to the harness built on revl.
+
 - **Not a general-purpose application language.** revl writes *components*;
   a host application assembles compiled components. Stratum 1 is a
   TypeScript *subset*, chosen to make a model's strongest priors correct,
