@@ -351,8 +351,9 @@ shard locally: `REVL_TEST_SHARD=2/4 pytest tests/ -q`.
 The heavy jobs never run on a pull request (issue #1678): `frontend` (the
 3.11/3.12/3.13 matrix), `frontend-cordis`, `conformance`, `formal`,
 `temporal-exit`, `sandbox-container` and `sandbox-microvm`. They run on the
-merge queue (`merge_group`), against the merged result that lands, and on push
-to main, the nightly schedule and `workflow_dispatch`. `ci.yml` is also exposed
+merge queue (`merge_group`), against the merged result that lands, when the
+queue is enabled in branch protection. Without the queue, they run on push to
+main, the nightly schedule and `workflow_dispatch`. `ci.yml` is also exposed
 as a `workflow_call`, so the PyPI publish gates on the full matrix too.
 `tests/test_ci_pr_queue_split_1678.py` pins the split.
 

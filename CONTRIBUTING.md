@@ -344,6 +344,31 @@ A diagnostic is itself a deliverable ([DESIGN.md](DESIGN.md) §9): it must name
 its guarantee and state the fix, and it is written for the model that will read
 it. A rejection whose message is a bare "error" is not done.
 
+## Pull request descriptions
+
+Describe validation precisely:
+
+- Name the local command and its result. For CI, name the job and event, and
+  report its result. A job skipped by its `if:` condition or changed-path
+  filter is not a pass.
+- The required contexts in `.github/workflows/ci.yml` are `lint` and the six
+  `backend-*` jobs (`backend-python`, `backend-typescript`, `backend-go`,
+  `backend-rust`, `backend-java`, and `backend-wasm`). The backend jobs
+  are path-filtered and may skip when no changed path can affect them.
+- The `ci.yml` jobs excluded from `pull_request` events are `frontend`,
+  `frontend-cordis`, `conformance`, `formal`, `temporal-exit`,
+  `sandbox-container`, and `sandbox-microvm`. They run on a `merge_group`
+  candidate when the merge queue is enabled in branch protection. Without the
+  queue, they run on pushes to `main`, the schedule, `workflow_dispatch`, and
+  `workflow_call`, as their conditions allow. Other workflow files have their
+  own triggers; check them before describing their results.
+- If a check did not run locally, say why and where it runs, including whether
+  it can run locally with the needed toolchain. For a check that runs only
+  after merge, state whether a failure would be fixed forward or reverted.
+
+Read the job's `if:` and the workflow's `on:` before claiming that a check
+ran before merge. A skipped job is not evidence of a pass.
+
 ## Adding or changing a backend tier
 
 - Read [docs/backend-ir-v3.md](docs/backend-ir-v3.md) (and
