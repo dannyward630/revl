@@ -29134,6 +29134,25 @@ fn scope_has(sc: &[Bind], n: &str) -> bool {
     return false;
 }
 
+fn scope_ty(sc: &[Bind], n: &str) -> String {
+    let mut i = (sc.revl_length()).checked_sub(1i64).expect("revl: Int overflow");
+    while (i >= 0i64) {
+        if ((sc)[(i) as usize].name == n) {
+            return (sc)[(i) as usize].ty.clone();
+        }
+        i = (i).checked_sub(1i64).expect("revl: Int overflow");
+    }
+    return String::from("");
+}
+
+fn is_callable_value_ty(ty: String) -> bool {
+    if (ty == "") {
+        return false;
+    }
+    let h = ty_parse(ty.clone()).head;
+    return (((((h == "->") || (h == "Fn")) || (h == "Any")) || (h == "Value")) || (h == "Never"));
+}
+
 fn concat_binds(a: Vec<Bind>, b: Vec<Bind>) -> Vec<Bind> {
     let mut out = a;
     let mut i = 0i64;
@@ -30435,7 +30454,13 @@ fn cir_nullary_case(n: &str, cx: CCtx) -> bool {
 }
 
 fn cir_calls_a_value(nm: &str, sc: &[Bind], cx: CCtx) -> bool {
-    return (scope_has(sc, nm) && (bind_lookup(&cx.fns, nm, 0i64) == ""));
+    if (!scope_has(sc, nm)) {
+        return false;
+    }
+    if is_callable_value_ty(scope_ty(sc, nm)) {
+        return true;
+    }
+    return (bind_lookup(&cx.fns, nm, 0i64) == "");
 }
 
 fn cir_value_call(nm: String, args: Vec<Expr>, sc: Vec<Bind>, hostSc: Vec<String>, cx: CCtx) -> IrRes {
@@ -40073,6 +40098,10 @@ fn poison() -> String {
     return String::from("!poison");
 }
 
+fn is_fn_head(head: &str) -> bool {
+    return ((head == fn_head()) || (head == "Fn"));
+}
+
 fn builtin_type_names() -> Vec<String> {
     return vec![String::from("Int"), String::from("Int32"), String::from("Float"), String::from("Str"), String::from("Bool"), String::from("Bytes"), String::from("Unit"), String::from("Opt"), String::from("List"), String::from("Map"), String::from("Result"), String::from("Any"), String::from("Never"), String::from("Value")];
 }
@@ -40534,8 +40563,8 @@ pub fn compatible(expected: String, actual: String) -> bool {
             return compatible(inner, actual.clone());
         }
     }
-    if (ehead == fn_head()) {
-        if ((ehead != ahead) || (eargs.revl_length() != aargs.revl_length())) {
+    if (is_fn_head(&ehead) && is_fn_head(&ahead)) {
+        if (eargs.revl_length() != aargs.revl_length()) {
             return false;
         }
         let mut i = 0i64;
