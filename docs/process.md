@@ -25,14 +25,24 @@ belongs: the PR jobs on the PR, the heavy jobs after merge.
 2. Run **only the tests covering what you changed.** If you touched
    `backends/rust/emit.py`, run the rust emit suite and the rust golden tests.
    Do not run the root `tests/` tree. Do not run the cordis suite.
-3. Commit and push the branch.
-4. Run the cheap pre-PR checks. They take seconds and catch most `lint` reds:
+3. Commit the branch.
+4. Before the first push and again before merge, run the branch and merge-tree
+   checks:
 
    ```
-   ./tools/pre_pr.sh
+   ./tools/pre_pr.sh --merge-ref
    ```
 
-   Eleven checks: ruff; a Python 3.11 syntax sweep (CI runs 3.11, the dev venv
+   This fetches the current `origin/main`, checks the clean branch tree, then
+   creates a disposable worktree and merges `origin/main` into it. If the
+   branch checks pass but the merged-tree checks fail, the command reports only
+   output added by the merged-tree run. It does not update the branch. A dirty
+   or detached worktree is refused so the check describes the commit you will
+   push.
+
+   The branch-only checks can still be run while editing with
+   `./tools/pre_pr.sh`. The merge-ref mode runs these same checks on both trees:
+   ruff; a Python 3.11 syntax sweep (CI runs 3.11, the dev venv
    is newer, so 3.12+ syntax passes locally and reds CI); the workflow
    permission gate (`tools/check_workflow_permissions.py`, self-test then
    `--strict`); the runtime seam check (`tools/check_runtime_seams.py`); the
@@ -44,7 +54,13 @@ belongs: the PR jobs on the PR, the heavy jobs after merge.
    (`tools/regen_goldens.py --check --strict python typescript rust java
    wasm`, through `tools/pre_pr_artifacts.py`); and the committed census
    records (`tools/census_artifact.py --check`, through the same helper). It
-   does not run any suite.
+   does not run any suite in branch-only mode.
+
+   Merge-ref mode also runs the tree-wide read-text/open encoding guards,
+   `tools/census_artifact.py --verify --strict` for the recorded reproduction,
+   and `tests/test_affected_tests.py` for selector mapping pins on both trees.
+   These focused checks may take longer than the branch-only pre-PR loop; the
+   full root suite and backend suites remain CI's job.
 
    A red on either gate-crate check is yours to fix before the PR, not the
    orchestrator's at merge: run the matching builder without `--check` and
@@ -73,7 +89,7 @@ belongs: the PR jobs on the PR, the heavy jobs after merge.
    a branch that touches no census input pays only that comparison. When that
    filter cannot decide, the check runs anyway.
 
-5. Open a PR that closes the issue:
+5. Push the branch and open a PR that closes the issue:
 
    ```
    gh pr create --repo inso1337/revl --fill --body "Closes #<issue>"

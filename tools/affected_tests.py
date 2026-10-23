@@ -1665,6 +1665,10 @@ def select(changed, root) -> dict:
             pytest_nodes.add("tests/test_affected_tests.py")
             reasons.append("tools/affected_tests.py (selector self-test)")
             continue
+        if f in ("tools/pre_pr.sh", "tools/pre_pr_merge_ref.py"):
+            pytest_nodes.add("tests/test_pre_pr_merge_ref_2848.py")
+            reasons.append(f"{f} (pre-PR merge-ref check)")
+            continue
         if f in ("tools/conformance.py", "tools/conformance_cert.py"):
             gates.add("conformance")
             pytest_nodes |= {
