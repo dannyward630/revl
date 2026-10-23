@@ -388,6 +388,70 @@ def block_guarantees_humans(current: str) -> str:
     return "\n".join(out)
 
 
+class FormalGuaranteeStatusError(SystemExit):
+    """The formal-status column cannot be rendered from its source ledger."""
+
+
+def block_formal_guarantees(current: str, root: Path | None = None) -> str:
+    """docs/guarantees.md's G-rule table with formal status from the ledger.
+
+    The explanatory columns remain curated in the current table. Formal status
+    is normalized with the same parser used by component certificates, so the
+    glossary cannot quietly disagree with formal/STATUS.md.
+    """
+    from revl import cert
+
+    base = root if root is not None else ROOT
+    status_path = base / "formal" / "STATUS.md"
+    if not status_path.is_file():
+        raise FormalGuaranteeStatusError(
+            "docgen: formal/STATUS.md is missing; cannot generate guarantee statuses"
+        )
+    try:
+        status_rows = cert.guarantee_map(
+            status_path.read_text(encoding="utf-8"), source="formal/STATUS.md")
+    except cert.CertError as exc:
+        raise FormalGuaranteeStatusError(
+            "docgen: cannot read formal guarantee statuses: %s" % exc
+        ) from exc
+
+    current_rows: dict[str, list[str]] = {}
+    for line in current.splitlines():
+        line = line.strip()
+        if not line.startswith("|") or set(line) <= set("|- "):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) < 4:
+            continue
+        match = re.search(r"\bG\d+\b", cells[0])
+        if match:
+            current_rows[match.group(0)] = cells
+
+    out = [
+        "| Code | Guarantee (one line) | Enforced at | Origin | Formal status |",
+        "| ---- | -------------------- | ----------- | ------ | ------------- |",
+    ]
+    for code in sorted(status_rows, key=lambda value: int(value[1:])):
+        row = current_rows.get(code, [])
+        try:
+            status = cert.status_of(
+                status_rows[code]["status_cell"],
+                source="formal/STATUS.md", code=code)
+        except cert.CertError as exc:
+            raise FormalGuaranteeStatusError(
+                "docgen: cannot read formal status for %s: %s" % (code, exc)
+            ) from exc
+        label = "full" if status == cert.PROVED else status
+        code_label = row[0] if row else code
+        guarantee = row[1] if len(row) > 1 else "TODO: describe the guarantee"
+        enforced = row[2] if len(row) > 2 else "TODO: name enforcement site"
+        origin = row[3] if len(row) > 3 else "TODO: identify origin"
+        out.append(
+            f"| {code_label} | {guarantee} | {enforced} | {origin} | {label} |"
+        )
+    return "\n".join(out)
+
+
 def block_mcp_test_count(current: str) -> str:
     """No count since issue #1768: it moved with every test added to the
     module. `--show mcp-test-count` prints it."""
@@ -799,6 +863,9 @@ BLOCKS: list[tuple[str, str, str, object]] = [
      block_guarantees_design),
     ("guarantees-humans", "docs/guide-humans.md", "revl.diagnostics.GUARANTEES",
      block_guarantees_humans),
+    ("formal-guarantees", "docs/guarantees.md",
+     "formal/STATUS.md via revl.cert.guarantee_map/status_of",
+     block_formal_guarantees),
     ("mcp-test-count", "docs/guide-humans.md", "tests/test_mcp.py", block_mcp_test_count),
     ("suite-size", "CONTRIBUTING.md", "tests/**/test_*.py + tests/shard_weights.json",
      block_suite_size),
