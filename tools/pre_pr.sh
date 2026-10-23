@@ -7,6 +7,20 @@
 # fifteen-second mistake does not cost a CI round-trip.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+
+if [ "${1:-}" = "--merge-ref" ]; then
+  shift
+  if [ "$#" -ne 0 ]; then
+    echo "usage: ./tools/pre_pr.sh [--merge-ref]" >&2
+    exit 2
+  fi
+  exec python3 tools/pre_pr_merge_ref.py
+fi
+if [ "$#" -ne 0 ]; then
+  echo "usage: ./tools/pre_pr.sh [--merge-ref]" >&2
+  exit 2
+fi
+
 fail=0
 
 echo "== ruff =="
@@ -78,7 +92,7 @@ echo "== roadmap markers =="
 # costs nothing, catching it in CI costs a round-trip, and not catching it at
 # all reddens main plus every open PR whose merge-ref carries the new text.
 # A detached HEAD reports "HEAD", which names no branch and leaves it off.
-branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+branch="${PRE_PR_HEAD_BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null)}"
 [ "$branch" = "HEAD" ] && branch=""
 python3 tools/check_roadmap_markers.py --check-contradiction --check-delegation --check-duplicate-headers --check-orphan --head-branch "$branch" || fail=1
 

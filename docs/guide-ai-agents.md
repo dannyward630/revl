@@ -16,6 +16,11 @@ and around the mistakes you actually make.
 > a red test). Run `pytest tests/test_frontend.py tests/test_doc_examples.py`
 > for the fast frontend loop; the full suite (~60s) before committing.
 
+If you are changing RevL itself, follow [CONTRIBUTING.md](../CONTRIBUTING.md)
+and [the agent workflow](process.md). Run `./tools/pre_pr.sh --merge-ref`
+before the first push and again before merge so checks cover the current
+`origin/main` merge tree as well as your branch.
+
 ## The one rule
 
 > **Same meaning → same syntax. Different meaning → different syntax.**

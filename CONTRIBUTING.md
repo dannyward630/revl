@@ -178,7 +178,11 @@ other. The pattern, visible throughout the commit history:
 Human contributors from outside the core repo use the same shape through a
 **fork + pull request**: branch, keep it merged up to date with `main`, and open
 a PR. The pre-commit contract below is what a reviewer will check the PR
-against, so run it before you push.
+against, so run `./tools/pre_pr.sh --merge-ref` before the first push and again
+before merge. The command checks the branch and a temporary merge with current
+`origin/main`, including the tree-wide encoding guards, strict census
+reproduction, and selector mapping pins; see [docs/process.md](docs/process.md)
+for the output and failure handling.
 
 ## The pre-commit contract
 
