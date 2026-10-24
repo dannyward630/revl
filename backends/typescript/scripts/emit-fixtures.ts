@@ -34,19 +34,32 @@ export function describeEmitFailure(
   return `emit.py failed for ${fixture} (${how}):\n${result.stderr ?? ''}`
 }
 
-// `python` is a parameter only so a test can name an interpreter that does
-// not exist; every caller uses the default.
-export function emitFixture(fixture: string, outName: string, python = 'python3'): void {
+// `REVL_PYTHON` supports platforms where the interpreter has another name;
+// tests can still pass a missing executable explicitly.
+export function emitFixture(
+  fixture: string,
+  outName: string,
+  python = process.env.REVL_PYTHON ?? 'python3',
+): void {
+  const output = emitFixtureOutput(fixture, python)
+  mkdirSync(join(backend, 'tests', 'generated'), { recursive: true })
+  writeFileSync(join(backend, 'tests', 'generated', outName), output)
+}
+
+export function emitFixtureOutput(
+  fixture: string,
+  python = process.env.REVL_PYTHON ?? 'python3',
+  maxBuffer = 16 * 1024 * 1024,
+): string {
   const result = spawnSync(
     python,
     ['emit.py', '--runtime', '../../runtime.ts', join('tests', 'fixtures', fixture)],
-    { cwd: backend, encoding: 'utf-8' },
+    { cwd: backend, encoding: 'utf-8', maxBuffer },
   )
   if (result.error || result.status !== 0) {
     throw new Error(describeEmitFailure(fixture, result))
   }
-  mkdirSync(join(backend, 'tests', 'generated'), { recursive: true })
-  writeFileSync(join(backend, 'tests', 'generated', outName), result.stdout)
+  return result.stdout
 }
 
 export function emitFixtures(): void {
