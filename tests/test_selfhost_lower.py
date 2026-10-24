@@ -3887,6 +3887,57 @@ component C provides ops: Ops {
     ("issue 2403: a nested generic record argument with the wrong type argument",
      _BOX2403 + "fn g(b: Box[Box[Int]]) -> Int { return 1 }\n"
      "fn f(s: Box[Box[Str]]) -> Int { return g(s) }\n", "T1"),
+    # ---- issue #2842: a budget-free emission extern cannot escape as a value
+    ("issue 2842: an emission extern bound to a local is refused", """
+extern emission fn send(x: Str) -> Int = @py { return 1 }
+service Ops { emission fn invoke() -> Int }
+component C provides ops: Ops {
+  provide ops { fn invoke() { let f = send return f("x") } }
+}
+""", "G4"),
+    ("issue 2842: an emission extern passed to a function parameter is refused", """
+extern emission fn send(x: Str) -> Int = @py { return 1 }
+fn apply(f: (Str) -> Int, x: Str) -> Int { return f(x) }
+service Ops { emission fn invoke() -> Int }
+component C provides ops: Ops {
+  provide ops { fn invoke() { return apply(send, "x") } }
+}
+""", "G4"),
+    ("issue 2842: a helper cannot return an emission extern value", """
+extern emission fn send(x: Str) -> Int = @py { return 1 }
+fn get_send() -> (Str) -> Int { return send }
+service Ops { emission fn invoke() -> Int }
+component C provides ops: Ops {
+  provide ops {
+    fn invoke() {
+      let f = get_send()
+      let first = f("one")
+      return f("two")
+    }
+  }
+}
+""", "G4"),
+    ("issue 2842: a helper reaching an emission cannot escape as a value", """
+extern emission fn send(x: Str) -> Int = @py { return 1 }
+fn bill(x: Str) -> Int { return send(x) }
+service Ops { emission fn invoke() -> Int }
+component C provides ops: Ops {
+  provide ops { fn invoke() { let f = bill return f("x") } }
+}
+""", "G4"),
+    ("issue 2842: an arrow cannot capture an emission extern value", """
+extern emission fn send(x: Str) -> Int = @py { return 1 }
+service Ops { emission fn invoke() -> Int }
+component C provides ops: Ops {
+  provide ops {
+    fn invoke() {
+      let get_send = () => send
+      let f = get_send()
+      return f("x")
+    }
+  }
+}
+""", "G4"),
 ]
 
 
@@ -3906,6 +3957,25 @@ def test_rejected_programs_agree(admit, case):
     assert ref_tag == tag, \
         f"corpus bug: reference tag for {name} is {ref_tag!r}, expected {tag!r}"
     _agree(admit, src)
+
+
+def test_issue_2842_scope_and_non_emission_controls_stay_admitted(admit):
+    shadowed = """extern emission fn send(x: Str) -> Int = @py { return 1 }
+service Ops { emission fn invoke(send: (Str) -> Int) -> Int }
+component C provides ops: Ops {
+  provide ops { fn invoke(send) { let alias = send return 1 } }
+}
+"""
+    pure = """extern pure fn format_name(x: Str) -> Str = @py { return x }
+service Ops { emission fn invoke() -> Int }
+component C provides ops: Ops {
+  provide ops { fn invoke() { let f = format_name let name = f("x") return 1 } }
+}
+"""
+    assert _ref(shadowed) == ("", "")
+    assert _ref(pure) == ("", "")
+    _agree(admit, shadowed)
+    _agree(admit, pure)
 
 
 # Parse refusals the gate spells in the reference's words. They cannot be
