@@ -1301,6 +1301,7 @@
    "examples/rejections/a5_no_inverse_declares_compensate.rvl",
    "examples/rejections/g2_provider_multiplicity.rvl",
    "examples/rejections/g4_emission_widens_declared_capability.rvl",
+   "examples/rejections/g4_first_class_emission_value.rvl",
    "oracle-accept:issue 1980: a literal key read restored the same way",
    "oracle-accept:issue 1980: a match restoring the value the body read",
    "oracle-accept:issue 1980: a write at another key between the read and the effect",

@@ -211,6 +211,7 @@
   "examples/rejections/g4_extern_undo_self_call.rvl",
   "examples/rejections/g4_extern_undo_undeclared_fn.rvl",
   "examples/rejections/g4_extern_undo_wrong_arg_type.rvl",
+  "examples/rejections/g4_first_class_emission_value.rvl",
   "examples/rejections/g4_fn_body_host_acquire.rvl",
   "examples/rejections/g4_method_host_acquire.rvl",
   "examples/rejections/g4_method_write_not_inverse.rvl",
