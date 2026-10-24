@@ -13274,7 +13274,7 @@ fn build_maps(pg: Prog) -> Ctx__m2 {
     let mut fi = 0i64;
     while (fi < pg.fns.revl_length()) {
         let f = (pg.fns)[(fi) as usize].clone();
-        if ((caps_of(emissionValues.clone(), f.name.clone()).revl_length() > 0i64) && (!contains__m2(&colored, &f.name))) {
+        if (caps_of(emissionValues.clone(), f.name.clone()).revl_length() > 0i64) {
             emitting.push(f.name.clone());
         }
         if f.isAsyncExtern {

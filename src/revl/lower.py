@@ -10127,10 +10127,12 @@ def _lower_component_pure_expr(expr, env: Env, scope: dict[str, str], callables:
             # Keep every irreversible crossing at a named `emit` call site.
             # The local `scope` branch above wins first, so a parameter or
             # binding that shadows a module callable is not mistaken for the
-            # extern value itself.
-            if name in (getattr(env, "irreversible_fns", None) or set()) \
-                    and name not in (getattr(env, "async_callables", None) or set()):
-                raise _emission_value_refusal(name, filename, line)
+            # extern value itself. Async-colored values keep their A1
+            # diagnostic; the method's G4 evidence still checks the declared
+            # service bound before the later async pass.
+            if name in (getattr(env, "irreversible_fns", None) or set()):
+                if name not in (getattr(env, "async_callables", None) or set()):
+                    raise _emission_value_refusal(name, filename, line)
             return {"kind": "var", "name": name}
         if name in getattr(env, "stream_requires", {}):
             # item 130: the key IS declared — it is a required stream, and a

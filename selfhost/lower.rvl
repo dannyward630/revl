@@ -6049,9 +6049,10 @@ fn witnessed_value_msg(name: Str) -> Str {
 // by `call_check` before `walk_expr` sees the head). Mirrors lower.py's
 // `_lower_component_pure_expr`/`ExprVar` resolution and `_calls_in(values=…)`:
 //   * a first-class reference to an irreversible emitting name is refused
-//     with the same G4 marker message as the reference compiler. Async-colored
-//     names keep their A1 value diagnostic, and local bindings shadowing a
-//     module name resolve through `scopeNames` first;
+//     with the same G4 marker message as the reference compiler. Emission
+//     reach takes precedence over async coloring; async-colored names without
+//     emission reach keep their A1 value diagnostic. Local bindings shadowing
+//     a module name resolve through `scopeNames` first;
 //   * a first-class reference to an async-colored name is the `passed_async`
 //     A1 surface, recorded in `avals` for the value-use verdict;
 //   * G1: a name that resolves to no scope name and no callable is an
@@ -6327,8 +6328,7 @@ fn build_maps(pg: Prog) -> Ctx {
   var fi = 0
   while (fi < pg.fns.length()) {
     let f = pg.fns[fi]
-    if (caps_of(emissionValues, f.name).length() > 0
-        && !contains(colored, f.name)) {
+    if (caps_of(emissionValues, f.name).length() > 0) {
       emitting = emitting.push(f.name)
     }
     if (f.isAsyncExtern) { ai = ai.push(f.name) }
