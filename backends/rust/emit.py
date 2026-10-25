@@ -8913,6 +8913,11 @@ def _v3_stmt(node: dict, ctx: _V3Ctx, out: list[str], indent: int, *, test_mode:
                 elem = ctx.vec_elems.get(node.get("name"))
                 if isinstance(elem, str):
                     annot = f": Vec<{_rust_type(elem, ctx.types)}>"
+                elif (ctx.read_counts.get(node.get("name"), 0) == 0
+                      and node.get("name") not in ctx.assigned_names):
+                    # No later read or assignment can observe an element type.
+                    # Give rustc a concrete type instead of emitting Vec<_>.
+                    annot = ": Vec<()>"
             elif (ctx.read_counts.get(node.get("name"), 0) == 0
                     and node.get("name") not in ctx.assigned_names):
                 annot = _v3_dead_let_annotation(node, ctx)

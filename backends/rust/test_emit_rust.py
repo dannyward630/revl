@@ -2656,6 +2656,36 @@ def test_vec_iterated_twice_cargo_builds(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+# An empty list no later expression constrains still needs a concrete Rust
+# element type; `Vec<_>` alone is rejected by rustc with E0282.
+_UNREAD_EMPTY_LIST_RVL = """
+pub fn unused() -> Int {
+  let values = []
+  return 1
+}
+"""
+
+
+@needs_cargo
+def test_unread_untyped_empty_list_builds_as_unit_vec(tmp_path):
+    src = emit.emit(compile_source(_UNREAD_EMPTY_LIST_RVL))
+    assert "let values: Vec<()> = vec![];" in src
+    result = _cargo_test(
+        tmp_path,
+        src,
+        "#[test]\nfn unused_empty_list_does_not_block_build() { assert_eq!(unused(), 1); }\n",
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@needs_cargo
+def test_java_branch_shapes_fixture_builds_on_rust(tmp_path):
+    """The shared unused-empty-list fixture is valid for the Rust tier too."""
+    ir = compile_files([str(ROOT / "tests/fixtures/emit_java_corpus/branch_shapes.rvl")])
+    result = _cargo_check(tmp_path, emit.emit(ir))
+    assert result.returncode == 0, result.stderr
+
+
 # item 437(f): a `for` iterable that is DEAD after the loop MOVES instead of
 # cloning. The multi-use clone above is a whole-body reference count with no
 # liveness, so the accumulate-then-walk shape the self-host emitters use — build
