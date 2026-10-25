@@ -2576,11 +2576,12 @@ def _check_match_exhaustiveness(expr: ExprMatch, type_env: dict, types: dict, fi
     # general rule cannot serve without changing what it admits for programs
     # that have nothing to do with councils:
     #
-    #   * the scrutinee is `Aggregate[Str]`, and the general rule looks the
-    #     scrutinee up in `types` by its whole spelling, so it finds nothing
-    #     for any APPLIED generic. `Aggregate[T]` is never written without an
-    #     argument, so under the general rule alone the answer type would be
-    #     the one ADT in the language with no exhaustiveness at all;
+    #   * the scrutinee is `Aggregate[Str]`, which has no entry in the
+    #     user-declared `types` table. The general rule resolves applied types
+    #     by their head, but that still finds nothing for this model-answer
+    #     type. `Aggregate[T]` is never written without an argument, so under
+    #     the general rule alone the answer type would be the one ADT in the
+    #     language with no exhaustiveness at all;
     #   * a `_` arm satisfies the general rule and must not satisfy this one.
     #     `Split` is the case the construct exists to make un-ignorable, and a
     #     catch-all that swallows it is `on_tie allow` moved from the
@@ -2589,7 +2590,8 @@ def _check_match_exhaustiveness(expr: ExprMatch, type_env: dict, types: dict, fi
     model_answer.check_match(
         type_name, [pattern for pattern, _, _ in expr.arms], filename,
         expr.line)
-    spec = types.get(type_name or "")
+    type_head, _ = parse_type(type_name)
+    spec = types.get(type_head or "")
     if spec is None or spec.get("kind") != "variant":
         return
     # An arm naming something that is not a case of the scrutinee's ADT has no

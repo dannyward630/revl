@@ -1748,17 +1748,6 @@ fn f(o: Opt[Int]) -> Int {
   }
 }
 """),
-    # a PARAMETERIZED ADT: the reference looks its `types` entry up under the
-    # applied spelling (`Box[Int]`) and misses, so a missing case is admitted.
-    ("a match over a parameterized ADT draws no verdict", """
-type Box[T] = Full(T) | Empty
-
-fn f(b: Box[Int]) -> Int {
-  return match b {
-    Empty => 0,
-  }
-}
-"""),
     # an alias CHAIN that terminates is the whole point of the erasure; only a
     # cycle has no expansion.
     ("a terminating chain of transparent aliases", """
@@ -3906,6 +3895,23 @@ def test_rejected_programs_agree(admit, case):
     assert ref_tag == tag, \
         f"corpus bug: reference tag for {name} is {ref_tag!r}, expected {tag!r}"
     _agree(admit, src)
+
+
+def test_generic_variant_exhaustiveness_is_a_named_selfhost_divergence(admit):
+    """Issue #2926: the native checker now rejects a partial match over an
+    applied generic variant; the self-host checker still admits it, so keep
+    the difference explicit until that checker gains the same rule."""
+    src = """type Mb[T] = Jj(T) | Nn
+
+fn f(m: Mb[Int]) -> Int {
+  return match m {
+    Nn => 0,
+  }
+}
+"""
+    ref_tag, ref_msg = _ref(src)
+    assert ref_tag == "T1" and "non-exhaustive match: missing case `Jj`" in ref_msg
+    assert admit(src) == ""
 
 
 # Parse refusals the gate spells in the reference's words. They cannot be
