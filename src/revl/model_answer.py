@@ -266,12 +266,10 @@ def applied_spec(type_name: str | None) -> dict | None:
     everything else, including a bare `Aggregate`, which is not a use of a
     generic type.
 
-    Both the checker's match inference and the lowering's exhaustiveness pass
-    look a scrutinee's spec up by its WHOLE spelling, which finds nothing for
-    any applied generic. That is a general gap and this is not a general fix:
-    it resolves the two provided types and leaves every user ADT exactly as it
-    was, because widening the lookup for user ADTs changes what the compiler
-    admits for programs that have nothing to do with councils.
+    The general lowering pass resolves applied user variants by their declared
+    head for exhaustiveness. This helper remains specific to the two provided
+    model-answer types: it supplies their generic payload types for inference,
+    without broadening this council-specific rule to user ADTs.
     """
     head, args = _applied(type_name)
     spec = ANSWER_TYPES.get(head or "")

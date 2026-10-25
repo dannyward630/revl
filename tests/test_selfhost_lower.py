@@ -3897,21 +3897,19 @@ def test_rejected_programs_agree(admit, case):
     _agree(admit, src)
 
 
-def test_generic_variant_exhaustiveness_is_a_named_selfhost_divergence(admit):
-    """Issue #2926: the native checker now rejects a partial match over an
-    applied generic variant; the self-host checker still admits it, so keep
-    the difference explicit until that checker gains the same rule."""
-    src = """type Mb[T] = Jj(T) | Nn
+def test_generic_variant_exhaustiveness_matches_reference(admit):
+    """Issue #2926: both checkers resolve an applied variant to its declared head."""
+    _agree(admit, _fixture("t1_generic_variant_match_nonexhaustive"))
+    for arms in ("Jj(x) => x,\n    Nn => 0,", "_ => 0,"):
+        src = f"""type Mb[T] = Jj(T) | Nn
 
-fn f(m: Mb[Int]) -> Int {
-  return match m {
-    Nn => 0,
-  }
-}
+fn f(m: Mb[Int]) -> Int {{
+  return match m {{
+    {arms}
+  }}
+}}
 """
-    ref_tag, ref_msg = _ref(src)
-    assert ref_tag == "T1" and "non-exhaustive match: missing case `Jj`" in ref_msg
-    assert admit(src) == ""
+        _agree(admit, src)
 
 
 # Parse refusals the gate spells in the reference's words. They cannot be

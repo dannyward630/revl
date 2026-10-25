@@ -5,11 +5,10 @@ value of it could be built: `Jj(1)` for `Mb[Int]` was refused with "payload
 expects `T`, got `Int`" and `Nn` with "expects `Mb[Int]`, got `Mb`". The
 checker compared the declared payload and the bare ADT head without
 substituting the type arguments, which generic records already get through
-`nominal_record_fields`. A match over an applied generic also has separate
-payload-typing and exhaustiveness gaps. Issue #2926 fixes native exhaustiveness
-by resolving the declared variant head; the self-host checker still records
-that case as a named divergence in `tests/test_selfhost_lower.py`. Payload
-substitution remains a separate issue.
+`nominal_record_fields`. Payload typing for a match over an applied generic
+remains a separate gap. Issue #2926 fixes exhaustiveness in both the native and
+self-host checkers by resolving the declared variant head. Payload substitution
+remains a separate issue.
 """
 
 import sys
@@ -75,6 +74,13 @@ fn f(m: Mb[Int]) -> Int {
   return match m {
     Jj(x) => x,
     Nn => 0,
+  }
+}
+""",
+    "wildcard_match": MB + """
+fn f(m: Mb[Int]) -> Int {
+  return match m {
+    _ => 0,
   }
 }
 """,

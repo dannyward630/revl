@@ -19844,7 +19844,7 @@ fn tk_exhaustive(m: MatchN, env: Vec<Bind>) -> String {
     if (sty == "") {
         return String::from("");
     }
-    let row = tenv_get(&env, &(String::from("cases ").revl_concat(&sty)));
+    let row = tenv_get(&env, &(String::from("cases ").revl_concat(&parse_head(sty.clone()))));
     if (row == "") {
         return String::from("");
     }
