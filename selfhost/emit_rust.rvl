@@ -2346,7 +2346,8 @@ fn v3_stmt(node: Any, ctx: Ctx, indent: Int) -> Sout {
       // case of a GENERIC variant there by name; this port lowers no generic
       // variant yet (issue #2494, GENERIC_VARIANT_PORT_GAPS), its enum carries
       // no type parameter to leave unbound.
-      var annot = ""
+      // issue #2911: no later use constrains an empty `vec![]`.
+      var annot = (ctx.dz.has(raw) && value == "vec![]") ? ": Vec<()>" : ""
       if (ctx.dz.has(raw) && node_kind(valnode) == "var" && ref_name(valnode) == "None") { annot = ": Option<Value>" }
       out = out.push(line(indent, `${kw} ${nm}${annot} = ${value};`))
     } else {

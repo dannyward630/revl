@@ -8873,6 +8873,9 @@ def _v3_refuse_unbound_case(value: dict, binding, ctx: _V3Ctx) -> None:
 def _v3_stmt(node: dict, ctx: _V3Ctx, out: list[str], indent: int, *, test_mode: bool = False) -> None:
     pad = "    " * indent
     step = node.get("step")
+    raw_name = node.get("name")
+    dead_binding = (ctx.read_counts.get(raw_name, 0) == 0
+                    and raw_name not in ctx.assigned_names)
 
     if step in ("let", "assign"):
         name = _ident(node.get("name"), "binding")
@@ -8910,14 +8913,9 @@ def _v3_stmt(node: dict, ctx: _V3Ctx, out: list[str], indent: int, *, test_mode:
             # pushes/aliases make it knowable, annotate so the accumulator idiom
             # (`let mut out = []; .. out = out.push(x)`) compiles (E0282).
             if _v3_is_empty_list(node.get("value")):
-                elem = ctx.vec_elems.get(node.get("name"))
+                elem = ctx.vec_elems.get(raw_name) or ("Unit" if dead_binding else None)
                 if isinstance(elem, str):
                     annot = f": Vec<{_rust_type(elem, ctx.types)}>"
-                elif (ctx.read_counts.get(node.get("name"), 0) == 0
-                      and node.get("name") not in ctx.assigned_names):
-                    # No later read or assignment can observe an element type.
-                    # Give rustc a concrete type instead of emitting Vec<_>.
-                    annot = ": Vec<()>"
             elif (ctx.read_counts.get(node.get("name"), 0) == 0
                     and node.get("name") not in ctx.assigned_names):
                 annot = _v3_dead_let_annotation(node, ctx)

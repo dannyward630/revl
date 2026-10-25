@@ -418,6 +418,20 @@ def test_selfhosted_emitter_is_byte_identical(emitted, reference, rel):
     )
 
 
+def test_unread_empty_list_emitter_matches_reference(emitted, reference, tmp_path):
+    """An unread empty list stays byte-identical in the self-hosted Rust port."""
+    source = tmp_path / "unread_empty_list.rvl"
+    source.write_text(
+        "pub fn unused() -> Int {\n  let values = []\n  return 1\n}\n",
+        encoding="utf-8",
+    )
+    ir = compile_files([str(source)])
+    want = reference.emit(ir)
+    got = emitted["emit_rust_src"](ir)
+    assert "let values: Vec<()> = vec![];" in got
+    assert got == want
+
+
 def test_list_ops_prelude_splits_the_partialeq_bound(emitted, reference):
     """`revl_index_of` is the only `Vec<T>` op needing `T: PartialEq`, so it
     lives in its own `RevlListSearchOps` trait while the size/copy ops
