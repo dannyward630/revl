@@ -432,12 +432,18 @@ UNGATED = {
     "revl_canary": "compares two generations' recorded timelines; swaps nothing",
     "revl_gauntlet": "grades a candidate in a throwaway session",
     "revl_quarantine": "proves a candidate in the wasm substrate",
+    "revl_test_run": "runs the selected test files in a subprocess; reaches no "
+                     "session operation and edits no session state (#2843)",
+    "revl_brief": "projects the footer, the proposal store, the held draft and "
+                  "the recorded verdict; loads, admits and swaps nothing "
+                  "(#2854)",
     "revl_resolve": "registry resolution",
     "revl_scaffold": "emits source text",
     "revl_fmt": "formats source text",
     "revl_explain": "renders a diagnostic",
     "revl_grammar": "returns the grammar",
     "revl_idiom": "returns a fixed example document",
+    "revl_affected_tests": "runs the read-only selector under sanctioned roots",
     "revl_verbs": "returns the server's own verb schemas (issue #1697)",
     "revl_tools": "returns the tool surface",
     "revl_source": "reads one declaration of the held source; changes nothing "

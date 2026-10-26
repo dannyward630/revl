@@ -125,6 +125,7 @@ CORPUS = [
     "records.rvl",     # record literal, functional record update, list literal
     "optionals.rvl",   # optional-call chaining (opt receiver)
     "mixed.rvl",       # a cross-section of the above in three functions
+    "user_names_like_temps.rvl",  # user locals spelled like emitter temporaries (issue #2913)
     # component/service documents (slice 2, item 185)
     "services_basic.rvl",    # SERVICES table, req/provide, effect accumulator, a provide method
     "services_timers.rvl",   # every/after timers -> schedule_* import + cancel inverses
@@ -135,6 +136,15 @@ CORPUS = [
     # binder decision had no oracle over it. Added FAILING FIRST, and the
     # component half of F3's binder-free arms was the divergence it caught.
     "services_match.rvl",    # a match in a provide-method body: the body-IS-the-bind, unread-bind and read-bind arms, over an ADT and an Opt
+    # issue #2715 review: a mixed Int/Float equality in a PROVIDE-METHOD body.
+    # The component renderer's `widen` branch is separate from the module-fn
+    # `_expr` and no corpus document reached it (the statement ledger saw the
+    # two new lines as uncovered), while `cexpr` ignored the marker entirely.
+    # Both operand orders and `!=` are covered, so a one-sided fix cannot pass.
+    # It sits in `tests/noncensus_corpus/` because it is an emitter-oracle
+    # document, not a breadth program: keeping it out of the census directories
+    # leaves the committed census program set unchanged.
+    "../../noncensus_corpus/services_int_float_equality.rvl",
     # issue #721 / item 458: provide-method CONTROL FLOW (`if`/`else`/`while`/
     # `for`/`break`/`continue`, items 548 and 681), which is the shape a
     # ternary-chained dispatch migrates to once the hoist helpers come out. The
@@ -463,6 +473,7 @@ CORPUS = [
     # oracle modules say why in their own `CORPUS` comment.
     "ui_transaction_unit.rvl",
     "to_char.rvl",  # Int.to_char, the primitive behind str_char (issue #2285)
+    "list_index_guard.rvl",  # the inline List-index guard, every spelling (issue #2902)
 ]
 
 
@@ -1023,4 +1034,14 @@ def test_a_host_identifier_collision_is_refused_by_name(reference):
     ir = compile_files([str(REFUSALS_DIR / "host_identifier_collision.rvl")])
     with pytest.raises(reference.EmitError,
                        match="both mangle to the Python identifier"):
+        reference.emit(ir)
+
+
+def test_a_pub_fn_spelled_like_an_emitter_temporary_is_refused_by_name(reference):
+    """A host calls a pub fn by its own name, so the rename that lifts a user
+    name off an emitter temporary cannot apply to it (issue #2913)."""
+    ir = compile_files([str(REFUSALS_DIR / "pub_fn_temp_name.rvl")])
+    with pytest.raises(reference.EmitError,
+                       match="pub fn '_run' is spelled like the python emitter "
+                             "temporary '_run'"):
         reference.emit(ir)

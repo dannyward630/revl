@@ -247,7 +247,8 @@ revl idiom effect-undo --json
 ### `revl grammar`
 
 Print the language surface, sized for a prompt, or a machine-readable grammar
-of revl source for a grammar-constrained decoder. No sources.
+of revl source for a grammar-constrained decoder. No sources, except the
+`--tool` form below, which needs the files declaring the service.
 
 - `--prompt` - the dense, complete, prompt-pinnable grammar (also shipped as
   `docs/syntax-2.0.prompt.txt`) instead of the short human summary.
@@ -274,6 +275,18 @@ of revl source for a grammar-constrained decoder. No sources.
   `grammar/revl.gbnf` and `grammar/revl.ebnf` (run from a checkout). A parser
   change that alters the grammar fails `tests/test_source_grammar_1661.py` until
   `revl grammar --write` is run.
+- `--tool Service.operation` - the contract of one service operation, derived
+  from its declaration (issue #2704): the JSON Schema of its parameters, the
+  GBNF grammar rendered from that same schema, the JSON-Schema dialect, the
+  digests, and the operation's declared effect (`emission`, `capabilities`).
+  Needs the `.rvl` sources that declare the service. This is the tool half of
+  what a `validated` emission already gets for its return type; it changes no
+  runtime. The contract is DATA: it does not check argument values against a
+  held capability cone, which needs the caller's held set at the host's call
+  boundary, so no such check is claimed here. Its `"integer"` is unbounded JSON
+  while go, java and rust carry `Int` as an i64; that range divergence is
+  pre-existing (the return boundary's schema has it too) and is not repaired by
+  this command.
 
 ```bash
 revl grammar                                      # the short summary
@@ -281,6 +294,7 @@ revl grammar --prompt                             # the full surface, to pin in 
 revl grammar --format gbnf                        # a whole program, as GBNF
 revl grammar --format lark --category expression  # one expression, for llguidance
 revl grammar --check                              # is grammar/ current?
+revl grammar --tool Mail.send app.rvl             # a tool's argument schema + grammar
 ```
 
 ### `revl doctor`
@@ -649,6 +663,12 @@ question.
   ([interchange-format.md](interchange-format.md)). The default (prose) render
   is for people and is **not** a stability contract; its wording may change
   between releases. Parse `--json`, not the prose.
+- `--wal FILE` - with plain `--json`, add the observed runtime ceiling records
+  from one WAL as `runtime_ceilings`. Each record carries its WAL sequence and
+  the calls, bytes, and elapsed values recorded for its budgeted crossing. The
+  field also reports whether the activation completed and whether the WAL has a
+  torn trailing record. It does not include effect arguments or error details;
+  it cannot be combined with `--policy` or `--diff`.
 - `--root DIR` - with a COMPOSITION document argument, the project root row
   provenance and origins are recorded against (default: the working
   directory), the same root `revl composition` takes. Ignored for module
@@ -1937,6 +1957,13 @@ Compile and run in-file `test` blocks (and `prop test` / `fault test` /
 - `--schedule-seeds N` - schedule testing: sample `N` seeded interleavings (a
   random walk over the schedule space) plus the canonical sequential baseline,
   and report any interleaving that violates a property (py tier).
+- `--fault-profile SEED` - fault profile: inject a seeded list of fault events
+  drawn from the sweep points, judge each like the sweep, and print the seed,
+  every injected fault and the count of failures with no classified cause. The
+  same seed injects the same sequence; the run exits 1 when any event did not
+  end contained (py tier; section 11 of [fault-tests.md](fault-tests.md)).
+- `--fault-profile-events N` - with `--fault-profile`, how many events to draw
+  (default 8).
 
 ---
 
@@ -2185,6 +2212,11 @@ the server whose verbs are documented in [mcp-reference.md](mcp-reference.md).
   neither declare nor reach an `extern`/host block. `trusted` lets it author
   host code, and stamps every class-(c) ticket with the unreviewed host bodies
   a yes would also run.
+- `--attempt-limit N` - the attempt budget for the check/admit loop (issue
+  #2690, N at least 1): a refusal from `revl_check` or `revl_admit` carries
+  `attempt` and, when this is set, `attemptsRemaining`. Omit for no limit, in
+  which case no `attemptsRemaining` is reported. Advisory only: the budget
+  never changes admission.
 - `--grant SERVICE` - a service name an admitted turn may reach (repeatable).
   Naming any turns on the item-329 reach allowlist; omit them all and reach is
   not bounded by this flag.
