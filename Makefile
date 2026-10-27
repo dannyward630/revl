@@ -16,7 +16,7 @@ pre-merge:
 
 # FAST inner-loop gate: run ONLY the pre-merge targets that tools/affected_tests.py
 # selects for the current diff (base = merge-base with origin/main). A sound
-# conservative superset — any core/compile-reachable or unmapped change selects
+# conservative superset: any core/compile-reachable or unmapped change selects
 # FULL and stops with the selector receipt; run `make pre-merge` to explicitly
 # escalate. NOT a replacement for `make pre-merge`, which remains the release/CI
 # gate. Override the base with: make pre-merge-affected BASE=<ref>

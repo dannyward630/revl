@@ -30,33 +30,46 @@ GATES conformance site-wheel ruff
 """
 
 
+def _shim(tmp_path: Path, selector: str | None, selector_status: int,
+          selector_stderr: str | None) -> Path:
+    """A python3 that answers the selector call and nothing else."""
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    python3 = shim / "python3"
+    stderr_line = ""
+    if selector_stderr:
+        stderr_line = f"  printf '%s\\n' {_shell_quote(selector_stderr)} >&2\n"
+    payload = (
+        "#!/bin/sh\n"
+        "if [ \"${1:-}\" = -c ]; then exit 1; fi\n"
+        "if [ \"${1:-}\" = tools/affected_tests.py ]; then\n"
+        f"  printf '%s\\n' { _shell_quote(selector or '') }\n"
+        f"{stderr_line}"
+        f"  exit {selector_status}\n"
+        "fi\n"
+        "exit 1\n"
+    )
+    python3.write_text(payload, encoding="utf-8")
+    python3.chmod(0o755)
+    return shim
+
+
 def _run_selection(tmp_path: Path, selector: str | None,
-                   *, selector_status: int = 0, python_available: bool = True):
+                   *, selector_status: int = 0, python_available: bool = True,
+                   selector_stderr: str | None = None):
     """Execute the real affected-selection block with a controlled selector."""
     source = SCRIPT.read_text(encoding="utf-8")
     start = source.index("# --affected: the FAST inner-loop gate.")
     end = source.index("\nfail=0\n", start)
     block = source[start:end]
 
-    shim = tmp_path / "bin"
-    shim.mkdir()
+    shim = _shim(tmp_path, selector, selector_status, selector_stderr)
     if python_available:
-        python3 = shim / "python3"
-        payload = (
-            "#!/bin/sh\n"
-            "if [ \"${1:-}\" = -c ]; then exit 1; fi\n"
-            "if [ \"${1:-}\" = tools/affected_tests.py ]; then\n"
-            f"  printf '%s\\n' { _shell_quote(selector or '') }\n"
-            f"  exit {selector_status}\n"
-            "fi\n"
-            "exit 1\n"
-        )
-        python3.write_text(payload, encoding="utf-8")
-        python3.chmod(0o755)
         path = f"{shim}:/usr/bin:/bin"
     else:
         # Keep the usual shell utilities available but intentionally hide both
         # Python executable names, so the unavailable-selector path is real.
+        (shim / "python3").unlink()
         for name in ("sed", "wc", "tr"):
             target = Path("/usr/bin") / name
             if not target.exists():
@@ -79,6 +92,15 @@ def _run_selection(tmp_path: Path, selector: str | None,
 def _shell_quote(value: str) -> str:
     """Single-quote a fixture value for the tiny shell shim."""
     return "'" + value.replace("'", "'\\''") + "'"
+
+
+def _run_script(tmp_path: Path, selector: str, *args: str,
+                selector_status: int = 0):
+    """Run the whole script in --plan mode, where no step executes."""
+    shim = _shim(tmp_path, selector, selector_status, None)
+    env = {"PATH": f"{shim}:/usr/bin:/bin", "REVL_PREMERGE_WITH": ""}
+    return subprocess.run(["/bin/sh", str(SCRIPT), *args], cwd=ROOT, env=env,
+                          text=True, capture_output=True, timeout=120)
 
 
 def test_targeted_selection_prints_the_machine_receipt_and_stays_targeted(tmp_path):
@@ -135,3 +157,38 @@ def test_missing_python_reports_unavailable_without_escalating(tmp_path):
     assert "no full gate was run" in proc.stdout
     assert "run 'make pre-merge'" in proc.stdout
     assert "RUN_ALL=" not in proc.stdout
+
+
+def test_selector_stderr_is_reported_but_never_parsed(tmp_path):
+    proc = _run_selection(tmp_path, _TARGETED,
+                          selector_stderr="PYTEST tests/injected.py")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "selector stderr:" in proc.stdout
+    assert "  PYTEST tests/injected.py" in proc.stdout
+    assert "RUN_ALL=0" in proc.stdout
+    assert "pytest 1 node(s)" in proc.stdout
+
+
+def test_plan_of_a_full_selection_prints_the_plan_then_exits_2(tmp_path):
+    proc = _run_script(tmp_path, _FULL, "--affected", "--plan")
+
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "  FULL 1" in proc.stdout
+    assert "refusing to run the FULL gate automatically" in proc.stdout
+    assert "would run:" in proc.stdout
+    assert "nothing was run" in proc.stdout
+    assert "no full gate was run" in proc.stdout
+    assert "run 'make pre-merge'" in proc.stdout
+
+
+def test_plan_of_a_failed_selection_prints_the_plan_then_exits_2(tmp_path):
+    proc = _run_script(tmp_path, "selector failed: no merge-base",
+                       "--affected", "--plan", selector_status=7)
+
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "selector exited with status 7" in proc.stdout
+    assert "would run:" in proc.stdout
+    assert "nothing was run" in proc.stdout
+    assert "no full gate was run" in proc.stdout
+    assert "run 'make pre-merge'" in proc.stdout
