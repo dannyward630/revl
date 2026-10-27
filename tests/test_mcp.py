@@ -278,11 +278,17 @@ def test_initialize_and_tools_list(all_mcp_tools):
                           "revl_resolve",
                           # verified canary (docs/verified-canary.md, item 59)
                           "revl_canary",
+                          # shared fail-safe pre-merge test selection (issue #2799)
+                          "revl_affected_tests",
                           # approval distillation operator surface (item 251)
                           "revl_distillation_offers", "revl_apply_distillation",
                           "revl_revoke_distillation",
                           # the authoring toolbox as MCP tools (item 345)
-                          "revl_scaffold", "revl_fmt", "revl_explain"}
+                          "revl_scaffold", "revl_fmt", "revl_explain",
+                          # the structured suite-run answer (issue #2843)
+                          "revl_test_run",
+                          # the compact next-step answer (issue #2854)
+                          "revl_brief"}
     # inspection tools are read-only; the ones that move a running system say so
     assert tools["revl_check"]["annotations"]["readOnlyHint"] is True
     assert tools["revl_swap"]["annotations"]["destructiveHint"] is True
