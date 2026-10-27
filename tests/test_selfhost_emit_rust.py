@@ -359,6 +359,10 @@ CORPUS = [
     # A plain-return method with the same `let` measures nothing there, so the
     # effect bracket is what the document is for.
     "comp_provide_generic_let.rvl",
+    "unread_empty_list.rvl",  # issue #2911: a `let` bound to an empty list no
+                             #   later use reads or assigns is annotated
+                             #   `Vec<()>`, so rustc is not left with `Vec<_>`
+                             #   (E0282). The port carries the same rule.
 ]
 
 
@@ -1508,6 +1512,11 @@ NAMED_REFUSALS = [
       for t in ("go", "java", "py", "rust", "ts")],
     ("emit_rust_refusals/required_stream_coeffect.rvl",
      "a required `Stream\\[T\\]` coeffect", "<<UNSUPPORTED-REQUIRED-STREAM:Fulfiller.feed>>"),
+    # issue #2911: an empty list literal nothing pins is refused by name
+    # instead of emitting `Vec<_>` for rustc to reject (E0282).
+    ("emit_rust_refusals/untyped_empty_list.rvl",
+     "an untyped empty list literal needs an element type",
+     "<<UNSUPPORTED-EMPTY-LIST-TYPE:values>>"),
 ]
 
 

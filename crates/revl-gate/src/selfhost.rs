@@ -4125,11 +4125,15 @@ fn v3_stmt(node: Value, ctx_: Ctx__m1, indent: i64) -> Sout {
             if value_bool(value_field(node.clone(), String::from("mutable"))) {
                 kw = String::from("let mut");
             }
-            let mut annot = if (ctx_.dz.contains_key(&raw) && (value == "vec![]")) { String::from(": Vec<()>") } else { String::from("") };
-            if ((ctx_.dz.contains_key(&raw) && (node_kind(valnode.clone()) == "var")) && (ref_name(valnode.clone()) == "None")) {
-                annot = String::from(": Option<Value>");
+            if ((!ctx_.dz.contains_key(&raw)) && (value == "vec![]")) {
+                out.push(format!("<<UNSUPPORTED-EMPTY-LIST-TYPE:{}>>", raw));
+            } else {
+                let mut annot = if (ctx_.dz.contains_key(&raw) && (value == "vec![]")) { String::from(": Vec<()>") } else { String::from("") };
+                if ((ctx_.dz.contains_key(&raw) && (node_kind(valnode.clone()) == "var")) && (ref_name(valnode.clone()) == "None")) {
+                    annot = String::from(": Option<Value>");
+                }
+                out.push(line(indent, &(format!("{} {}{} = {};", kw, nm, annot, value))));
             }
-            out.push(line(indent, &(format!("{} {}{} = {};", kw, nm, annot, value))));
         } else {
             let ip = self_append_plus(&raw, &nm, valnode.clone(), ctx_.clone());
             if (ip != "") {

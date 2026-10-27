@@ -2385,10 +2385,17 @@ fn v3_stmt(node: Any, ctx: Ctx, indent: Int) -> Sout {
       // case of a GENERIC variant there by name; this port lowers no generic
       // variant yet (issue #2494, GENERIC_VARIANT_PORT_GAPS), its enum carries
       // no type parameter to leave unbound.
-      // issue #2911: no later use constrains an empty `vec![]`.
-      var annot = (ctx.dz.has(raw) && value == "vec![]") ? ": Vec<()>" : ""
-      if (ctx.dz.has(raw) && node_kind(valnode) == "var" && ref_name(valnode) == "None") { annot = ": Option<Value>" }
-      out = out.push(line(indent, `${kw} ${nm}${annot} = ${value};`))
+      if (!ctx.dz.has(raw) && value == "vec![]") {
+        // issue #2911: the reference refuses an empty `vec![]` nothing pins by
+        // name rather than leave `Vec<_>` for rustc (E0282); this port answers
+        // it by name too.
+        out = out.push(`<<UNSUPPORTED-EMPTY-LIST-TYPE:${raw}>>`)
+      } else {
+        // issue #2911: no later use constrains an empty `vec![]`.
+        var annot = (ctx.dz.has(raw) && value == "vec![]") ? ": Vec<()>" : ""
+        if (ctx.dz.has(raw) && node_kind(valnode) == "var" && ref_name(valnode) == "None") { annot = ": Option<Value>" }
+        out = out.push(line(indent, `${kw} ${nm}${annot} = ${value};`))
+      }
     } else {
       // item 437(a): a self-appending `assign` (`s = s + p`) becomes an
       // in-place `push_str`. Only an `assign` qualifies -- a `let` introduces a
