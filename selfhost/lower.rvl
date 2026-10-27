@@ -14639,9 +14639,9 @@ fn tk_infer_raw(e: Expr, env: List[Bind]) -> TInf {
 //     calls this check best-effort for exactly that reason, and its own
 //     `types.get(None)` misses.
 //   * a scrutinee whose type is not a DECLARED variant this text spells out —
-//     a record, a builtin, `Opt[T]`/`Result[T, E]` (whose arms the reference
-//     also leaves alone, because `types` holds no entry under those spellings),
-//     or a parameterized ADT's applied form.
+//     a record, a builtin, or `Opt[T]`/`Result[T, E]` (the reference leaves
+//     those alone because there is no user-declared variant row for that head).
+//     An applied user variant resolves through its declared head (issue #2926).
 //   * a variant with an empty case list, which `adt_case_row` records no row
 //     for.
 // Each of those admits a program the reference may refuse; none refuses one the
@@ -14687,7 +14687,7 @@ fn tk_exhaustive(m: MatchN, env: List[Bind]) -> Str {
   // answer would reorder the two.
   let sty = infer(m.scrut, env)
   if (sty == "") { return "" }
-  let row = tenv_get(env, "cases ".concat(sty))
+  let row = tenv_get(env, "cases ".concat(parse_head(sty)))
   if (row == "") { return "" }
   let declared = split_top_commas(row)
   let unknown = tk_unknown_arm(m.arms, 0, sty, declared)
@@ -30309,10 +30309,9 @@ fn case_binds_walk(ts: List[Token], i: Int, a: CaseAcc, al: Map[Str, Str]) -> Ca
 // transparent ALIAS contributes nothing (the reference has erased its
 // declaration before `_lower_type_decls` runs), a record BODY is a record and
 // not a variant, and a bare single-case right-hand side is the one-case nominal
-// the reference reads it as. The row is keyed by the DECLARED name alone, so a
-// parameterized `type Box[T]` is found only by a scrutinee whose spelling is the
-// bare `Box` — which is exactly what the reference's `types.get(type_name)` does
-// with the full spelling `Box[Int]`, namely miss and decide nothing.
+// the reference reads it as. The row is keyed by the DECLARED name alone.
+// `tk_exhaustive` strips the arguments from an applied scrutinee (`Box[Int]` ->
+// `Box`) before looking it up, matching the reference (issue #2926).
 //
 // An EMPTY case list records NO row: `tenv_get` cannot tell an empty value from
 // an absent key, and "absent" is the silent direction.

@@ -252,7 +252,7 @@ The six host columns share their verdict wherever a register does not separate t
 | `A6` | proved | proved | proved | proved | proved | proved | proved | [`examples/rejections/a6_method_not_in_service.rvl`](../examples/rejections/a6_method_not_in_service.rvl) |
 | `A8` | proved | proved | proved | proved | proved | proved | unimpl | [`examples/rejections/v2_fail_in_pure_fn.rvl`](../examples/rejections/v2_fail_in_pure_fn.rvl) |
 | `A9` | proved | proved | proved | proved | proved | proved | unimpl | [`examples/rejections/a9_provide_key_not_declared.rvl`](../examples/rejections/a9_provide_key_not_declared.rvl) |
-| `T1` | proved | proved | proved | proved | proved | proved | proved | [`examples/rejections/t1_service_arg_type.rvl`](../examples/rejections/t1_service_arg_type.rvl) |
+| `T1` | proved | proved | proved | proved | proved | proved | proved | [`examples/rejections/t1_generic_variant_match_nonexhaustive.rvl`](../examples/rejections/t1_generic_variant_match_nonexhaustive.rvl) |
 | `T2` | proved | proved | proved | proved | proved | proved | proved | [`examples/rejections/t2_null_in_expression.rvl`](../examples/rejections/t2_null_in_expression.rvl) |
 | `T3` | no repro | no repro | no repro | no repro | no repro | no repro | no repro | [`src/revl/gate.py`](../src/revl/gate.py) |
 | `G-COUNCIL-SPLIT` | proved | proved | proved | proved | proved | proved | proved | [`examples/rejections/gcouncilsplit_on_tie_allow.rvl`](../examples/rejections/gcouncilsplit_on_tie_allow.rvl) |

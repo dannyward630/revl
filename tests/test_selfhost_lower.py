@@ -1769,17 +1769,6 @@ fn f(o: Opt[Int]) -> Int {
   }
 }
 """),
-    # a PARAMETERIZED ADT: the reference looks its `types` entry up under the
-    # applied spelling (`Box[Int]`) and misses, so a missing case is admitted.
-    ("a match over a parameterized ADT draws no verdict", """
-type Box[T] = Full(T) | Empty
-
-fn f(b: Box[Int]) -> Int {
-  return match b {
-    Empty => 0,
-  }
-}
-"""),
     # an alias CHAIN that terminates is the whole point of the erasure; only a
     # cycle has no expansion.
     ("a terminating chain of transparent aliases", """
@@ -4158,6 +4147,21 @@ def test_rejected_programs_agree(admit, case):
     assert ref_tag == tag, \
         f"corpus bug: reference tag for {name} is {ref_tag!r}, expected {tag!r}"
     _agree(admit, src)
+
+
+def test_generic_variant_exhaustiveness_matches_reference(admit):
+    """Issue #2926: both checkers resolve an applied variant to its declared head."""
+    _agree(admit, _fixture("t1_generic_variant_match_nonexhaustive"))
+    for arms in ("Jj(x) => x,\n    Nn => 0,", "_ => 0,"):
+        src = f"""type Mb[T] = Jj(T) | Nn
+
+fn f(m: Mb[Int]) -> Int {{
+  return match m {{
+    {arms}
+  }}
+}}
+"""
+        _agree(admit, src)
 
 
 def test_issue_2842_scope_and_non_emission_controls_stay_admitted(admit):

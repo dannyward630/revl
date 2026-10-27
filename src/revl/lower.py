@@ -2572,15 +2572,14 @@ def _arm_payload_type(scrutinee_type: str | None, pattern: str, types: dict) -> 
 def _check_match_exhaustiveness(expr: ExprMatch, type_env: dict, types: dict, filename: str) -> None:
     type_name = _expr_static_type(expr.scrutinee, type_env, types)
     # item 516 slice 3: the model council's answer, checked BEFORE the general
-    # rule below and separately from it. Two reasons, both of which the
-    # general rule cannot serve without changing what it admits for programs
-    # that have nothing to do with councils:
+    # rule below. A program that names `Aggregate[Str]` seeds the provided
+    # `Aggregate` into `types` under that head, so the general rule now
+    # resolves this applied scrutinee too: a match that names `Split` and
+    # `Inquorate` but leaves out `Agreed` is refused there for the missing
+    # `Agreed` case. The one thing the general rule cannot serve, without
+    # changing what it admits for programs that have nothing to do with
+    # councils, is:
     #
-    #   * the scrutinee is `Aggregate[Str]`, and the general rule looks the
-    #     scrutinee up in `types` by its whole spelling, so it finds nothing
-    #     for any APPLIED generic. `Aggregate[T]` is never written without an
-    #     argument, so under the general rule alone the answer type would be
-    #     the one ADT in the language with no exhaustiveness at all;
     #   * a `_` arm satisfies the general rule and must not satisfy this one.
     #     `Split` is the case the construct exists to make un-ignorable, and a
     #     catch-all that swallows it is `on_tie allow` moved from the
@@ -2589,7 +2588,8 @@ def _check_match_exhaustiveness(expr: ExprMatch, type_env: dict, types: dict, fi
     model_answer.check_match(
         type_name, [pattern for pattern, _, _ in expr.arms], filename,
         expr.line)
-    spec = types.get(type_name or "")
+    type_head, _ = parse_type(type_name)
+    spec = types.get(type_head or "")
     if spec is None or spec.get("kind") != "variant":
         return
     # An arm naming something that is not a case of the scrutinee's ADT has no
@@ -2608,7 +2608,7 @@ def _check_match_exhaustiveness(expr: ExprMatch, type_env: dict, types: dict, fi
                 hint="a match arm names one of the ADT's declared cases, or `_` for "
                      "a catch-all — a bare name is not a binding pattern "
                      "(syntax-2.0 §3.3); check the spelling or add the case to "
-                     f"`type {type_name}`",
+                     f"`type {type_head}`",
             )
     covered = {pattern for pattern, _, _ in expr.arms if pattern != "_"}
     if "_" in {pattern for pattern, _, _ in expr.arms}:
