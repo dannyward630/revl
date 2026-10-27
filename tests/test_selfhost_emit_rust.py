@@ -1517,6 +1517,11 @@ NAMED_REFUSALS = [
     ("emit_rust_refusals/untyped_empty_list.rvl",
      "an untyped empty list literal needs an element type",
      "<<UNSUPPORTED-EMPTY-LIST-TYPE:values>>"),
+    # issue #2911: the nested shape, where every item of the literal is itself
+    # empty, so no sibling carries the inner `vec![]`'s element type.
+    ("emit_rust_refusals/nested_empty_list.rvl",
+     "an untyped nested empty list literal needs an element type",
+     "<<UNSUPPORTED-EMPTY-LIST-TYPE:xs>>"),
 ]
 
 

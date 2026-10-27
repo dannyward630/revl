@@ -1,6 +1,8 @@
 // Issue #2911: `let values = []` read by a use that carries no element type
 // leaves rustc with `Vec<_>` (E0282). The reference REFUSES this by name; the
-// self-host port answers it with `<<UNSUPPORTED-EMPTY-LIST-TYPE:values>>`.
+// self-host rust port answers it with
+// `<<UNSUPPORTED-EMPTY-LIST-TYPE:values>>` and the wasm port with
+// `<<UNSUPPORTED-EMPTY-LIST-TYPE>>`.
 // It cannot live in tests/fixtures/emit_rust_corpus: there are no reference
 // bytes to agree with.
 //
