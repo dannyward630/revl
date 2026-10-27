@@ -43,9 +43,11 @@ recommend a destination while revl still decides whether the destination is
 allowed. Because it is a permission and not a selection, it contributes nothing
 to the IR and no emitter changes.
 
-Model output may choose an allowed pathway, but it cannot lower an
-operator-authored `requires approval` floor on any capability that pathway
-reaches.
+Model output may recommend a route, but it cannot lower an operator-authored
+`requires approval` requirement on a capability that route reaches: such a
+crossing is admitted only by the operator's binding and still pends for the
+operator's approval (#2754,
+`tests/test_mcp_model_advice_approval_floor_2754.py`).
 
 ---
 
