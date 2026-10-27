@@ -374,6 +374,18 @@ def test_support_table_rows_and_cells_follow_the_check_registries(monkeypatch):
                                 ci_text=ci_without_validator)
     assert all(row["emits"]["status"] == tg.UNMEASURED for row in changed["rows"])
 
+    # And the guard before it is half of the same claim: a tier whose
+    # validator cannot run reports `unavailable`, and the baselined pytest run
+    # still exits 0, so a removed `--check-toolchains` must not leave the
+    # column at `proved`.
+    ci_without_guard = ci_text.replace(
+        "python3 tools/conformance.py --check-toolchains", "")
+    assert ci_without_guard != ci_text
+    changed = tg.support_matrix(report=report, selfhost=selfhost,
+                                tests_root=tests_root,
+                                ci_text=ci_without_guard)
+    assert all(row["emits"]["status"] == tg.UNMEASURED for row in changed["rows"])
+
     # A self-host result is the existing `revl` column measurement, not a
     # repeated literal in the new table.
     changed_selfhost = dict(selfhost)

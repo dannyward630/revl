@@ -869,9 +869,9 @@ def _known_compile_failures(path: Path) -> dict[str, set[str]]:
 def _ci_run_commands(workflow_text: str) -> list[str]:
     """Read executable workflow steps, excluding comments and prose."""
     try:
-        import yaml  # noqa: PLC0415 — part of the repository's test extra
+        import yaml  # noqa: PLC0415, part of the repository's test extra
         workflow = yaml.safe_load(workflow_text)
-    except Exception as exc:  # noqa: BLE001 — malformed CI cannot support a claim
+    except Exception as exc:  # noqa: BLE001, malformed CI cannot support a claim
         raise MatrixError(f"tier_guarantees: cannot read the CI workflow: {exc}") from exc
     commands = []
     for job in (workflow or {}).get("jobs", {}).values():
@@ -893,7 +893,7 @@ def support_matrix(*, report: dict | None = None,
     Durable recovery is discovered from crash-test modules and the CI test
     collection. Missing evidence is always `unmeasured`, never a positive cell.
     """
-    import conformance  # noqa: PLC0415 — tools/ is already on sys.path
+    import conformance  # noqa: PLC0415, tools/ is already on sys.path
     from validate import EXECUTORS, VALIDATORS  # noqa: PLC0415
 
     tests_root = tests_root or ROOT / "tests"
@@ -908,8 +908,17 @@ def support_matrix(*, report: dict | None = None,
     compile_test = "tests/test_conformance_validate.py"
     compile_test_path = tests_root / "test_conformance_validate.py"
     ci_commands = _ci_run_commands(ci_text)
-    compile_in_ci = any("pytest tests/test_conformance_validate.py -q" in command
-                        for command in ci_commands)
+    # Both steps, because either alone is a weaker claim than the column
+    # makes: the pytest gate is baselined and a tier whose validator cannot
+    # run reports `unavailable` while the run still exits 0, which is why CI
+    # runs `--check-toolchains` first. Removing that guard must not leave the
+    # emits column at `proved`.
+    compile_in_ci = (
+        any("python3 tools/conformance.py --check-toolchains" in command
+            for command in ci_commands)
+        and any("pytest tests/test_conformance_validate.py -q" in command
+                for command in ci_commands)
+    )
     compile_baselines = _known_compile_failures(compile_test_path)
     executable_count = len(conformance.executable_cases())
     execute_in_ci = any("tools/conformance.py --execute --require-execution" in command

@@ -1306,7 +1306,7 @@ def _write_readme(*, check_only: bool) -> int:
     updated = _splice_marked(updated, tier_guarantees_markers()[0],
                              tier_guarantees_markers()[1], guarantee_block())
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import tier_guarantees  # noqa: PLC0415 — resolved next to this file
+    import tier_guarantees  # noqa: PLC0415, resolved next to this file
     updated = _splice_marked(
         updated, tier_guarantees.SUPPORT_START, tier_guarantees.SUPPORT_END,
         tier_guarantees.support_block(report=report, selfhost=selfhost))
@@ -1317,7 +1317,7 @@ def _write_readme(*, check_only: bool) -> int:
                   "matrix and tier support matrix are up to date.")
             return 0
         print("docs/conformance.md generated matrix, sweep, guarantee or support "
-              "table is STALE — regenerate it with `python3 "
+              "table is STALE; regenerate it with `python3 "
               "tools/conformance.py --write-readme` (or `make matrix`) and "
               "commit the result.", file=sys.stderr)
         return 1
@@ -1427,7 +1427,7 @@ def main() -> int:
                              "docs/conformance.md (the construct matrix, the "
                              "per-tier emit sweep, guarantee x tier matrix or "
                              "per-tier support table) differs from a fresh "
-                             "generation — the CI staleness gate")
+                             "generation, the CI staleness gate")
     args = parser.parse_args()
 
     if args.check_toolchains:
