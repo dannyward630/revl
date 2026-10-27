@@ -521,15 +521,76 @@ def _operator_text_of(in_memory: dict, providers: dict) -> dict:
     return operator
 
 
-def _jail_refusal(arguments: dict) -> dict | None:
+def _source_map_paths(node, paths: list[str]) -> None:
+    """Collect the path keys of every in-memory source map in a call or snapshot."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in _SOURCE_MAP_ARGUMENTS and isinstance(value, dict):
+                paths.extend(source_path for source_path in value
+                             if isinstance(source_path, str))
+            _source_map_paths(value, paths)
+    elif isinstance(node, list):
+        for item in node:
+            _source_map_paths(item, paths)
+
+
+def _edit_target_paths(value, paths: list[str]) -> None:
+    """Collect buffer targets that edit intents pass to path resolution."""
+    if not isinstance(value, dict):
+        return
+    target = value.get("target")
+    if isinstance(target, str):
+        paths.append(target)
+    edits = value.get("edits")
+    if isinstance(edits, list):
+        for edit in edits:
+            _edit_target_paths(edit, paths)
+
+
+def _nul_path_refusal(name: str | None, arguments: dict) -> dict | None:
+    """Refuse NUL bytes in every caller path before path normalization runs."""
+    paths: list[str] = []
+    _collect_path_arguments(arguments, paths)
+    _source_map_paths(arguments, paths)
+
+    if name == "revl_export" and isinstance(arguments.get("path"), str):
+        paths.append(arguments["path"])
+    if name == "revl_test_run":
+        if isinstance(arguments.get("cwd"), str):
+            paths.append(arguments["cwd"])
+        selection = arguments.get("selection")
+        if isinstance(selection, list):
+            paths.extend(item for item in selection if isinstance(item, str))
+    if name == "revl_edit":
+        _edit_target_paths(arguments, paths)
+    elif name == "revl_change":
+        for intent in ("edit", "replace", "add"):
+            _edit_target_paths(arguments.get(intent), paths)
+
+    invalid = sorted({path for path in paths if "\0" in path})
+    if not invalid:
+        return None
+    noun = "path" if len(invalid) == 1 else "paths"
+    verb = "contains" if len(invalid) == 1 else "contain"
+    named = ", ".join(repr(path) for path in invalid)
+    return {"ok": False, "diagnostics": [{
+        "severity": "error", "code": "REVL", "category": "admission",
+        "message": (f"refused: {noun} {named} {verb} a NUL byte and "
+                    "cannot name a filesystem path"),
+        "hint": "Remove NUL bytes from path values and retry; nothing was read or written",
+    }], "note": "nothing was read, compiled or loaded"}
+
+
+def _jail_refusal(arguments: dict, name: str | None = None) -> dict | None:
     """The refusal payload when a tool call names a path outside the sanctioned
     roots, or `None` when every path is inside. Fails CLOSED: refused before the
     handler runs, so nothing is opened, stat-ed or compiled, and the message
     discloses only what the caller already sent.
 
-    Two carriers, one jail: a path ARGUMENT (`files`, `traceFile`, ...) and a
-    `use` path written inside transport-carried source (`_transport_use_escapes`,
-    roadmap 425 F2).
+    Three checks, one refusal: a NUL byte in any caller path
+    (`_nul_path_refusal`, before any normalisation), a path ARGUMENT outside the
+    sanctioned roots (`files`, `traceFile`, ...), and a `use` path written
+    inside transport-carried source (`_transport_use_escapes`, roadmap 425 F2).
 
     A relative path argument is first resolved against the sanctioned roots
     (`_absolutise_path_arguments`, issue #2038) — the operator sanctioned that
@@ -537,6 +598,9 @@ def _jail_refusal(arguments: dict) -> dict | None:
     server can mean. The comparison below then sees absolute paths only, and
     every real escape (`../`, a symlink out, an absolute path outside every
     root) is still refused with the caller's own spelling."""
+    nul_refusal = _nul_path_refusal(name, arguments)
+    if nul_refusal is not None:
+        return nul_refusal
     roots = _file_roots()
     unadmitted = _absolutise_path_arguments(arguments, roots)
     paths: list = []
@@ -938,6 +1002,14 @@ def _refuse_provider_displacement(modules: dict, providers: dict) -> None:
     taken = _provider_files(providers)
     dependencies = _provider_use_closure(providers)
     for key in modules:
+        if "\0" in key:
+            raise RevlError(
+                key, 1,
+                "admission refused: an in-memory module key contains a NUL "
+                "byte and cannot name a filesystem path",
+                hint="Use a module key without NUL bytes; this key is also "
+                     "checked as a path when preventing provider replacement",
+                category="admission")
         real = os.path.realpath(os.path.abspath(key))
         registered = taken.get(real)
         if registered is not None:
@@ -7888,7 +7960,7 @@ def _call_tool(name: str, arguments: dict, record: bool = True) -> dict:
     # the path jail and the authoring gate run BEFORE the operator gate and
     # before any handler: a refusal here has read nothing, compiled nothing
     # and run nothing, so neither can be used as an oracle.
-    payload = _jail_refusal(arguments) or _authoring_refusal(arguments)
+    payload = _jail_refusal(arguments, name) or _authoring_refusal(arguments)
     if payload is not None:
         return _canonicalised(payload, canonicalised)
     # operator capabilities (roadmap item 55): gate a mutating management
