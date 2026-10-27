@@ -140,6 +140,7 @@ CORPUS = [
     "strings.rvl",   # string `+`, `${..}` interpolation, literals
     "lists.rvl",     # list literal, index, nested list types
     "boxed_generics.rvl",  # Int32/Any type arguments, generic record parameters (#2303)
+    "generic_records.rvl",  # the diamond on a generic record literal, and its raw fallbacks (#2325)
     "maps.rvl",      # the empty map literal and the Map/List generic type lowering
     # slice 2 (item 210) — the v3 typed-core
     "records.rvl",   # record decls, out-of-order literals, field access, nesting
@@ -653,7 +654,9 @@ def test_an_extern_with_a_java_body_emits_no_refusal(emitted, reference, tmp_pat
 
 
 # The reference refuses a deferred emission before it looks at host keys, so a
-# document with both must surface the DEFERRED marker first on the port.
+# document with both must surface the DEFERRED marker first on the port. The
+# namespaced key keeps its marker too: the reference bytes are unreachable here,
+# so the port names the key it could not verify (issue #2394).
 NAMESPACED_AND_DEFERRED = """extern emission deferred fn deliver(sink: Str, msg: Str)
   = @py { return } = @ts { return; } = @rs { () } = @go { return } = @java { return; }
 service Ops { emission fn enqueue(sink: Str, msg: Str) }
