@@ -135,9 +135,8 @@ real runtime. A distribution build hands it a `python-build-standalone` tree
 validates the `bin/python3`, normalizes the tree into the `runtime.tar` the
 resolver expects, computes the archive's sha256, derives a content-addressed pin
 (`pbs-<sha256[:12]>`, or an explicit `--pin`), records `{pin, sha256, bytes,
-source}` in a `runtime.lock.json`, which documents the pin. A rebuild therefore
-bakes the SAME bytes under the SAME key and prints the two build-environment
-values:
+source}` in a `runtime.lock.json` (the documented pin, so a rebuild bakes the
+SAME bytes under the SAME key), and prints the two build-environment values:
 
 ```
 eval "$(python tools/embed_runtime.py --runtime <pbs-tree> --out dist/)"
@@ -210,9 +209,9 @@ REVL_LSP_PYTHON=/path/to/python cargo test   # plus the reference oracle
   issue #317) with the identical framed byte stream. It covers initialize,
   didOpen/didChange/didClose, hover and definition probes, code actions, an
   unknown method, and shutdown/exit. The test compares the two reply streams
-  byte for byte, then asserts the compared stream is thick enough to prove something
-  (hover, definition and diagnostic payloads all present, non-ASCII escaping
-  exercised).
+  byte for byte, then asserts the compared stream is thick enough to prove
+  something (hover, definition and diagnostic payloads all present, non-ASCII
+  escaping exercised).
 - `off_frontier_documents_still_get_their_squiggles` asserts the binary reports
   the reference's refusal code on every rejection document in the corpus. A
   binary that quietly ran a native-only checker would fail here on exactly the
@@ -268,10 +267,10 @@ clause, G2 provision conflict, G3 dependency cycle, G4 missing `undo` and
 unmarked emission, G6 impurity in a component body, G7 `verified fn` totality,
 G8 extern classification, A1 async reach through a required key, A9 a `provide`
 against an undeclared key, and T1 return-path and match-exhaustiveness typing.
-It also covers component activation bodies, `provide` methods, `effect`/`undo`
-acquisition, and service linking, which `docs/conformance.md` records as the `lim` rows of the
-self-host frontier. Clean compositions and protocol edges (an empty document, a
-syntax error, an in-frontier `fn` body) are in the corpus too.
+That includes component activation bodies, `provide` methods, `effect`/`undo`
+acquisition, and service linking, which `docs/conformance.md` records as the
+`lim` rows of the self-host frontier. Clean compositions and protocol edges (an
+empty document, a syntax error, an in-frontier `fn` body) are in the corpus too.
 
 The reference is both this crate's engine and its oracle, so a machine that
 cannot `import revl` cannot verify anything: the oracle tests FAIL with that
@@ -292,15 +291,15 @@ oracle executes for real rather than skipping.
 - Outstanding from the one-file bundling slice: item 338's distribution step,
   which `tools/embed_runtime.py` deliberately does not perform. That means
   fetching and shipping the pinned `python-build-standalone` release BYTES a
-  build points the embed knob at, with the `revl` wheel frozen into the runtime's
-  own site. Also outstanding is the in-process pyo3 link that replaces the child process with a linked
-  `libpython`. The runtime-management contract they build on (pin, atomic
-  versioned cache, isolated launch) landed earlier (`runtime.rs`,
-  `tests/private_runtime.rs`); the BUILD glue that pins, packs and bakes a
-  runtime into the binary, and an end-to-end test of a binary actually built
-  that way, landed here too (`build.rs`, `tools/embed_runtime.py`,
-  `tests/embedded_runtime.rs`). What remains is supplying the real archive bytes,
-  not wiring them in.
+  build points the embed knob at, with the `revl` wheel frozen into the
+  runtime's own site. Also outstanding is the in-process pyo3 link that
+  replaces the child process with a linked `libpython`. The runtime-management
+  contract they build on (pin, atomic versioned cache, isolated launch) landed
+  earlier (`runtime.rs`, `tests/private_runtime.rs`); the BUILD glue that pins,
+  packs and bakes a runtime into the binary, and an end-to-end test of a
+  binary actually built that way, landed here too (`build.rs`,
+  `tools/embed_runtime.py`, `tests/embedded_runtime.rs`). What remains is
+  supplying the real archive bytes, not wiring them in.
 - Outstanding from slice 2: `hover`, `codeAction` and everything about
   diagnostics remain reference-served, and native navigation is confined to
   documents with no diagnostics and to declarations the self-host parser
