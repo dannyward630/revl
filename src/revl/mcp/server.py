@@ -5275,11 +5275,12 @@ import runpy
 import sys
 from pathlib import Path
 
-script, root = sys.argv[1:]
+script, root, base = sys.argv[1:]
 selector = runpy.run_path(script)
 changed = json.load(sys.stdin)
-selection = selector["select"](changed, Path(root))
-selection = selector["add_census_gate"](selection, changed, Path(root))
+root = Path(root)
+added, deleted = selector["status_of_paths"](root, base, changed)
+selection = selector["answer_for"](changed, added, deleted, root)
 print(json.dumps(selection, separators=(",", ":")))
 """
 
@@ -5309,7 +5310,7 @@ def _affected_tests_full(reason: str, base: str | None = None) -> dict:
     return _affected_tests_answer(selection, base)
 
 
-def _run_affected_tests_selector(script: Path, root: Path,
+def _run_affected_tests_selector(script: Path, root: Path, base: str,
                                  paths: list[str]) -> tuple[dict | None, str | None]:
     """Run the selector in a fresh, bounded process so tree edits cannot stale caches."""
     environment = {
@@ -5320,7 +5321,7 @@ def _run_affected_tests_selector(script: Path, root: Path,
     try:
         completed = subprocess.run(
             [sys.executable, "-c", _AFFECTED_TESTS_SELECTOR_PROGRAM,
-             str(script), str(root)],
+             str(script), str(root), base],
             cwd=root, input=json.dumps(paths), capture_output=True, text=True,
             check=False, timeout=_AFFECTED_TESTS_SELECTOR_TIMEOUT, env=environment)
     except subprocess.TimeoutExpired:
@@ -5444,7 +5445,7 @@ def _tool_affected_tests(arguments: dict) -> dict:
         changed.append(name)
 
     selection, reason = _run_affected_tests_selector(
-        worktree_selector, root, sorted(set(changed)))
+        worktree_selector, root, base, sorted(set(changed)))
     if reason is not None:
         return _affected_tests_full(reason, base)
     return _affected_tests_answer(selection, base)

@@ -26,8 +26,8 @@ def _call(paths):
     return response["result"]["structuredContent"]
 
 
-def _selector():
-    return runpy.run_path(str(ROOT / "tools" / "affected_tests.py"))
+def _selector(root=ROOT):
+    return runpy.run_path(str(Path(root) / "tools" / "affected_tests.py"))
 
 
 def _git_result(returncode, stdout=""):
@@ -45,18 +45,47 @@ def _git_at_root(monkeypatch, *, base="merge-base-sha"):
     monkeypatch.setattr(server.subprocess, "run", run)
 
 
-def test_verb_is_read_only_and_matches_the_shared_selector(monkeypatch):
-    monkeypatch.chdir(ROOT)
-    monkeypatch.setattr(server, "_file_roots", lambda: (str(ROOT),))
+def _commit_repo(root):
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=root,
+                   capture_output=True, text=True, check=True)
+    subprocess.run(["git", "add", "."], cwd=root,
+                   capture_output=True, text=True, check=True)
+    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                    "commit", "-m", "initial"], cwd=root,
+                   capture_output=True, text=True, check=True)
+
+
+@pytest.fixture
+def repo(tmp_path, monkeypatch):
+    """A self-contained revl worktree. The real-git assertions run here, so they
+    need no merge base in the CI checkout's own history."""
+    root = tmp_path / "repo"
+    (root / "src" / "revl").mkdir(parents=True)
+    (root / "tools").mkdir()
+    (root / "tests").mkdir()
+    (root / "docs").mkdir()
+    shutil.copyfile(ROOT / "tools" / "affected_tests.py",
+                    root / "tools" / "affected_tests.py")
+    (root / "src" / "revl" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "src" / "revl" / "foo.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "tests" / "test_foo.py").write_text("import revl.foo\n", encoding="utf-8")
+    (root / "docs" / "mcp-reference.md").write_text("# mcp\n", encoding="utf-8")
+    _commit_repo(root)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(server, "_file_roots", lambda: (str(root),))
+    return root
+
+
+def test_verb_is_read_only_and_matches_the_shared_selector(repo):
     before = subprocess.run(
         ["git", "status", "--porcelain", "--untracked-files=all"],
-        cwd=ROOT, capture_output=True, text=True, check=True).stdout
+        cwd=repo, capture_output=True, text=True, check=True).stdout
 
     paths = ["docs/mcp-reference.md"]
     result = _call(paths)
-    selector = _selector()
-    expected = selector["select"](paths, ROOT)
-    expected = selector["add_census_gate"](expected, paths, ROOT)
+    selector = _selector(repo)
+    expected = selector["select"](paths, repo)
+    expected = selector["add_census_gate"](expected, paths, repo)
 
     assert result["ok"] is True
     assert result["base"]
@@ -66,8 +95,27 @@ def test_verb_is_read_only_and_matches_the_shared_selector(monkeypatch):
     assert tool["annotations"] == {"readOnlyHint": True, "destructiveHint": False}
     after = subprocess.run(
         ["git", "status", "--porcelain", "--untracked-files=all"],
-        cwd=ROOT, capture_output=True, text=True, check=True).stdout
+        cwd=repo, capture_output=True, text=True, check=True).stdout
     assert after == before
+
+
+def test_added_test_that_maps_to_no_touched_module_answers_like_the_cli(repo):
+    """The CLI applies `_test_add_delete_override` on top of `select()`, so an
+    added test that names and imports nothing the diff touched is FULL. The verb
+    must answer what the CLI answers for the same tree (issue #2799 review)."""
+    (repo / "src" / "revl" / "foo.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (repo / "tests" / "test_unmapped_new.py").write_text(
+        "def test_new():\n    pass\n", encoding="utf-8")
+
+    result = _call(["src/revl/foo.py", "tests/test_unmapped_new.py"])
+    cli = subprocess.run(
+        [sys.executable, str(repo / "tools" / "affected_tests.py"),
+         "--format", "machine", "--root", str(repo)],
+        cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
+
+    assert result["selection"]["full"] is True, result["selection"]
+    assert "maps to no touched module" in result["selection"]["reason"]
+    assert result["machine"] == cli
 
 
 def test_missing_worktree_returns_full_with_a_reason(tmp_path, monkeypatch):
@@ -94,43 +142,30 @@ def test_missing_merge_base_returns_full_with_a_reason(monkeypatch):
     assert result["machine"].startswith("FULL 1\nREASON ")
 
 
-def test_unmapped_path_returns_full_with_the_selector_reason(monkeypatch):
-    monkeypatch.chdir(ROOT)
-    monkeypatch.setattr(server, "_file_roots", lambda: (str(ROOT),))
-
+def test_unmapped_path_returns_full_with_the_selector_reason(repo):
     result = _call(["path-that-has-no-selector-rule.xyz"])
 
     assert result["selection"]["full"] is True
     assert "unmapped file" in result["selection"]["reason"]
 
 
-def test_server_uses_the_operator_roots_when_cwd_is_outside_the_worktree(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(server, "_file_roots", lambda: (str(ROOT),))
-
+def test_server_uses_the_operator_roots_when_cwd_is_outside_the_worktree(repo):
     result = _call(["docs/mcp-reference.md"])
 
     assert result["ok"] is True, result
     assert result["selection"]["full"] is False, result
 
 
-def test_out_of_root_path_fails_safe_to_full(monkeypatch):
-    monkeypatch.chdir(ROOT)
-    monkeypatch.setattr(server, "_file_roots", lambda: (str(ROOT),))
-
+def test_out_of_root_path_fails_safe_to_full(repo):
     result = _call(["/etc/passwd"])
 
     assert result["selection"]["full"] is True
     assert "outside the operator-sanctioned roots" in result["selection"]["reason"]
 
 
-def test_deleted_test_path_fails_safe_to_full(monkeypatch):
-    monkeypatch.chdir(ROOT)
-    monkeypatch.setattr(server, "_file_roots", lambda: (str(ROOT),))
+def test_deleted_test_path_fails_safe_to_full(repo):
     missing = "tests/test_deleted_affected_selector_2799.py"
-    assert not (ROOT / missing).exists()
+    assert not (repo / missing).exists()
 
     result = _call([missing])
 
