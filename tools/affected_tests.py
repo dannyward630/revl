@@ -202,6 +202,10 @@ BENCH_DEPENDENT_TESTS = (
     # lex, and they are the only exercise the gate's unlexable-file fallback
     # gets.
     "tests/test_no_embedded_frontend_document_1120.py",
+    # Issue #2872: pins the smoke lane's push `paths:` filter, which names
+    # three `bench/` documents the smoke corpora read, and derives that set
+    # from the tree, so a bench change must re-run it.
+    "tests/test_workflow_path_filters_2872.py",
 )
 
 # Self-host oracle tests, keyed by the selfhost/<stem>.rvl file they check.
@@ -1755,11 +1759,13 @@ def select(changed, root) -> dict:
         # covering test. Without the gate here the generic tools/*.py rule below
         # would select the pytest module and skip the gate that actually runs
         # against the committed document.
-        if f == "tools/check_vision_claims.py":
+        # `tools/formal_wording.py` is the do-not-say table that gate and the
+        # `formal-wording` docgen block both read.
+        if f in ("tools/check_vision_claims.py", "tools/formal_wording.py"):
             gates.add("docs")
             pytest_nodes.add("tests/test_check_vision_claims.py")
             pytest_nodes.add("tests/test_docgen_doc_status_shape.py")
-            reasons.append("tools/check_vision_claims.py")
+            reasons.append(f)
             continue
         # issue #1774: the shard weights only balance root-suite-affected's
         # shards; they never decide which tests run (the shards partition the

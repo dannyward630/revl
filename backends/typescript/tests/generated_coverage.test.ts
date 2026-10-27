@@ -117,7 +117,9 @@ describe('checked-in generated modules are current', () => {
 
   for (const { fixture, output } of pairs) {
     it(`is committed current with its fixture: ${output}`, () => {
-      // Same recipe scripts/emit-fixtures.ts uses at setup time.
+      // Same recipe scripts/emit-fixtures.ts uses at setup time, including
+      // its interpreter selection; a missing interpreter throws here instead
+      // of skipping the assertion.
       const fresh = emitFixtureOutput(fixture)
       const committed = gitShow(`backends/typescript/tests/generated/${output}`)
       if (committed === null) {
