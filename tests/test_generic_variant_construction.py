@@ -187,3 +187,19 @@ def test_case_table_payload_keeps_the_declared_spelling(tmp_path):
     spec = ir["types"]["Mb"]
     assert spec["params"] == ["T"]
     assert [c["payload"] for c in spec["cases"]] == ["T", None]
+
+
+def test_aggregate_missing_agreed_is_refused(tmp_path):
+    """Issue #2926: resolving the applied head reaches the provided
+    `Aggregate` as well, so a consumer that names both dissent arms but
+    leaves out `Agreed` is refused (main admitted it)."""
+    source = """fn settle(a: Aggregate[Str]) -> Str {
+  return match a {
+    Split(d) => "no",
+    Inquorate(d) => "no",
+  }
+}
+"""
+    with pytest.raises(RevlError) as excinfo:
+        _compile(tmp_path, source)
+    assert "non-exhaustive match: missing case `Agreed`" in str(excinfo.value)
