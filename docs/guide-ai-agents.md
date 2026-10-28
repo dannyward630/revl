@@ -14,7 +14,15 @@ and around the mistakes you actually make.
 > `EXPR_REFUSED` tables in each emit.py in step (the conformance test
 > `tests/test_expr_dispatcher_conformance.py` makes "did you patch both paths"
 > a red test). Run `pytest tests/test_frontend.py tests/test_doc_examples.py`
-> for the fast frontend loop; the full suite (~60s) before committing.
+> for the fast frontend loop; run `make pre-merge-affected` for the lane gate
+> and selector receipt. If it reports `FULL` or the selector is unavailable,
+> it stops without starting the full gate. Review the receipt before explicitly
+> escalating with `make pre-merge`; CI runs the full suite.
+
+If you are changing RevL itself, follow [CONTRIBUTING.md](../CONTRIBUTING.md)
+and [the agent workflow](process.md). Run `./tools/pre_pr.sh --merge-ref`
+before the first push and again before merge so checks cover the current
+`origin/main` merge tree as well as your branch.
 
 ## The one rule
 
@@ -310,6 +318,7 @@ outputs are in [mcp-reference.md](mcp-reference.md).
 | verb(s) | use | detail |
 |---|---|---|
 | `revl_verbs` | find a verb `tools/list` does not show: every verb by topic, then the schemas of a topic or of named verbs | [mcp-reference.md](mcp-reference.md#revl_verbs) |
+| `revl_brief` | between loop steps: one compact answer with what is loaded and at which generation, the last refusal (code, `file:line`, repair) or check verdict, any pending proposal or draft, and the one call to make next, capped at 1200 characters and derived from session state so it cannot drift from `revl_state` | [mcp-reference.md](mcp-reference.md#revl_brief) |
 | `revl_scaffold` | start from a typed, holed skeleton instead of a whole invented component; every hole comes back with its `fillSpec` | [scaffold.md](scaffold.md) |
 | `revl_check` | does this compile? structured diagnostics — code, guarantee, and the `fix` rewrite — **and open holes' `fillSpec`** if not; with no candidate it checks the composition the session holds | [mcp-reference.md](mcp-reference.md#revl_check) |
 | `revl_admit` | may it enter **this running composition**? | [mcp-reference.md](mcp-reference.md#revl_admit) |
@@ -327,8 +336,10 @@ outputs are in [mcp-reference.md](mcp-reference.md).
 | `revl_change` | **propose, verify, commit**: speculative by default (nothing swaps until `commit: true`), one call for a whole change: `{edit}`, `{replace: {component, source}}` or `{withdraw}`; loads if needed, plans (the withdrawal cascade), verifies (admission, gates, optional gauntlet) and commits only if all pass, naming every component touched | [mcp-reference.md](mcp-reference.md#revl_change) |
 | `revl_source` | read **one declaration** by symbol (`NotesHttp`, `<file>:Name`, `<file>:<line>`), optionally with the declarations it names and without comments, instead of the whole file | [mcp-reference.md](mcp-reference.md#revl_source) |
 | `revl_edit` | patch the **server-side** source with a delta (hole-fill / range / anchor / symbol), you send the change, not the file | [mcp-reference.md](mcp-reference.md#revl_edit) |
+| `revl_affected_tests` | map changed repository paths to the shared pre-merge test selection; unavailable worktree/base returns `FULL` with a reason | [mcp-reference.md](mcp-reference.md#revl_affected_tests) |
 | `revl_swap` · `revl_rollback` · `revl_undo` · `revl_unload` | replace a generation, undo the last swap, return to an earlier generation through the gate, tear down + prove no residue (R4) | [mcp-reference.md](mcp-reference.md#revl_swap) · [generation-history.md](generation-history.md) |
 | `revl_gauntlet` · `revl_quarantine` | grade a candidate (proved / tested / claimed), or prove an untrusted one in the wasm sandbox | [gauntlet.md](gauntlet.md) · [quarantine-tier.md](quarantine-tier.md) |
+| `revl_test_run` | run a selected test suite under the server's interpreter and read per-test outcomes, counts and verdict instead of scraping runner text | [mcp-reference.md](mcp-reference.md#revl_test_run) |
 | `revl_repair` · `revl_canary` | run the repair loop within policy, or canary a successor onto one realm slice and decide on evidence | [repair-loop.md](repair-loop.md) · [verified-canary.md](verified-canary.md) |
 | `revl_lease` | claim/renew/release a TTL-bound lease on a component so co-agents do not replace it under you | [component-leases.md](component-leases.md) |
 | `revl_snapshot` · `revl_restore` | capture / re-admit your evolved composition across a restart | [persistence.md](persistence.md) |
