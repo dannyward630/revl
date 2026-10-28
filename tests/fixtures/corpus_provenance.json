@@ -9,7 +9,7 @@
   "emit_rust_corpus": 75,
   "emit_ts_corpus": 75,
   "emit_wasm_corpus": 75,
-  "selfhost_oracle": 90
+  "selfhost_oracle": 85
  },
  "human_authored": [],
  "generations": {
