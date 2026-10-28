@@ -279,12 +279,12 @@ admission judgment. In [formal/](formal/), G2 through G9 are `full` at the
 granularity each row of the ledger states (the G4 and G8 shape-level statements
 are marked weak, and G6 is head-granularity): axiom-gated with no `sorry`,
 carrying non-vacuity witnesses and, where the ledger records one, a differential
-oracle against the shipped checker. G1 is `partial`, and the remaining rows are
-partial or still in progress, each for a named modelling reason, and
-`formal/STATUS.md` is the per-theorem ledger, written to be read gap-first. The live source of truth for the checker is still the
-implementation and its golden and adversarial tests; the Lean layer is a growing
-backbone under that, not a finished metatheory, and CI's `formal` job keeps the
-distinction honest.
+oracle against the shipped checker. G1 is `partial`. Typing rules T1 to T3 are
+outside this guarantee backbone. `formal/STATUS.md` is the per-theorem ledger,
+written to be read gap-first. The live source of truth for the checker remains
+the implementation and its golden and adversarial tests; the Lean layer is a
+growing backbone under that, not a finished metatheory, and CI's `formal` job
+keeps the distinction honest.
 
 ### It compiles itself, and disagreement is a bug report
 
